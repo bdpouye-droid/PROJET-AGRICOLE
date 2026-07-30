@@ -43,7 +43,12 @@ UTILISATEURS = {
     "fondateur": {"nom": "Fondateur / Direction Générale", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
 }
 
-# --- GESTION DE LA CONNEXION (SIDEBAR) ---
+# --- GESTION DE LA CONNEXION & LOGO (SIDEBAR) ---
+try:
+    str_app.sidebar.image("logo.png", use_container_width=True)
+except Exception:
+    pass
+
 str_app.sidebar.title("🏢 Bureau d'Études")
 str_app.sidebar.markdown("---")
 
