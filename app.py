@@ -1,6 +1,7 @@
 import streamlit as str_app
 import pandas as pd
 from datetime import datetime
+from streamlit_autorefresh import st_autorefresh
 
 # --- CONFIGURATION DE LA PAGE ---
 str_app.set_page_config(
@@ -8,6 +9,10 @@ str_app.set_page_config(
     page_icon="🌾",
     layout="wide"
 )
+
+# --- ACTUALISATION AUTOMATIQUE (Toutes les 5 secondes = 5000 millisecondes) ---
+# Cela permet à tous les écrans connectés de se mettre à jour en quasi-simultané
+count = st_autorefresh(interval=5000, key="datarefreshcounter")
 
 # --- INITIALISATION DE LA BASE DE DONNÉES EN MÉMOIRE (SESSION STATE) ---
 if 'budget_global' not in str_app.session_state:
@@ -72,7 +77,6 @@ else:
     infos_user = UTILISATEURS[str_app.session_state.user_connecte]
     str_app.sidebar.success(f"Connecté en tant que :\n**{infos_user['nom']}** ({str_app.session_state.user_connecte})")
     
-    # BOUTON DE RÉINITIALISATION GLOBALE DANS LA SIDEBAR (Réservé ou accessible)
     str_app.sidebar.markdown("---")
     if str_app.sidebar.button("🔄 Réinitialiser l'application (Reset)"):
         str_app.session_state.solde_restant = str_app.session_state.budget_global
@@ -172,17 +176,15 @@ def afficher_trois_modules(nom_departement):
             str_app.dataframe(df_mes_demandes[["id", "titre", "montant", "fournisseur", "statut", "date"]], use_container_width=True)
             
             str_app.markdown("---")
-            str_app.markdown("### 🗑️ Supprimer une demande ou ✏️ La modifier")
-            
+            str_app.markdown("### 🗑️ Supprimer une demande")
             for d in mes_demandes:
                 col_a, col_b = str_app.columns([4, 1])
                 col_a.write(f"**Demande #{d['id']}** : {d['titre']} (*{d['statut']}*)")
                 if col_b.button(f"Supprimer #{d['id']}", key=f"del_{d['id']}"):
-                    # Si la demande était déjà payée/signée, on restitue l'argent au solde
                     if d['etape_actuelle'] == "termine" and d['montant'] > 0:
                         str_app.session_state.solde_restant += d['montant']
                     str_app.session_state.demandes = [item for item in str_app.session_state.demandes if item['id'] != d['id']]
-                    str_app.success(f"Demande #{d['id']} supprimée avec succès !")
+                    str_app.success(f"Demande #{d['id']} supprimée !")
                     str_app.rerun()
         else:
             str_app.info("Aucune demande enregistrée pour le moment.")
