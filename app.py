@@ -10,28 +10,23 @@ str_app.set_page_config(
     layout="wide"
 )
 
-# --- ACTUALISATION AUTOMATIQUE (Toutes les 5 secondes = 5000 millisecondes) ---
-# Cela permet à tous les écrans connectés de se mettre à jour en quasi-simultané
-count = st_autorefresh(interval=5000, key="datarefreshcounter")
+# --- ACTUALISATION AUTOMATIQUE (Toutes les 5 secondes) ---
+st_autorefresh(interval=5000, key="datarefreshcounter")
 
-# --- INITIALISATION DE LA BASE DE DONNÉES EN MÉMOIRE (SESSION STATE) ---
-if 'budget_global' not in str_app.session_state:
-    str_app.session_state.budget_global = 10000000.0  # 10 Millions
+# --- INITIALISATION DE LA MÉMOIRE PARTAGÉE GLOBALE ---
+if 'global_store' not in str_app.session_state:
+    str_app.session_state.global_store = {
+        "budget_global": 10000000.0,
+        "solde_restant": 10000000.0,
+        "demandes": [],
+        "cahiers_charges": {},
+        "stocks_agricole": pd.DataFrame([
+            {"Article": "Sacs d'engrais NPK (50kg)", "Quantité": 120, "Seuil Alerte": 30, "Emplacement": "Hangar Principal"},
+            {"Article": "Semences maraîchères (kg)", "Quantité": 450, "Seuil Alerte": 100, "Emplacement": "Chambre froide"}
+        ])
+    }
 
-if 'solde_restant' not in str_app.session_state:
-    str_app.session_state.solde_restant = 10000000.0
-
-if 'demandes' not in str_app.session_state:
-    str_app.session_state.demandes = []
-
-if 'cahiers_charges' not in str_app.session_state:
-    str_app.session_state.cahiers_charges = {}
-
-if 'stocks_agricole' not in str_app.session_state:
-    str_app.session_state.stocks_agricole = pd.DataFrame([
-        {"Article": "Sacs d'engrais NPK (50kg)", "Quantité": 120, "Seuil Alerte": 30, "Emplacement": "Hangar Principal"},
-        {"Article": "Semences maraîchères (kg)", "Quantité": 450, "Seuil Alerte": 100, "Emplacement": "Chambre froide"}
-    ])
+store = str_app.session_state.global_store
 
 # --- DICTIONNAIRE DES UTILISATEURS & RÔLES ---
 UTILISATEURS = {
@@ -79,9 +74,9 @@ else:
     
     str_app.sidebar.markdown("---")
     if str_app.sidebar.button("🔄 Réinitialiser l'application (Reset)"):
-        str_app.session_state.solde_restant = str_app.session_state.budget_global
-        str_app.session_state.demandes = []
-        str_app.session_state.cahiers_charges = {}
+        store["solde_restant"] = store["budget_global"]
+        store["demandes"] = []
+        store["cahiers_charges"] = {}
         str_app.success("Application réinitialisée à zéro !")
         str_app.rerun()
 
@@ -117,18 +112,27 @@ def afficher_trois_modules(nom_departement):
             
             if submit_cc:
                 if titre_doc and contenu_doc:
-                    if nom_departement not in str_app.session_state.cahiers_charges:
-                        str_app.session_state.cahiers_charges[nom_departement] = []
-                    str_app.session_state.cahiers_charges[nom_departement].append({"titre": titre_doc, "contenu": contenu_doc, "date": datetime.now().strftime("%Y-%m-%d")})
+                    if nom_departement not in store["cahiers_charges"]:
+                        store["cahiers_charges"][nom_departement] = []
+                    store["cahiers_charges"][nom_departement].append({"titre": titre_doc, "contenu": contenu_doc, "date": datetime.now().strftime("%Y-%m-%d")})
                     str_app.success(f"Document '{titre_doc}' enregistré !")
+                    str_app.rerun()
                 else:
                     str_app.error("Veuillez renseigner un intitulé et un contenu.")
         
         str_app.markdown("---")
-        if nom_departement in str_app.session_state.cahiers_charges and str_app.session_state.cahiers_charges[nom_departement]:
-            for idx, doc in enumerate(str_app.session_state.cahiers_charges[nom_departement], 1):
-                with str_app.expander(f"📁 Doc {idx} : {doc['titre']} (Date: {doc['date']})"):
-                    str_app.write(doc['contenu'])
+        if nom_departement in store["cahiers_charges"] and store["cahiers_charges"][nom_departement]:
+            str_app.markdown("### Documents enregistrés")
+            for idx, doc in enumerate(store["cahiers_charges"][nom_departement], 1):
+                col1, col2 = str_app.columns([5, 1])
+                with col1:
+                    with str_app.expander(f"📁 Doc {idx} : {doc['titre']} (Date: {doc['date']})"):
+                        str_app.write(doc['contenu'])
+                with col2:
+                    if str_app.button(f"Supprimer", key=f"del_cc_{nom_departement}_{idx}"):
+                        store["cahiers_charges"][nom_departement].pop(idx - 1)
+                        str_app.success("Document supprimé !")
+                        str_app.rerun()
         else:
             str_app.info("Aucun cahier des charges rédigé pour l'instant.")
 
@@ -143,7 +147,7 @@ def afficher_trois_modules(nom_departement):
             if submit_besoin:
                 if titre_besoin and desc_besoin:
                     nouvelle_demande = {
-                        "id": len(str_app.session_state.demandes) + 1,
+                        "id": len(store["demandes"]) + 1,
                         "departement": nom_departement,
                         "titre": titre_besoin,
                         "cahier_charges": desc_besoin,
@@ -162,15 +166,15 @@ def afficher_trois_modules(nom_departement):
                         "contrat_juridique": "",
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M")
                     }
-                    str_app.session_state.demandes.append(nouvelle_demande)
+                    store["demandes"].append(nouvelle_demande)
                     str_app.success("Besoin transmis aux Achats avec succès !")
                     str_app.rerun()
                 else:
                     str_app.error("Veuillez renseigner le titre et les spécifications.")
 
     with tab3:
-        str_app.subheader("Suivi de vos demandes & Suppression / Modification")
-        mes_demandes = [d for d in str_app.session_state.demandes if d["departement"] == nom_departement]
+        str_app.subheader("Suivi de vos demandes & Suppression")
+        mes_demandes = [d for d in store["demandes"] if d["departement"] == nom_departement]
         if mes_demandes:
             df_mes_demandes = pd.DataFrame(mes_demandes)
             str_app.dataframe(df_mes_demandes[["id", "titre", "montant", "fournisseur", "statut", "date"]], use_container_width=True)
@@ -182,8 +186,8 @@ def afficher_trois_modules(nom_departement):
                 col_a.write(f"**Demande #{d['id']}** : {d['titre']} (*{d['statut']}*)")
                 if col_b.button(f"Supprimer #{d['id']}", key=f"del_{d['id']}"):
                     if d['etape_actuelle'] == "termine" and d['montant'] > 0:
-                        str_app.session_state.solde_restant += d['montant']
-                    str_app.session_state.demandes = [item for item in str_app.session_state.demandes if item['id'] != d['id']]
+                        store["solde_restant"] += d['montant']
+                    store["demandes"] = [item for item in store["demandes"] if item['id'] != d['id']]
                     str_app.success(f"Demande #{d['id']} supprimée !")
                     str_app.rerun()
         else:
@@ -196,8 +200,8 @@ def afficher_trois_modules(nom_departement):
 def afficher_suivi_global():
     str_app.markdown("---")
     with str_app.expander("📊 **Tableau de Suivi Global de TOUTES les Demandes**"):
-        if str_app.session_state.demandes:
-            df_global = pd.DataFrame(str_app.session_state.demandes)
+        if store["demandes"]:
+            df_global = pd.DataFrame(store["demandes"])
             str_app.dataframe(df_global[["id", "departement", "titre", "montant", "fournisseur", "etape_actuelle", "statut", "date"]], use_container_width=True)
         else:
             str_app.info("Aucune demande enregistrée.")
@@ -212,11 +216,11 @@ if profil["type"] == "standard":
 elif profil["type"] == "achats":
     str_app.subheader("🛒 Module de Sourcing & Chiffrage - Achats (DEP11)")
     col1, col2 = str_app.columns(2)
-    col1.metric("Budget Global", f"{str_app.session_state.budget_global:,.2f} €")
-    col2.metric("Solde Restant", f"{str_app.session_state.solde_restant:,.2f} €")
+    col1.metric("Budget Global", f"{store['budget_global']:,.2f} €")
+    col2.metric("Solde Restant", f"{store['solde_restant']:,.2f} €")
     
     str_app.markdown("---")
-    demandes_achats = [d for d in str_app.session_state.demandes if d["etape_actuelle"] == "achats" and d["avis_achats"] == "En attente"]
+    demandes_achats = [d for d in store["demandes"] if d["etape_actuelle"] == "achats" and d["avis_achats"] == "En attente"]
     
     if demandes_achats:
         for d in demandes_achats:
@@ -254,11 +258,11 @@ elif profil["type"] == "achats":
 elif profil["type"] == "finance":
     str_app.subheader("💰 Module de Contrôle - Finance & Comptabilité (DEP12)")
     col1, col2 = str_app.columns(2)
-    col1.metric("Enveloppe Globale", f"{str_app.session_state.budget_global:,.2f} €")
-    col2.metric("Trésorerie / Solde Actuel", f"{str_app.session_state.solde_restant:,.2f} €")
+    col1.metric("Enveloppe Globale", f"{store['budget_global']:,.2f} €")
+    col2.metric("Trésorerie / Solde Actuel", f"{store['solde_restant']:,.2f} €")
     
     str_app.markdown("---")
-    demandes_finance = [d for d in str_app.session_state.demandes if d["etape_actuelle"] == "controles" and d["avis_finance"] == "En attente"]
+    demandes_finance = [d for d in store["demandes"] if d["etape_actuelle"] == "controles" and d["avis_finance"] == "En attente"]
     if demandes_finance:
         for d in demandes_finance:
             with str_app.expander(f"Demande #{d['id']} - {d['titre']} | {d['montant']} €"):
@@ -273,7 +277,7 @@ elif profil["type"] == "finance":
 
 elif profil["type"] == "logistique":
     str_app.subheader("🚛 Logistique & Stocks (DEP13)")
-    demandes_log = [d for d in str_app.session_state.demandes if d["etape_actuelle"] == "controles" and d["avis_logistique"] == "En attente"]
+    demandes_log = [d for d in store["demandes"] if d["etape_actuelle"] == "controles" and d["avis_logistique"] == "En attente"]
     if demandes_log:
         for d in demandes_log:
             with str_app.expander(f"Demande #{d['id']} - {d['titre']}"):
@@ -288,7 +292,7 @@ elif profil["type"] == "logistique":
 
 elif profil["type"] == "juridique":
     str_app.subheader("⚖️ Juridique & Conformité (DEP14)")
-    demandes_jur = [d for d in str_app.session_state.demandes if d["etape_actuelle"] == "controles" and d["avis_juridique"] == "En attente"]
+    demandes_jur = [d for d in store["demandes"] if d["etape_actuelle"] == "controles" and d["avis_juridique"] == "En attente"]
     if demandes_jur:
         for d in demandes_jur:
             with str_app.expander(f"Demande #{d['id']} - {d['titre']}"):
@@ -308,18 +312,18 @@ elif profil["type"] == "juridique":
 elif profil["type"] == "fondateur":
     str_app.subheader("⭐ Bureau du Fondateur - Signature Exécutive")
     col1, col2 = str_app.columns(2)
-    col1.metric("Enveloppe Globale", f"{str_app.session_state.budget_global:,.2f} €")
-    col2.metric("Solde Disponible", f"{str_app.session_state.solde_restant:,.2f} €")
+    col1.metric("Enveloppe Globale", f"{store['budget_global']:,.2f} €")
+    col2.metric("Solde Disponible", f"{store['solde_restant']:,.2f} €")
     
     str_app.markdown("---")
-    demandes_fondateur = [d for d in str_app.session_state.demandes if d["etape_actuelle"] == "fondateur"]
+    demandes_fondateur = [d for d in store["demandes"] if d["etape_actuelle"] == "fondateur"]
     if demandes_fondateur:
         for d in demandes_fondateur:
             with str_app.expander(f"Dossier #{d['id']} - {d['titre']} | {d['montant']} €"):
                 str_app.write(f"📜 **Contrat :** {d['contrat_juridique']}")
                 if str_app.button(f"Signer et Décaisser #{d['id']}", key=f"btn_sign_{d['id']}"):
-                    if str_app.session_state.solde_restant >= d['montant']:
-                        str_app.session_state.solde_restant -= d['montant']
+                    if store['solde_restant'] >= d['montant']:
+                        store['solde_restant'] -= d['montant']
                         d['etape_actuelle'] = "termine"
                         d['statut'] = "Signé & Exécuté par le Fondateur"
                         str_app.success("Décaissé avec succès !")
