@@ -19,8 +19,8 @@ if 'global_store' not in str_app.session_state:
         "budget_global": 10000000.0,
         "solde_restant": 10000000.0,
         "demandes": [],
-        "cahiers_charges": {}, # Format: {nom_dept: [{"id": ..., "titre": ..., "contenu": ..., "date": ..., "destinataire_avis": ...}]}
-        "messages_coordination": [] # Format: [{"auteur": ..., "texte": ..., "date": ...}]
+        "cahiers_charges": {}, 
+        "messages_coordination": [] 
     }
 
 store = str_app.session_state.global_store
@@ -93,7 +93,6 @@ def afficher_espace_coordination(nom_departement):
     with str_app.expander("💬 **Espace de Notes & Réunions de Coordination (Partagé)**"):
         str_app.write("Échangez ici vos mémos, consignes et points de coordination visibles par tous les départements en temps réel.")
         
-        # Formulaire d'envoi de message
         with str_app.form(f"form_coord_{nom_departement}"):
             texte_msg = str_app.text_input("Votre message / note de coordination")
             submit_msg = str_app.form_submit_button("Publier le message")
@@ -129,7 +128,6 @@ def afficher_trois_modules(nom_departement):
         "3. Suivi & État des Demandes (Suppression)"
     ])
     
-    # Liste de tous les départements pour le partage d'avis
     liste_tous_depts = [u["dept"] for u in UTILISATEURS.values()]
 
     with tab1:
@@ -175,7 +173,6 @@ def afficher_trois_modules(nom_departement):
         else:
             str_app.info("Aucun document rédigé par votre département pour l'instant.")
 
-        # Section des documents reçus pour avis par d'autres départements
         str_app.markdown("---")
         str_app.markdown("### 📥 Documents reçus des autres départements pour avis")
         documents_recus = []
@@ -377,12 +374,11 @@ elif profil["type"] == "fondateur":
     
     afficher_suivi_global()
     
-    # Vue panoramique pour le Fondateur de tous les Cahiers des Charges de tous les départements
     str_app.markdown("---")
     with str_app.expander("👁️ **Vue Panoramique de TOUS les Cahiers des Charges (Accès Fondateur)**"):
         if store["cahiers_charges"]:
             for d_nom, liste_docs in store["cahiers_charges"].items():
-                str_app.markdown(#### Département : {d_nom})
+                str_app.markdown(f"#### Département : {d_nom}")
                 for doc in liste_docs:
                     str_app.write(f"- **{doc['titre']}** (Date : {doc['date']}) | Partagé avec : {doc.get('destinataire_avis', 'Interne')}")
                     str_app.caption(doc['contenu'])
