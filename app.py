@@ -23,7 +23,7 @@ if 'global_store' not in str_app.session_state:
         "demandes": [],
         "cahiers_charges": {}, 
         "messages_coordination": [],
-        "logs_audit": [] # NOUVEAU : Traçabilité complète
+        "logs_audit": []
     }
 
 store = str_app.session_state.global_store
@@ -55,6 +55,11 @@ UTILISATEURS = {
 }
 
 # --- GESTION DE LA CONNEXION (SIDEBAR) ---
+try:
+    str_app.sidebar.image("logo.png", use_container_width=True)
+except Exception:
+    pass
+
 str_app.sidebar.title("🏢 Bureau d'Études")
 str_app.sidebar.markdown("---")
 
@@ -102,23 +107,20 @@ str_app.title(f"Tableau de Bord - {profil['nom']}")
 str_app.markdown("---")
 
 
-# --- NOUVELLE FONCTION PDF (CORRIGÉE : TITRES LONGS & TEXTES LONGS) ---
+# --- FONCTION PDF CORRIGÉE ---
 def generer_pdf(titre, texte_contenu, infos_complementaires=""):
     pdf = FPDF()
     pdf.add_page()
     
-    # Titre qui s'adapte à la ligne (multi_cell)
     pdf.set_font("Arial", "B", 14)
     pdf.multi_cell(0, 8, txt=titre, align="C")
     pdf.ln(5)
     
-    # Infos complémentaires
     if infos_complementaires:
         pdf.set_font("Arial", "I", 11)
         pdf.multi_cell(0, 6, txt=infos_complementaires)
         pdf.ln(8)
         
-    # Contenu du document
     pdf.set_font("Arial", "", 11)
     pdf.multi_cell(0, 6, txt=texte_contenu)
     
@@ -158,7 +160,6 @@ def afficher_suivi_global():
     with str_app.expander("📊 **Tableau de Suivi Global de TOUTES les Demandes**"):
         if store["demandes"]:
             df_global = pd.DataFrame(store["demandes"])
-            # Configuration des colonnes pour une lisibilité parfaite (statuts longs)
             str_app.dataframe(
                 df_global[["id", "departement", "titre", "montant", "fournisseur", "statut", "date"]], 
                 use_container_width=True,
@@ -186,11 +187,9 @@ def afficher_trois_modules(nom_departement):
 
     with tab1:
         str_app.subheader("Rédiger et partager un cahier des charges")
-        # clear_on_submit=True pour vider les champs après l'envoi
         with str_app.form(f"form_cc_{nom_departement}", clear_on_submit=True):
             titre_doc = str_app.text_input("Intitulé / Titre du document")
             contenu_doc = str_app.text_area("Contenu détaillé")
-            # MULTISELECT : Partager avec PLUSIEURS départements
             destinataires_avis = str_app.multiselect("Partager avec (plusieurs choix possibles) :", liste_tous_depts)
             
             submit_cc = str_app.form_submit_button("Enregistrer le document")
@@ -237,7 +236,6 @@ def afficher_trois_modules(nom_departement):
 
     with tab2:
         str_app.subheader("Exprimer un besoin / Demande d'achat")
-        # clear_on_submit=True : Vider les cases après la soumission !
         with str_app.form(f"form_besoin_{nom_departement}", clear_on_submit=True):
             titre_besoin = str_app.text_input("Intitulé de la demande")
             desc_besoin = str_app.text_area("Spécifications techniques")
@@ -277,13 +275,11 @@ def afficher_trois_modules(nom_departement):
 # GESTION DES AFFICHAGES SELON LE PROFIL
 # ==========================================
 
-# 1. DÉPARTEMENTS STANDARDS (PAS DE BUDGET VISIBLE)
 if profil["type"] == "standard":
     afficher_trois_modules(nom_dept)
     str_app.markdown("---")
     afficher_espace_coordination(nom_dept)
 
-# 2. ACHATS
 elif profil["type"] == "achats":
     str_app.subheader("🛒 Achats - Sourcing & Chiffrage")
     col1, col2 = str_app.columns(2)
@@ -300,7 +296,6 @@ elif profil["type"] == "achats":
                 str_app.info(f"💡 **Fournisseur pressenti par le demandeur :** {d['fournisseur']}")
                 
                 with str_app.form(f"form_achats_{d['id']}"):
-                    # Pré-remplissage avec le fournisseur pressenti !
                     fournisseur_choisi = str_app.text_input("Confirmer ou modifier le fournisseur", value=d['fournisseur'] if d['fournisseur'] != "À sourcer" else "")
                     montant_chiffre = str_app.number_input("Montant exact (€)", min_value=0.0, step=100.0)
                     action_achats = str_app.radio("Décision", ["Valider & Transmettre Finance", "Refuser"], key=f"a_achats_{d['id']}")
@@ -326,7 +321,6 @@ elif profil["type"] == "achats":
     afficher_suivi_global()
     afficher_espace_coordination(nom_dept)
 
-# 3. FINANCE
 elif profil["type"] == "finance":
     str_app.subheader("💰 Finance - Contrôle Budgétaire")
     col1, col2 = str_app.columns(2)
@@ -358,7 +352,6 @@ elif profil["type"] == "finance":
     with str_app.expander("📖 Journal d'Audit & Traçabilité (Logs)"):
         str_app.dataframe(pd.DataFrame(store["logs_audit"]), use_container_width=True)
 
-# 4. FONDATEUR
 elif profil["type"] == "fondateur":
     str_app.subheader("⭐ Bureau du Fondateur - Signature Exécutive")
     col1, col2 = str_app.columns(2)
