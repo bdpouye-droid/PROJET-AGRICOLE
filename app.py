@@ -278,7 +278,7 @@ elif profil["type"] == "fondateur":
     cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'fondateur'")
     nb_pending = cursor_notif.fetchone()[0]
     if nb_pending > 0:
-        str_app.warning(f"⭐ Vous avez **{nb_pending}** dossier(s) en attente de signature exécutive.")
+        str_app.warning(f"Vous avez **{nb_pending}** dossier(s) en attente de signature exécutive.")
 elif profil["type"] == "standard":
     cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE departement = ? AND statut LIKE '%Refusé%'", (nom_dept,))
     nb_refus = cursor_notif.fetchone()[0]
@@ -577,14 +577,14 @@ def afficher_trois_modules(nom_departement):
                             str_app.rerun()
 
                     if d_statut == "Refusé avec demande de modification":
-                        str_app.info("Vous pouvez modifier votre demande ci-dessous et la soumettre à nouveau.")
+                        str_app.info("Vous pouvez modifier votre demande ci-dessous et la soumettre à nouveau (elle reprendra le circuit complet par les Achats).")
                         with str_app.form(f"form_modif_{d_id}"):
                             nouveau_titre = str_app.text_input("Modifier l'intitulé", value=d_titre)
                             nouvelles_specs = str_app.text_area("Modifier les spécifications", value=d_cc)
                             nouveau_fournisseur = str_app.text_input("Modifier le fournisseur", value=d_fourn)
                             
                             if str_app.form_submit_button("Soumettre à nouveau la demande modifiée"):
-                                with str_app.spinner("Mise à jour..."):
+                                with str_app.spinner("Mise à jour et routage..."):
                                     conn = get_db_connection()
                                     cursor = conn.cursor()
                                     cursor.execute('''
@@ -616,9 +616,11 @@ if profil["type"] == "standard":
 
 elif profil["type"] == "achats":
     str_app.subheader("🛒 Achats - Sourcing, Chiffrage & Cahiers des Charges")
-    col1, col2 = str_app.columns(2)
-    col1.metric("Budget Global", f"{budget_global:,.2f} €")
-    col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
+    
+    with str_app.expander("📊 **Consulter l'état du Budget Global & Solde**"):
+        col1, col2 = str_app.columns(2)
+        col1.metric("Budget Global", f"{budget_global:,.2f} €")
+        col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
     
     tab_ach1, tab_ach2 = str_app.tabs(["1. File d'attente & Chiffrage", "2. Cahiers des Charges (Achats)"])
     
@@ -692,9 +694,11 @@ elif profil["type"] == "achats":
 
 elif profil["type"] == "finance":
     str_app.subheader("💰 Finance - Contrôle Budgétaire & Cahiers des Charges")
-    col1, col2 = str_app.columns(2)
-    col1.metric("Budget Global", f"{budget_global:,.2f} €")
-    col2.metric("Solde Actuel", f"{solde_restant:,.2f} €")
+    
+    with str_app.expander("📊 **Consulter l'état du Budget Global & Solde**"):
+        col1, col2 = str_app.columns(2)
+        col1.metric("Budget Global", f"{budget_global:,.2f} €")
+        col2.metric("Solde Actuel", f"{solde_restant:,.2f} €")
     
     tab_fin1, tab_fin2 = str_app.tabs(["1. Validation Budgétaire", "2. Cahiers des Charges (Finance)"])
     
@@ -765,10 +769,12 @@ elif profil["type"] == "finance":
     afficher_espace_coordination_et_journal(nom_dept)
 
 elif profil["type"] == "fondateur":
-    str_app.subheader("⭐ Direction Générale - Validation & Signature Exécutive")
-    col1, col2 = str_app.columns(2)
-    col1.metric("Budget Global", f"{budget_global:,.2f} €")
-    col2.metric("Solde Actuel", f"{solde_restant:,.2f} €")
+    str_app.subheader("Direction Générale - Validation & Signature Exécutive")
+    
+    with str_app.expander("📊 **Consulter l'état du Budget Global & Solde**"):
+        col1, col2 = str_app.columns(2)
+        col1.metric("Budget Global", f"{budget_global:,.2f} €")
+        col2.metric("Solde Actuel", f"{solde_restant:,.2f} €")
     
     tab_fond1, tab_fond2 = str_app.tabs(["1. Signatures en Attente", "2. Cahiers des Charges (Direction)"])
     
