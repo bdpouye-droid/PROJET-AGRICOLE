@@ -93,7 +93,7 @@ nom_dept = profil["dept"]
 str_app.title(f"Tableau de Bord - {profil['nom']}")
 str_app.markdown("---")
 
-# --- FONCTION DE GÉNÉRATION DE PDF (STABLE AVEC BYTESIO) ---
+# --- FONCTION DE GÉNÉRATION DE PDF (10% ROBUSTE & FORCÉ EN BYTES PURS) ---
 def generer_pdf(titre, texte_contenu, infos_complementaires=""):
     pdf = FPDF()
     pdf.add_page()
@@ -109,11 +109,10 @@ def generer_pdf(titre, texte_contenu, infos_complementaires=""):
     pdf.set_font("Arial", "", 11)
     pdf.multi_cell(0, 8, texte_contenu)
     
-    pdf_output = pdf.output(dest='S')
-    if isinstance(pdf_output, str):
-        pdf_bytes = pdf_output.encode('latin1')
-    else:
-        pdf_bytes = bytes(pdf_output)
+    # On force la sortie en bytes purs (dest='' ou sortie standard sous forme de bytes)
+    pdf_bytes = pdf.output()
+    if isinstance(pdf_bytes, str):
+        pdf_bytes = pdf_bytes.encode('latin1')
         
     return BytesIO(pdf_bytes)
 
@@ -200,7 +199,7 @@ def afficher_trois_modules(nom_departement):
                         pdf_io = generer_pdf(f"Cahier des Charges - {doc['titre']}", doc['contenu'], f"Departement: {nom_departement} | Date: {doc['date']}")
                         str_app.download_button(
                             label="📥 Télécharger en PDF",
-                            data=pdf_io.getvalue(),
+                            data=pdf_io,
                             file_name=f"cahier_des_charges_{doc['id']}.pdf",
                             mime="application/pdf",
                             key=f"pdf_cc_{nom_departement}_{idx}"
@@ -229,7 +228,7 @@ def afficher_trois_modules(nom_departement):
                     pdf_io_recu = generer_pdf(f"Avis demande - {doc['titre']}", doc['contenu'], f"Emetteur: {d_expediteur} | Destinataire avis: {nom_departement}")
                     str_app.download_button(
                         label="📥 Télécharger ce document en PDF",
-                        data=pdf_io_recu.getvalue(),
+                        data=pdf_io_recu,
                         file_name=f"avis_{doc['titre']}.pdf",
                         mime="application/pdf",
                         key=f"pdf_recu_{d_expediteur}_{doc['id']}"
@@ -286,7 +285,7 @@ def afficher_trois_modules(nom_departement):
                     pdf_io_demande = generer_pdf(f"Bon de Demande d'Achat #{d['id']}", texte_pdf, f"Date: {d['date']}")
                     str_app.download_button(
                         label="📄 Télécharger la demande en PDF",
-                        data=pdf_io_demande.getvalue(),
+                        data=pdf_io_demande,
                         file_name=f"demande_achat_{d['id']}.pdf",
                         mime="application/pdf",
                         key=f"pdf_demande_{d['id']}"
