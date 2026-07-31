@@ -49,7 +49,7 @@ UTILISATEURS = {
 try:
     str_app.sidebar.image("logo.png", use_container_width=True)
 except Exception:
-    pass # Si pas de logo.png sur GitHub, l'application continue sans bloquer
+    pass 
 
 str_app.sidebar.title("🏢 Bureau d'Études")
 str_app.sidebar.markdown("---")
@@ -93,7 +93,7 @@ nom_dept = profil["dept"]
 str_app.title(f"Tableau de Bord - {profil['nom']}")
 str_app.markdown("---")
 
-# --- FONCTION DE GÉNÉRATION DE PDF ---
+# --- FONCTION DE GÉNÉRATION DE PDF (CORRIGÉE) ---
 def generer_pdf(titre, texte_contenu, infos_complementaires=""):
     pdf = FPDF()
     pdf.add_page()
@@ -107,15 +107,12 @@ def generer_pdf(titre, texte_contenu, infos_complementaires=""):
         pdf.ln(5)
         
     pdf.set_font("Arial", "", 11)
-    # Utilisation de multi_cell pour gérer les retours à la ligne propres
     pdf.multi_cell(0, 8, texte_contenu)
-    
-    # Sortie bytes pour le bouton Streamlit
-    return pdf.output(dest='S').encode('latin1')
+    return pdf.output()
 
 
 # ==========================================
-# ESPACE DE COORDINATION PARTAGÉ (Commun à tous)
+# ESPACE DE COORDINATION PARTAGÉ
 # ==========================================
 def afficher_espace_coordination(nom_departement):
     with str_app.expander("💬 **Espace de Notes & Réunions de Coordination (Partagé)**"):
@@ -145,7 +142,7 @@ def afficher_espace_coordination(nom_departement):
 
 
 # ==========================================
-# FONCTION COMMUNE : LES 3 MODULES DE BASE
+# LES 3 MODULES DE BASE
 # ==========================================
 def afficher_trois_modules(nom_departement):
     str_app.info(f"Espace de travail du département **{nom_departement}**")
@@ -193,7 +190,6 @@ def afficher_trois_modules(nom_departement):
                 with col1:
                     with str_app.expander(f"Doc #{doc.get('id', idx+1)} : {doc['titre']} (Partagé avec : {doc.get('destinataire_avis', 'Interne')})"):
                         str_app.write(doc['contenu'])
-                        # Bouton de téléchargement PDF pour le Cahier des Charges
                         pdf_bytes = generer_pdf(f"Cahier des Charges - {doc['titre']}", doc['contenu'], f"Departement: {nom_departement} | Date: {doc['date']}")
                         str_app.download_button(
                             label="📥 Télécharger en PDF",
@@ -279,7 +275,6 @@ def afficher_trois_modules(nom_departement):
                     str_app.write(f"**Spécifications :** {d['cahier_charges']}")
                     str_app.write(f"**Montant :** {d['montant']:,.2f} € | **Fournisseur :** {d['fournisseur']}")
                     
-                    # Bouton PDF de la demande
                     texte_pdf = f"Demande ID: {d['id']}\nTitre: {d['titre']}\nDepartement: {d['departement']}\nStatut: {d['statut']}\nMontant: {d['montant']} EUR\nFournisseur: {d['fournisseur']}\n\nSpecifications:\n{d['cahier_charges']}"
                     pdf_demande = generer_pdf(f"Bon de Demande d'Achat #{d['id']}", texte_pdf, f"Date: {d['date']}")
                     str_app.download_button(
