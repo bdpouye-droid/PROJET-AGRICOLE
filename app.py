@@ -23,7 +23,8 @@ if 'global_store' not in str_app.session_state:
         "demandes": [],
         "cahiers_charges": {}, 
         "messages_coordination": [],
-        "logs_audit": []
+        "journaux_bord": {}, # NOUVEAU : Journal de bord par département
+        "logs_audit": []     # Réservé au Fondateur
     }
 
 store = str_app.session_state.global_store
@@ -36,7 +37,7 @@ def ajouter_log(action, acteur, details):
         "details": details
     })
 
-# --- DICTIONNAIRE DES UTILISATEURS & RÔLES ---
+# --- DICTIONNAIRE DES UTILISATEURS & RÔLES (15 COLLABORATEURS / DÉPARTEMENTS) ---
 UTILISATEURS = {
     "DEP1": {"nom": "Agriculture", "mdp": "DEP123", "type": "standard", "dept": "Agriculture"},
     "DEP2": {"nom": "Élevage & Halieutique", "mdp": "DEP123", "type": "standard", "dept": "Élevage & Halieutique"},
@@ -89,6 +90,7 @@ else:
         store["demandes"] = []
         store["cahiers_charges"] = {}
         store["messages_coordination"] = []
+        store["journaux_bord"] = {}
         store["logs_audit"] = []
         ajouter_log("Réinitialisation", infos_user['nom'], "Base de données remise à zéro")
         str_app.success("Application réinitialisée à zéro !")
@@ -107,7 +109,7 @@ str_app.title(f"Tableau de Bord - {profil['nom']}")
 str_app.markdown("---")
 
 
-# --- FONCTION PDF CORRIGÉE ---
+# --- FONCTION PDF ---
 def generer_pdf(titre, texte_contenu, infos_complementaires=""):
     pdf = FPDF()
     pdf.add_page()
@@ -132,9 +134,10 @@ def generer_pdf(titre, texte_contenu, infos_complementaires=""):
 
 
 # ==========================================
-# ESPACE DE COORDINATION PARTAGÉ
+# ESPACE DE COORDINATION & JOURNAL DE BORD PERSONNEL
 # ==========================================
-def afficher_espace_coordination(nom_departement):
+def afficher_espace_coordination_et_journal(nom_departement):
+    # Fil de coordination partagé
     with str_app.expander("💬 **Espace de Notes & Réunions de Coordination (Partagé)**"):
         with str_app.form(f"form_coord_{nom_departement}", clear_on_submit=True):
             texte_msg = str_app.text_input("Votre message / note de coordination")
@@ -150,6 +153,33 @@ def afficher_espace_coordination(nom_departement):
         if store["messages_coordination"]:
             for m in reversed(store["messages_coordination"]):
                 str_app.markdown(f"> **[{m['date']}] {m['auteur']}** : {m['texte']}")
+
+    # NOUVEAU : Journal de bord personnel et quotidien du département
+    with str_app.expander(f"📔 **Journal de Bord Quotidien ({nom_departement})**"):
+        str_app.write("Consignez ici vos notes, avancements et points quotidiens au jour le jour.")
+        with str_app.form(f"form_journal_{nom_departement}", clear_on_submit=True):
+            titre_j = str_app.text_input("Titre de l'entrée du jour")
+            texte_j = str_app.text_area("Contenu / Notes du journal")
+            submit_j = str_app.form_submit_button("Ajouter au journal")
+            
+            if submit_j and titre_j and texte_j:
+                if nom_departement not in store["journaux_bord"]:
+                    store["journaux_bord"][nom_departement] = []
+                store["journaux_bord"][nom_departement].append({
+                    "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "titre": titre_j,
+                    "texte": texte_j,
+                    "auteur": nom_departement
+                })
+                str_app.success("Entrée enregistrée dans votre journal de bord !")
+                str_app.rerun()
+        
+        if nom_departement in store["journaux_bord"] and store["journaux_bord"][nom_departement]:
+            str_app.markdown("### Historique de votre journal :")
+            for entree in reversed(store["journaux_bord"][nom_departement]):
+                str_app.markdown(f"**[{entree['date']}] {entree['titre']}**\n\n{entree['texte']}\n\n---")
+        else:
+            str_app.info("Aucune entrée dans votre journal de bord pour le moment.")
 
 
 # ==========================================
@@ -174,6 +204,61 @@ def afficher_suivi_global():
 
 
 # ==========================================
+# MODULES : CAHIERS DES CHARGES (Standard & Finance)
+# ==========================================
+def afficher_module_cahiers_charges(nom_departement):
+    str_app.subheader("Rédiger et partager un cahier des charges")
+    liste_tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
+
+    with str_app.form(f"form_cc_{nom_departement}", clear_on_submit=True):
+        titre_doc = str_app.text_input("Intitulé / Titre du document")
+        contenu_doc = str_app.text_area("Contenu détaillé")
+        destinataires_avis = str_app.multiselect("Partager avec (plusieurs choix possibles) :", liste_tous_depts)
+        
+        submit_cc = str_app.form_submit_button("Enregistrer le document")
+        
+        if submit_cc:
+            if titre_doc and contenu_doc:
+                if nom_departement not in store["cahiers_charges"]:
+                    store["cahiers_charges"][nom_departement] = []
+                
+                doc_id = len(store["cahiers_charges"][nom_departement]) + 1
+                store["cahiers_charges"][nom_departement].append({
+                    "id": doc_id,
+                    "titre": titre_doc, 
+                    "contenu": contenu_doc, 
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "destinataires_avis": destinataires_avis
+                })
+                ajouter_log("Création Cahier des Charges", nom_departement, f"Titre: {titre_doc}")
+                str_app.success(f"Document enregistré et partagé avec {len(destinataires_avis)} département(s) !")
+                str_app.rerun()
+    
+    str_app.markdown("### 📁 Mes documents")
+    if nom_departement in store["cahiers_charges"] and store["cahiers_charges"][nom_departement]:
+        for idx, doc in enumerate(store["cahiers_charges"][nom_departement]):
+            partages = ", ".join(doc.get('destinataires_avis', [])) if doc.get('destinataires_avis') else "Interne"
+            with str_app.expander(f"Doc #{doc.get('id', idx+1)} : {doc['titre']} (Partagé avec : {partages})"):
+                str_app.write(doc['contenu'])
+                pdf_io = generer_pdf(f"Cahier des Charges\n{doc['titre']}", doc['contenu'], f"Département: {nom_departement}\nDate: {doc['date']}")
+                colA, colB = str_app.columns([1,1])
+                colA.download_button("📥 PDF", data=pdf_io, file_name=f"cc_{doc['id']}.pdf", mime="application/pdf", key=f"pdf_{nom_departement}_{idx}")
+                if colB.button("🗑️ Supprimer", key=f"del_cc_{nom_departement}_{idx}"):
+                    store["cahiers_charges"][nom_departement].pop(idx)
+                    str_app.rerun()
+
+    str_app.markdown("### 📥 Documents reçus pour avis")
+    for d_nom, liste_docs in store["cahiers_charges"].items():
+        if d_nom != nom_departement:
+            for doc in liste_docs:
+                if nom_departement in doc.get("destinataires_avis", []):
+                    with str_app.expander(f"📬 De [{d_nom}] : {doc['titre']}"):
+                        str_app.write(doc['contenu'])
+                        pdf_recu = generer_pdf(f"{doc['titre']}", doc['contenu'], f"Émetteur: {d_nom}")
+                        str_app.download_button("📥 PDF", data=pdf_recu, file_name=f"recu_{doc['id']}.pdf", mime="application/pdf", key=f"recu_{d_nom}_{doc['id']}")
+
+
+# ==========================================
 # MODULES : DEPARTEMENTS STANDARDS
 # ==========================================
 def afficher_trois_modules(nom_departement):
@@ -182,57 +267,9 @@ def afficher_trois_modules(nom_departement):
         "2. Expression des Besoins", 
         "3. Suivi & État de mes demandes"
     ])
-    
-    liste_tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
 
     with tab1:
-        str_app.subheader("Rédiger et partager un cahier des charges")
-        with str_app.form(f"form_cc_{nom_departement}", clear_on_submit=True):
-            titre_doc = str_app.text_input("Intitulé / Titre du document")
-            contenu_doc = str_app.text_area("Contenu détaillé")
-            destinataires_avis = str_app.multiselect("Partager avec (plusieurs choix possibles) :", liste_tous_depts)
-            
-            submit_cc = str_app.form_submit_button("Enregistrer le document")
-            
-            if submit_cc:
-                if titre_doc and contenu_doc:
-                    if nom_departement not in store["cahiers_charges"]:
-                        store["cahiers_charges"][nom_departement] = []
-                    
-                    doc_id = len(store["cahiers_charges"][nom_departement]) + 1
-                    store["cahiers_charges"][nom_departement].append({
-                        "id": doc_id,
-                        "titre": titre_doc, 
-                        "contenu": contenu_doc, 
-                        "date": datetime.now().strftime("%Y-%m-%d"),
-                        "destinataires_avis": destinataires_avis
-                    })
-                    ajouter_log("Création Cahier des Charges", nom_departement, f"Titre: {titre_doc}")
-                    str_app.success(f"Document enregistré et partagé avec {len(destinataires_avis)} département(s) !")
-                    str_app.rerun()
-        
-        str_app.markdown("### 📁 Mes documents")
-        if nom_departement in store["cahiers_charges"] and store["cahiers_charges"][nom_departement]:
-            for idx, doc in enumerate(store["cahiers_charges"][nom_departement]):
-                partages = ", ".join(doc.get('destinataires_avis', [])) if doc.get('destinataires_avis') else "Interne"
-                with str_app.expander(f"Doc #{doc.get('id', idx+1)} : {doc['titre']} (Partagé avec : {partages})"):
-                    str_app.write(doc['contenu'])
-                    pdf_io = generer_pdf(f"Cahier des Charges\n{doc['titre']}", doc['contenu'], f"Département: {nom_departement}\nDate: {doc['date']}")
-                    colA, colB = str_app.columns([1,1])
-                    colA.download_button("📥 PDF", data=pdf_io, file_name=f"cc_{doc['id']}.pdf", mime="application/pdf", key=f"pdf_{nom_departement}_{idx}")
-                    if colB.button("🗑️ Supprimer", key=f"del_cc_{nom_departement}_{idx}"):
-                        store["cahiers_charges"][nom_departement].pop(idx)
-                        str_app.rerun()
-
-        str_app.markdown("### 📥 Documents reçus pour avis")
-        for d_nom, liste_docs in store["cahiers_charges"].items():
-            if d_nom != nom_departement:
-                for doc in liste_docs:
-                    if nom_departement in doc.get("destinataires_avis", []):
-                        with str_app.expander(f"📬 De [{d_nom}] : {doc['titre']}"):
-                            str_app.write(doc['contenu'])
-                            pdf_recu = generer_pdf(f"{doc['titre']}", doc['contenu'], f"Émetteur: {d_nom}")
-                            str_app.download_button("📥 PDF", data=pdf_recu, file_name=f"recu_{doc['id']}.pdf", mime="application/pdf", key=f"recu_{d_nom}_{doc['id']}")
+        afficher_module_cahiers_charges(nom_departement)
 
     with tab2:
         str_app.subheader("Exprimer un besoin / Demande d'achat")
@@ -255,6 +292,7 @@ def afficher_trois_modules(nom_departement):
                         "etape_actuelle": "achats",
                         "avis_achats": "En attente",
                         "avis_finance": "En attente",
+                        "motif_refus": "",
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M")
                     }
                     store["demandes"].append(nouvelle_demande)
@@ -263,13 +301,38 @@ def afficher_trois_modules(nom_departement):
                     str_app.rerun()
 
     with tab3:
-        str_app.subheader("Suivi de vos demandes")
+        str_app.subheader("Suivi et Modification de vos demandes")
         mes_demandes = [d for d in store["demandes"] if d["departement"] == nom_departement]
         if mes_demandes:
-            df_mes_demandes = pd.DataFrame(mes_demandes)
-            str_app.dataframe(df_mes_demandes[["id", "titre", "statut", "date"]], use_container_width=True)
+            for d in mes_demandes:
+                with str_app.expander(f"Demande #{d['id']} : {d['titre']} — Statut : {d['statut']}"):
+                    str_app.write(f"**Spécifications :** {d['cahier_charges']}")
+                    str_app.write(f"**Fournisseur :** {d['fournisseur']}")
+                    if d.get('motif_refus'):
+                        str_app.error(f"❌ **Motif du refus / demande de modification :** {d['motif_refus']}")
+                    
+                    # Si refusé avec demande de modification, l'initiateur peut modifier et resoumettre
+                    if d['statut'] == "Refusé avec demande de modification":
+                        str_app.info("Vous pouvez modifier votre demande ci-dessous et la soumettre à nouveau.")
+                        with str_app.form(f"form_modif_{d['id']}"):
+                            nouveau_titre = str_app.text_input("Modifier l'intitulé", value=d['titre'])
+                            nouvelles_specs = str_app.text_area("Modifier les spécifications", value=d['cahier_charges'])
+                            nouveau_fournisseur = str_app.text_input("Modifier le fournisseur", value=d['fournisseur'])
+                            
+                            if str_app.form_submit_button("Soumettre à nouveau la demande modifiée"):
+                                d['titre'] = nouveau_titre
+                                d['cahier_charges'] = nouvelles_specs
+                                d['fournisseur'] = nouveau_fournisseur
+                                d['etape_actuelle'] = "achats"
+                                d['avis_achats'] = "En attente"
+                                d['statut'] = "En attente Achats (Modifié)"
+                                d['motif_refus'] = ""
+                                ajouter_log("Modification & Resoumission", nom_departement, f"Demande #{d['id']} modifiée et relancée")
+                                str_app.success("Demande modifiée et transmise de nouveau aux Achats !")
+                                str_app.rerun()
         else:
             str_app.info("Aucune demande en cours.")
+
 
 # ==========================================
 # GESTION DES AFFICHAGES SELON LE PROFIL
@@ -278,7 +341,7 @@ def afficher_trois_modules(nom_departement):
 if profil["type"] == "standard":
     afficher_trois_modules(nom_dept)
     str_app.markdown("---")
-    afficher_espace_coordination(nom_dept)
+    afficher_espace_coordination_et_journal(nom_dept)
 
 elif profil["type"] == "achats":
     str_app.subheader("🛒 Achats - Sourcing & Chiffrage")
@@ -298,7 +361,8 @@ elif profil["type"] == "achats":
                 with str_app.form(f"form_achats_{d['id']}"):
                     fournisseur_choisi = str_app.text_input("Confirmer ou modifier le fournisseur", value=d['fournisseur'] if d['fournisseur'] != "À sourcer" else "")
                     montant_chiffre = str_app.number_input("Montant exact (€)", min_value=0.0, step=100.0)
-                    action_achats = str_app.radio("Décision", ["Valider & Transmettre Finance", "Refuser"], key=f"a_achats_{d['id']}")
+                    action_achats = str_app.radio("Décision", ["Valider & Transmettre Finance", "Refus définitif (Bloqué)", "Refusé avec demande de modification"], key=f"a_achats_{d['id']}")
+                    motif = str_app.text_input("Motif obligatoire en cas de refus / blocage")
                     
                     if str_app.form_submit_button("Valider la décision"):
                         if action_achats == "Valider & Transmettre Finance" and montant_chiffre > 0:
@@ -307,53 +371,76 @@ elif profil["type"] == "achats":
                             d['avis_achats'] = "Validé"
                             d['etape_actuelle'] = "finance"
                             d['statut'] = "En attente Finance"
-                            ajouter_log("Validation Achats", "Achats", f"Demande #{d['id']} chiffrée à {montant_chiffre}€ chez {fournisseur_choisi}")
+                            ajouter_log("Validation Achats", "Achats", f"Demande #{d['id']} chiffrée à {montant_chiffre}€")
                             str_app.rerun()
-                        elif action_achats == "Refuser":
-                            d['avis_achats'] = "Refusé"
-                            d['etape_actuelle'] = "bloque"
-                            d['statut'] = "Refusé par les Achats"
-                            ajouter_log("Refus Achats", "Achats", f"Demande #{d['id']} refusée.")
-                            str_app.rerun()
+                        elif "Refus" in action_achats:
+                            if not motif:
+                                str_app.error("Veuillez saisir un motif pour justifier le refus.")
+                            else:
+                                d['avis_achats'] = "Refusé"
+                                d['motif_refus'] = motif
+                                if action_achats == "Refus définitif (Bloqué)":
+                                    d['etape_actuelle'] = "bloque"
+                                    d['statut'] = "Refusé définitivement par les Achats"
+                                else:
+                                    d['etape_actuelle'] = "modification"
+                                    d['statut'] = "Refusé avec demande de modification"
+                                ajouter_log("Refus Achats", "Achats", f"Demande #{d['id']} refusée. Motif : {motif}")
+                                str_app.rerun()
     else:
         str_app.info("Aucun besoin en attente de chiffrage.")
     
     afficher_suivi_global()
-    afficher_espace_coordination(nom_dept)
+    afficher_espace_coordination_et_journal(nom_dept)
 
 elif profil["type"] == "finance":
-    str_app.subheader("💰 Finance - Contrôle Budgétaire")
+    str_app.subheader("💰 Finance - Contrôle Budgétaire & Cahiers des Charges")
     col1, col2 = str_app.columns(2)
     col1.metric("Budget Global", f"{store['budget_global']:,.2f} €")
     col2.metric("Solde Actuel", f"{store['solde_restant']:,.2f} €")
     
-    demandes_finance = [d for d in store["demandes"] if d["etape_actuelle"] == "finance" and d["avis_finance"] == "En attente"]
-    if demandes_finance:
-        for d in demandes_finance:
-            with str_app.expander(f"Demande #{d['id']} - {d['titre']} | {d['montant']} € (Par : {d['departement']})"):
-                with str_app.form(f"form_fin_{d['id']}"):
-                    avis = str_app.radio("Avis Financier", ["Valider & Transmettre Fondateur", "Refuser"])
-                    if str_app.form_submit_button("Valider la décision"):
-                        if avis == "Valider & Transmettre Fondateur":
-                            d['avis_finance'] = "Validé"
-                            d['etape_actuelle'] = "fondateur"
-                            d['statut'] = "Prêt pour Signature Finale"
-                            ajouter_log("Validation Finance", "Finance", f"Budget validé pour la demande #{d['id']}")
-                            str_app.rerun()
-                        else:
-                            d['avis_finance'] = "Refusé"
-                            d['etape_actuelle'] = "bloque"
-                            d['statut'] = "Refusé par la Finance"
-                            ajouter_log("Refus Finance", "Finance", f"Demande #{d['id']} refusée.")
-                            str_app.rerun()
-    afficher_suivi_global()
-    afficher_espace_coordination(nom_dept)
+    tab_fin1, tab_fin2 = str_app.tabs(["1. Validation Budgétaire", "2. Cahiers des Charges (Finance)"])
     
-    with str_app.expander("📖 Journal d'Audit & Traçabilité (Logs)"):
-        str_app.dataframe(pd.DataFrame(store["logs_audit"]), use_container_width=True)
+    with tab_fin1:
+        demandes_finance = [d for d in store["demandes"] if d["etape_actuelle"] == "finance" and d["avis_finance"] == "En attente"]
+        if demandes_finance:
+            for d in demandes_finance:
+                with str_app.expander(f"Demande #{d['id']} - {d['titre']} | {d['montant']} € (Par : {d['departement']})"):
+                    with str_app.form(f"form_fin_{d['id']}"):
+                        avis = str_app.radio("Avis Financier", ["Valider & Transmettre Fondateur", "Refus définitif (Bloqué)", "Refusé avec demande de modification"])
+                        motif_fin = str_app.text_input("Motif obligatoire en cas de refus")
+                        if str_app.form_submit_button("Valider la décision"):
+                            if avis == "Valider & Transmettre Fondateur":
+                                d['avis_finance'] = "Validé"
+                                d['etape_actuelle'] = "fondateur"
+                                d['statut'] = "Prêt pour Signature Finale"
+                                ajouter_log("Validation Finance", "Finance", f"Budget validé pour la demande #{d['id']}")
+                                str_app.rerun()
+                            else:
+                                if not motif_fin:
+                                    str_app.error("Veuillez saisir un motif.")
+                                else:
+                                    d['avis_finance'] = "Refusé"
+                                    d['motif_refus'] = motif_fin
+                                    if avis == "Refus définitif (Bloqué)":
+                                        d['etape_actuelle'] = "bloque"
+                                        d['statut'] = "Refusé par la Finance"
+                                    else:
+                                        d['etape_actuelle'] = "modification"
+                                        d['statut'] = "Refusé avec demande de modification"
+                                    ajouter_log("Refus Finance", "Finance", f"Demande #{d['id']} refusée. Motif : {motif_fin}")
+                                    str_app.rerun()
+        else:
+            str_app.info("Aucune demande en attente d'avis financier.")
+            
+    with tab_fin2:
+        afficher_module_cahiers_charges(nom_dept)
+
+    afficher_suivi_global()
+    afficher_espace_coordination_et_journal(nom_dept)
 
 elif profil["type"] == "fondateur":
-    str_app.subheader("⭐ Bureau du Fondateur - Signature Exécutive")
+    str_app.subheader("⭐ Bureau du Fondateur - Direction Générale")
     col1, col2 = str_app.columns(2)
     col1.metric("Budget Global", f"{store['budget_global']:,.2f} €")
     col2.metric("Solde Disponible", f"{store['solde_restant']:,.2f} €")
@@ -376,10 +463,32 @@ elif profil["type"] == "fondateur":
     
     afficher_suivi_global()
     
-    with str_app.expander("📖 Journal d'Audit & Traçabilité Financière (Logs)"):
+    # VUE PANORAMIQUE SUR TOUS LES CAHIERS DES CHARGES
+    with str_app.expander("📚 **Vue Panoramique de TOUS les Cahiers des Charges de l'Entreprise**"):
+        if store["cahiers_charges"]:
+            for d_nom, docs in store["cahiers_charges"].items():
+                str_app.markdown(f"### Département : {d_nom}")
+                for doc in docs:
+                    str_app.markdown(f"- **{doc['titre']}** (Date : {doc['date']}) — Partagé avec : {', '.join(doc.get('destinataires_avis', []))}")
+        else:
+            str_app.info("Aucun cahier des charges enregistré pour le moment.")
+
+    # VUE SUR TOUS LES JOURNAUX DE BORD DES DÉPARTEMENTS
+    with str_app.expander("📖 **Journaux de Bord Quotidiens de TOUS les Départements**"):
+        if store["journaux_bord"]:
+            for d_nom, entrees in store["journaux_bord"].items():
+                str_app.markdown(f"### 🏢 {d_nom}")
+                for ent in reversed(entrees):
+                    str_app.markdown(f"> **[{ent['date']}] {ent['titre']}**\n> {ent['texte']}")
+                str_app.markdown("---")
+        else:
+            str_app.info("Aucune entrée dans les journaux de bord pour le moment.")
+
+    # JOURNAL D'AUDIT FINANCIER EXCLUSIF AU FONDATEUR
+    with str_app.expander("🔒 **Journal d'Audit & Traçabilité Financière (Accès Réservé Fondateur)**"):
         if store["logs_audit"]:
             str_app.dataframe(pd.DataFrame(store["logs_audit"]), use_container_width=True)
         else:
             str_app.write("Aucune activité enregistrée.")
     
-    afficher_espace_coordination(nom_dept)
+    afficher_espace_coordination_et_journal(nom_dept)
