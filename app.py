@@ -330,7 +330,7 @@ def generer_pdf(titre, texte_contenu, infos_complementaires=""):
 # ESPACE DE COORDINATION & JOURNAL DE BORD
 # ==========================================
 def afficher_espace_coordination_et_journal(nom_departement):
-    with str_app.expander("💬 **Espace de Notes & Réunions de Coordination (Fil partagé)**"):
+    with str_app.expander("💬 Espace de Notes & Réunions de Coordination (Fil partagé)"):
         with str_app.form(f"form_coord_{nom_departement}", clear_on_submit=True):
             texte_msg = str_app.text_input("Votre message / note de coordination")
             submit_msg = str_app.form_submit_button("Publier le message")
@@ -356,7 +356,7 @@ def afficher_espace_coordination_et_journal(nom_departement):
             for m in messages:
                 str_app.markdown(f"> **[{m[2]}] {m[0]}** : {m[1]}")
 
-    with str_app.expander(f"📔 **Journal de Bord Quotidien ({nom_departement})**"):
+    with str_app.expander(f"📔 Journal de Bord Quotidien ({nom_departement})"):
         str_app.write("Consignez ici vos notes, avancements et points quotidiens au jour le jour.")
         with str_app.form(f"form_journal_{nom_departement}", clear_on_submit=True):
             titre_j = str_app.text_input("Titre de l'entrée du jour")
@@ -396,7 +396,7 @@ def afficher_espace_coordination_et_journal(nom_departement):
 def afficher_suivi_global():
     if profil["type"] in ["achats", "finance", "fondateur"]:
         str_app.markdown("---")
-        with str_app.expander("📊 **Tableau de Suivi Global de TOUTES les Demandes**"):
+        with str_app.expander("📊 Tableau de Suivi Global de TOUTES les Demandes"):
             conn = get_db_connection()
             df_global = pd.read_sql_query("SELECT id, departement, titre, montant, fournisseur, statut, date FROM demandes", conn)
             conn.close()
@@ -617,7 +617,7 @@ if profil["type"] == "standard":
 elif profil["type"] == "achats":
     str_app.subheader("🛒 Achats - Sourcing, Chiffrage & Cahiers des Charges")
     
-    with str_app.expander("📊 **Consulter l'état du Budget Global & Solde**"):
+    with str_app.expander("📊 Consulter l'état du Budget Global & Solde"):
         col1, col2 = str_app.columns(2)
         col1.metric("Budget Global", f"{budget_global:,.2f} €")
         col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
@@ -660,7 +660,7 @@ elif profil["type"] == "achats":
                                 if action_achats == "Valider & Transmettre Finance" and montant_chiffre > 0:
                                     cursor.execute('''
                                         UPDATE demandes 
-                                        SET fournisseur = ?, montant = ?, avis_achats = 'Validé', etape_actuelle = 'finance', statut = 'En attente Finance'
+                                        SET fournisseur = ?, montant = ?, avis_achats = 'Validé', avis_finance = 'En attente', etape_actuelle = 'finance', statut = 'En attente Finance'
                                         WHERE id = ?
                                     ''', (fournisseur_choisi, montant_chiffre, d_id))
                                     conn.commit()
@@ -695,7 +695,7 @@ elif profil["type"] == "achats":
 elif profil["type"] == "finance":
     str_app.subheader("💰 Finance - Contrôle Budgétaire & Cahiers des Charges")
     
-    with str_app.expander("📊 **Consulter l'état du Budget Global & Solde**"):
+    with str_app.expander("📊 Consulter l'état du Budget Global & Solde"):
         col1, col2 = str_app.columns(2)
         col1.metric("Budget Global", f"{budget_global:,.2f} €")
         col2.metric("Solde Actuel", f"{solde_restant:,.2f} €")
@@ -771,7 +771,7 @@ elif profil["type"] == "finance":
 elif profil["type"] == "fondateur":
     str_app.subheader("Direction Générale - Validation & Signature Exécutive")
     
-    with str_app.expander("📊 **Consulter l'état du Budget Global & Solde**"):
+    with str_app.expander("📊 Consulter l'état du Budget Global & Solde"):
         col1, col2 = str_app.columns(2)
         col1.metric("Budget Global", f"{budget_global:,.2f} €")
         col2.metric("Solde Actuel", f"{solde_restant:,.2f} €")
@@ -846,7 +846,7 @@ elif profil["type"] == "fondateur":
 
 # --- MODULE AUDIT ---
 str_app.markdown("---")
-with str_app.expander("🔍 **Registre d'Audit & Traçabilité (Réservé)**"):
+with str_app.expander("🔍 Registre d'Audit & Traçabilité (Réservé)"):
     if profil["type"] in ["achats", "finance", "fondateur"]:
         conn = get_db_connection()
         df_logs = pd.read_sql_query("SELECT date, acteur, action, details FROM logs_audit ORDER BY id DESC", conn)
