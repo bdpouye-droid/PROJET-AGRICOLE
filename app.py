@@ -14,6 +14,19 @@ str_app.set_page_config(
     layout="wide"
 )
 
+# --- STYLE CSS GLOBAL & DESIGN MODERNE ---
+str_app.markdown("""
+    <style>
+    .stButton>button {
+        border-radius: 8px;
+        font-weight: bold;
+    }
+    .stTextInput>div>div>input, .stTextArea>div>div>textarea {
+        border-radius: 6px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # --- ACTUALISATION AUTOMATIQUE ---
 st_autorefresh(interval=5000, key="datarefreshcounter")
 
@@ -22,7 +35,6 @@ def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False)
     cursor = conn.cursor()
     
-    # Table pour les variables globales (budget, solde)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS global_store (
             key TEXT PRIMARY KEY,
@@ -30,7 +42,6 @@ def init_db():
         )
     ''')
     
-    # Table pour les demandes
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS demandes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +59,6 @@ def init_db():
         )
     ''')
     
-    # Table pour les cahiers des charges
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cahiers_charges (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,7 +70,6 @@ def init_db():
         )
     ''')
     
-    # Table pour les messages de coordination
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS messages_coordination (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,7 +79,6 @@ def init_db():
         )
     ''')
     
-    # Table pour les journaux de bord
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS journaux_bord (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +90,6 @@ def init_db():
         )
     ''')
     
-    # Table pour les logs d'audit
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS logs_audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,7 +100,6 @@ def init_db():
         )
     ''')
     
-    # Initialiser les valeurs globales par défaut si elles n'existent pas
     cursor.execute("SELECT value FROM global_store WHERE key = 'budget_global'")
     if not cursor.fetchone():
         cursor.execute("INSERT INTO global_store (key, value) VALUES ('budget_global', ?)", (str(10000000.0),))
@@ -104,7 +110,6 @@ def init_db():
 
 init_db()
 
-# Fonctions d'accès à la base de données
 def get_db_connection():
     return sqlite3.connect("database.db", check_same_thread=False)
 
@@ -151,12 +156,7 @@ UTILISATEURS = {
     "fondateur": {"nom": "Fondateur / Direction Générale", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
 }
 
-# --- GESTION DE LA CONNEXION (SIDEBAR) ---
-try:
-    str_app.sidebar.image("logo.png", use_container_width=True)
-except Exception:
-    pass
-
+# --- GESTION DE LA CONNEXION (SIDEBAR ÉPURÉE) ---
 str_app.sidebar.title("🏢 Bureau d'Études")
 str_app.sidebar.markdown("---")
 
@@ -165,53 +165,81 @@ if 'user_connecte' not in str_app.session_state:
 
 if str_app.session_state.user_connecte is None:
     str_app.sidebar.subheader("Connexion Collaborateur")
-    username = str_app.sidebar.text_input("Identifiant (ex: DEP1, DEP11, fondateur)")
+    username = str_app.sidebar.text_input("Identifiant")
     password = str_app.sidebar.text_input("Mot de passe", type="password")
     
     if str_app.sidebar.button("Se connecter"):
-        if username in UTILISATEURS and UTILISATEURS[username]["mdp"] == password:
-            str_app.session_state.user_connecte = username
-            ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
-            str_app.rerun()
-        else:
-            str_app.sidebar.error("Identifiant ou mot de passe incorrect.")
+        with str_app.spinner("Connexion en cours..."):
+            if username in UTILISATEURS and UTILISATEURS[username]["mdp"] == password:
+                str_app.session_state.user_connecte = username
+                ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
+                str_app.rerun()
+            else:
+                str_app.sidebar.error("Identifiant ou mot de passe incorrect.")
     str_app.stop()
 else:
     infos_user = UTILISATEURS[str_app.session_state.user_connecte]
     str_app.sidebar.success(f"Connecté en tant que :\n**{infos_user['nom']}**")
     str_app.sidebar.markdown("---")
     
-    # RESTRICTION : Le bouton Reset n'apparaît que pour le Fondateur
     if str_app.session_state.user_connecte == "fondateur":
         if str_app.sidebar.button("🔄 Réinitialiser l'application (Reset)"):
-            budget_init = get_valeur_globale("budget_global")
-            set_valeur_globale("solde_restant", budget_init)
-            
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM demandes")
-            cursor.execute("DELETE FROM cahiers_charges")
-            cursor.execute("DELETE FROM messages_coordination")
-            cursor.execute("DELETE FROM journaux_bord")
-            cursor.execute("DELETE FROM logs_audit")
-            conn.commit()
-            conn.close()
-            
-            ajouter_log("Réinitialisation", infos_user['nom'], "Base de données remise à zéro")
-            str_app.success("Application réinitialisée à zéro !")
-            str_app.rerun()
+            with str_app.spinner("Réinitialisation de l'application..."):
+                budget_init = get_valeur_globale("budget_global")
+                set_valeur_globale("solde_restant", budget_init)
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM demandes")
+                cursor.execute("DELETE FROM cahiers_charges")
+                cursor.execute("DELETE FROM messages_coordination")
+                cursor.execute("DELETE FROM journaux_bord")
+                cursor.execute("DELETE FROM logs_audit")
+                conn.commit()
+                conn.close()
+                
+                ajouter_log("Réinitialisation", infos_user['nom'], "Base de données remise à zéro")
+                str_app.success("Application réinitialisée à zéro !")
+                str_app.rerun()
         str_app.sidebar.markdown("---")
 
     if str_app.sidebar.button("Se déconnecter"):
-        ajouter_log("Déconnexion", infos_user['nom'], "Déconnexion de l'utilisateur")
-        str_app.session_state.user_connecte = None
-        str_app.rerun()
+        with str_app.spinner("Déconnexion..."):
+            ajouter_log("Déconnexion", infos_user['nom'], "Déconnexion de l'utilisateur")
+            str_app.session_state.user_connecte = None
+            str_app.rerun()
 
 user_key = str_app.session_state.user_connecte
 profil = UTILISATEURS[user_key]
 nom_dept = profil["dept"]
 
 str_app.title(f"Tableau de Bord - {profil['nom']}")
+
+# --- BANNIÈRES DE NOTIFICATIONS DÈS LA CONNEXION ---
+conn_notif = get_db_connection()
+cursor_notif = conn_notif.cursor()
+if profil["type"] == "achats":
+    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
+    nb_pending = cursor_notif.fetchone()[0]
+    if nb_pending > 0:
+        str_app.warning(f"⚠️ Vous avez **{nb_pending}** demande(s) en attente de chiffrage et de sourcing.")
+elif profil["type"] == "finance":
+    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
+    nb_pending = cursor_notif.fetchone()[0]
+    if nb_pending > 0:
+        str_app.warning(f"⚠️ Vous avez **{nb_pending}** demande(s) en attente de contrôle budgétaire.")
+elif profil["type"] == "fondateur":
+    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'fondateur'")
+    nb_pending = cursor_notif.fetchone()[0]
+    if nb_pending > 0:
+        str_app.warning(f"⭐ Vous avez **{nb_pending}** dossier(s) en attente de signature exécutive.")
+elif profil["type"] == "standard":
+    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE departement = ? AND statut LIKE '%Refusé%'", (nom_dept,))
+    nb_refus = cursor_notif.fetchone()[0]
+    if nb_refus > 0:
+        str_app.error(f"❌ Vous avez **{nb_refus}** demande(s) refusée(s) ou nécessitant une modification.")
+conn_notif.close()
+
 str_app.markdown("---")
 
 
@@ -243,20 +271,21 @@ def generer_pdf(titre, texte_contenu, infos_complementaires=""):
 # ESPACE DE COORDINATION & JOURNAL DE BORD PERSONNEL
 # ==========================================
 def afficher_espace_coordination_et_journal(nom_departement):
-    with str_app.expander("💬 **Espace de Notes & Réunions de Coordination (Partagé)**"):
+    with str_app.expander("💬 **Espace de Notes & Réunions de Coordination (Fil partagé)**"):
         with str_app.form(f"form_coord_{nom_departement}", clear_on_submit=True):
             texte_msg = str_app.text_input("Votre message / note de coordination")
             submit_msg = str_app.form_submit_button("Publier le message")
             if submit_msg and texte_msg:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT INTO messages_coordination (auteur, texte, date) VALUES (?, ?, ?)",
-                    (nom_departement, texte_msg, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                )
-                conn.commit()
-                conn.close()
-                str_app.rerun()
+                with str_app.spinner("Publication du message..."):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO messages_coordination (auteur, texte, date) VALUES (?, ?, ?)",
+                        (nom_departement, texte_msg, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                    )
+                    conn.commit()
+                    conn.close()
+                    str_app.rerun()
         
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -276,16 +305,17 @@ def afficher_espace_coordination_et_journal(nom_departement):
             submit_j = str_app.form_submit_button("Ajouter au journal")
             
             if submit_j and titre_j and texte_j:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT INTO journaux_bord (departement, titre, texte, auteur, date) VALUES (?, ?, ?, ?, ?)",
-                    (nom_departement, titre_j, texte_j, nom_departement, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                )
-                conn.commit()
-                conn.close()
-                str_app.success("Entrée enregistrée dans votre journal de bord !")
-                str_app.rerun()
+                with str_app.spinner("Enregistrement au journal..."):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO journaux_bord (departement, titre, texte, auteur, date) VALUES (?, ?, ?, ?, ?)",
+                        (nom_departement, titre_j, texte_j, nom_departement, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                    )
+                    conn.commit()
+                    conn.close()
+                    str_app.success("Entrée enregistrée dans votre journal de bord !")
+                    str_app.rerun()
         
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -302,27 +332,29 @@ def afficher_espace_coordination_et_journal(nom_departement):
 
 
 # ==========================================
-# VUE GLOBALE ET LISIBLE DES DEMANDES
+# VUE GLOBALE ET LISIBLE DES DEMANDES (RESTREINTE)
 # ==========================================
 def afficher_suivi_global():
-    str_app.markdown("---")
-    with str_app.expander("📊 **Tableau de Suivi Global de TOUTES les Demandes**"):
-        conn = get_db_connection()
-        df_global = pd.read_sql_query("SELECT id, departement, titre, montant, fournisseur, statut, date FROM demandes", conn)
-        conn.close()
-        
-        if not df_global.empty:
-            str_app.dataframe(
-                df_global, 
-                use_container_width=True,
-                column_config={
-                    "statut": str_app.column_config.TextColumn("Statut Actuel", width="large"),
-                    "titre": str_app.column_config.TextColumn("Titre de la demande", width="medium"),
-                    "fournisseur": str_app.column_config.TextColumn("Fournisseur", width="medium")
-                }
-            )
-        else:
-            str_app.info("Aucune demande enregistrée.")
+    # Restriction : Seuls Achats, Finance et Fondateur ont accès au tableau de bord budgétaire global
+    if profil["type"] in ["achats", "finance", "fondateur"]:
+        str_app.markdown("---")
+        with str_app.expander("📊 **Tableau de Suivi Global de TOUTES les Demandes**"):
+            conn = get_db_connection()
+            df_global = pd.read_sql_query("SELECT id, departement, titre, montant, fournisseur, statut, date FROM demandes", conn)
+            conn.close()
+            
+            if not df_global.empty:
+                str_app.dataframe(
+                    df_global, 
+                    use_container_width=True,
+                    column_config={
+                        "statut": str_app.column_config.TextColumn("Statut Actuel", width="large"),
+                        "titre": str_app.column_config.TextColumn("Titre de la demande", width="medium"),
+                        "fournisseur": str_app.column_config.TextColumn("Fournisseur", width="medium")
+                    }
+                )
+            else:
+                str_app.info("Aucune demande enregistrée.")
 
 
 # ==========================================
@@ -341,18 +373,19 @@ def afficher_module_cahiers_charges(nom_departement):
         
         if submit_cc:
             if titre_doc and contenu_doc:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT INTO cahiers_charges (departement, titre, contenu, date, destinataires_avis) VALUES (?, ?, ?, ?, ?)",
-                    (nom_departement, titre_doc, contenu_doc, datetime.now().strftime("%Y-%m-%d"), json.dumps(destinataires_avis))
-                )
-                conn.commit()
-                conn.close()
-                
-                ajouter_log("Création Cahier des Charges", nom_departement, f"Titre: {titre_doc}")
-                str_app.success(f"Document enregistré et partagé avec {len(destinataires_avis)} département(s) !")
-                str_app.rerun()
+                with str_app.spinner("Enregistrement et partage du document..."):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO cahiers_charges (departement, titre, contenu, date, destinataires_avis) VALUES (?, ?, ?, ?, ?)",
+                        (nom_departement, titre_doc, contenu_doc, datetime.now().strftime("%Y-%m-%d"), json.dumps(destinataires_avis))
+                    )
+                    conn.commit()
+                    conn.close()
+                    
+                    ajouter_log("Création Cahier des Charges", nom_departement, f"Titre: {titre_doc}")
+                    str_app.success(f"Document enregistré et partagé avec {len(destinataires_avis)} département(s) !")
+                    str_app.rerun()
     
     str_app.markdown("### 📁 Mes documents")
     conn = get_db_connection()
@@ -420,23 +453,24 @@ def afficher_trois_modules(nom_departement):
             submit_besoin = str_app.form_submit_button("Transmettre le besoin aux Achats")
             if submit_besoin:
                 if titre_besoin and desc_besoin:
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        nom_departement, titre_besoin, desc_besoin, 0.0,
-                        fournisseur_suggere if fournisseur_suggere else "À sourcer",
-                        "En attente Achats", "achats", "En attente", "En attente", "",
-                        datetime.now().strftime("%Y-%m-%d %H:%M")
-                    ))
-                    conn.commit()
-                    conn.close()
-                    
-                    ajouter_log("Nouvelle Demande", nom_departement, f"Demande - {titre_besoin}")
-                    str_app.success("Besoin transmis avec succès ! Le formulaire a été réinitialisé.")
-                    str_app.rerun()
+                    with str_app.spinner("Transmission du besoin en cours..."):
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                            INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            nom_departement, titre_besoin, desc_besoin, 0.0,
+                            fournisseur_suggere if fournisseur_suggere else "À sourcer",
+                            "En attente Achats", "achats", "En attente", "En attente", "",
+                            datetime.now().strftime("%Y-%m-%d %H:%M")
+                        ))
+                        conn.commit()
+                        conn.close()
+                        
+                        ajouter_log("Nouvelle Demande", nom_departement, f"Demande - {titre_besoin}")
+                        str_app.success("Besoin transmis avec succès ! Le formulaire a été réinitialisé.")
+                        str_app.rerun()
 
     with tab3:
         str_app.subheader("Suivi et Modification de vos demandes")
@@ -463,19 +497,20 @@ def afficher_trois_modules(nom_departement):
                             nouveau_fournisseur = str_app.text_input("Modifier le fournisseur", value=d_fourn)
                             
                             if str_app.form_submit_button("Soumettre à nouveau la demande modifiée"):
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                cursor.execute('''
-                                    UPDATE demandes 
-                                    SET titre = ?, cahier_charges = ?, fournisseur = ?, etape_actuelle = 'achats', avis_achats = 'En attente', statut = 'En attente Achats (Modifié)', motif_refus = ''
-                                    WHERE id = ?
-                                ''', (nouveau_titre, nouvelles_specs, nouveau_fournisseur, d_id))
-                                conn.commit()
-                                conn.close()
-                                
-                                ajouter_log("Modification & Resoumission", nom_departement, f"Demande #{d_id} modifiée et relancée")
-                                str_app.success("Demande modifiée et transmise de nouveau aux Achats !")
-                                str_app.rerun()
+                                with str_app.spinner("Mise à jour et ré-soumission..."):
+                                    conn = get_db_connection()
+                                    cursor = conn.cursor()
+                                    cursor.execute('''
+                                        UPDATE demandes 
+                                        SET titre = ?, cahier_charges = ?, fournisseur = ?, etape_actuelle = 'achats', avis_achats = 'En attente', statut = 'En attente Achats (Modifié)', motif_refus = ''
+                                        WHERE id = ?
+                                    ''', (nouveau_titre, nouvelles_specs, nouveau_fournisseur, d_id))
+                                    conn.commit()
+                                    conn.close()
+                                    
+                                    ajouter_log("Modification & Resoumission", nom_departement, f"Demande #{d_id} modifiée et relancée")
+                                    str_app.success("Demande modifiée et transmise de nouveau aux Achats !")
+                                    str_app.rerun()
         else:
             str_app.info("Aucune demande en cours.")
 
@@ -519,34 +554,35 @@ elif profil["type"] == "achats":
                     motif = str_app.text_input("Motif obligatoire en cas de refus / blocage")
                     
                     if str_app.form_submit_button("Valider la décision"):
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        if action_achats == "Valider & Transmettre Finance" and montant_chiffre > 0:
-                            cursor.execute('''
-                                UPDATE demandes 
-                                SET fournisseur = ?, montant = ?, avis_achats = 'Validé', etape_actuelle = 'finance', statut = 'En attente Finance'
-                                WHERE id = ?
-                            ''', (fournisseur_choisi, montant_chiffre, d_id))
-                            conn.commit()
-                            conn.close()
-                            ajouter_log("Validation Achats", "Achats", f"Demande #{d_id} chiffrée à {montant_chiffre}€")
-                            str_app.rerun()
-                        elif "Refus" in action_achats:
-                            if not motif:
-                                str_app.error("Veuillez saisir un motif pour justifier le refus.")
-                                conn.close()
-                            else:
-                                etape_suivante = "bloque" if action_achats == "Refus définitif (Bloqué)" else "modification"
-                                statut_suivi = "Refusé définitivement par les Achats" if action_achats == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
+                        with str_app.spinner("Traitement de la décision Achats..."):
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            if action_achats == "Valider & Transmettre Finance" and montant_chiffre > 0:
                                 cursor.execute('''
                                     UPDATE demandes 
-                                    SET avis_achats = 'Refusé', motif_refus = ?, etape_actuelle = ?, statut = ?
+                                    SET fournisseur = ?, montant = ?, avis_achats = 'Validé', etape_actuelle = 'finance', statut = 'En attente Finance'
                                     WHERE id = ?
-                                ''', (motif, etape_suivante, statut_suivi, d_id))
+                                ''', (fournisseur_choisi, montant_chiffre, d_id))
                                 conn.commit()
                                 conn.close()
-                                ajouter_log("Refus Achats", "Achats", f"Demande #{d_id} refusée. Motif : {motif}")
+                                ajouter_log("Validation Achats", "Achats", f"Demande #{d_id} chiffrée à {montant_chiffre}€")
                                 str_app.rerun()
+                            elif "Refus" in action_achats:
+                                if not motif:
+                                    str_app.error("Veuillez saisir un motif pour justifier le refus.")
+                                    conn.close()
+                                else:
+                                    etape_suivante = "bloque" if action_achats == "Refus définitif (Bloqué)" else "modification"
+                                    statut_suivi = "Refusé définitivement par les Achats" if action_achats == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
+                                    cursor.execute('''
+                                        UPDATE demandes 
+                                        SET avis_achats = 'Refusé', motif_refus = ?, etape_actuelle = ?, statut = ?
+                                        WHERE id = ?
+                                    ''', (motif, etape_suivante, statut_suivi, d_id))
+                                    conn.commit()
+                                    conn.close()
+                                    ajouter_log("Refus Achats", "Achats", f"Demande #{d_id} refusée. Motif : {motif}")
+                                    str_app.rerun()
     else:
         str_app.info("Aucun besoin en attente de chiffrage.")
     
@@ -576,34 +612,35 @@ elif profil["type"] == "finance":
                         avis = str_app.radio("Avis Financier", ["Valider & Transmettre Fondateur", "Refus définitif (Bloqué)", "Refusé avec demande de modification"])
                         motif_fin = str_app.text_input("Motif obligatoire en cas de refus")
                         if str_app.form_submit_button("Valider la décision"):
-                            conn = get_db_connection()
-                            cursor = conn.cursor()
-                            if avis == "Valider & Transmettre Fondateur":
-                                cursor.execute('''
-                                    UPDATE demandes 
-                                    SET avis_finance = 'Validé', etape_actuelle = 'fondateur', statut = 'Prêt pour Signature Finale'
-                                    WHERE id = ?
-                                ''', (d_id,))
-                                conn.commit()
-                                conn.close()
-                                ajouter_log("Validation Finance", "Finance", f"Budget validé pour la demande #{d_id}")
-                                str_app.rerun()
-                            else:
-                                if not motif_fin:
-                                    str_app.error("Veuillez saisir un motif.")
-                                    conn.close()
-                                else:
-                                    etape_suivante = "bloque" if avis == "Refus définitif (Bloqué)" else "modification"
-                                    statut_suivi = "Refusé par la Finance" if avis == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
+                            with str_app.spinner("Traitement de la décision Finance..."):
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                if avis == "Valider & Transmettre Fondateur":
                                     cursor.execute('''
                                         UPDATE demandes 
-                                        SET avis_finance = 'Refusé', motif_refus = ?, etape_actuelle = ?, statut = ?
+                                        SET avis_finance = 'Validé', etape_actuelle = 'fondateur', statut = 'Prêt pour Signature Finale'
                                         WHERE id = ?
-                                    ''', (motif_fin, etape_suivante, statut_suivi, d_id))
+                                    ''', (d_id,))
                                     conn.commit()
                                     conn.close()
-                                    ajouter_log("Refus Finance", "Finance", f"Demande #{d_id} refusée. Motif : {motif_fin}")
+                                    ajouter_log("Validation Finance", "Finance", f"Budget validé pour la demande #{d_id}")
                                     str_app.rerun()
+                                else:
+                                    if not motif_fin:
+                                        str_app.error("Veuillez saisir un motif.")
+                                        conn.close()
+                                    else:
+                                        etape_suivante = "bloque" if avis == "Refus définitif (Bloqué)" else "modification"
+                                        statut_suivi = "Refusé par la Finance" if avis == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
+                                        cursor.execute('''
+                                            UPDATE demandes 
+                                            SET avis_finance = 'Refusé', motif_refus = ?, etape_actuelle = ?, statut = ?
+                                            WHERE id = ?
+                                        ''', (motif_fin, etape_suivante, statut_suivi, d_id))
+                                        conn.commit()
+                                        conn.close()
+                                        ajouter_log("Refus Finance", "Finance", f"Demande #{d_id} refusée. Motif : {motif_fin}")
+                                        str_app.rerun()
         else:
             str_app.info("Aucune demande en attente d'avis financier.")
             
@@ -641,45 +678,46 @@ elif profil["type"] == "fondateur":
                     motif_fondateur = str_app.text_input("Motif obligatoire en cas de refus / blocage")
                     
                     if str_app.form_submit_button("Valider la décision exécutive"):
-                        if action_fondateur == "Signer & Décaisser":
-                            if solde_restant >= d_montant:
-                                nouveau_solde = solde_restant - d_montant
-                                set_valeur_globale("solde_restant", nouveau_solde)
-                                
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                cursor.execute('''
-                                    UPDATE demandes 
-                                    SET etape_actuelle = 'termine', statut = 'Signé & Exécuté par le Fondateur'
-                                    WHERE id = ?
-                                ''', (d_id,))
-                                conn.commit()
-                                conn.close()
-                                
-                                ajouter_log("Signature Fondateur", "Fondateur", f"Décaissement de {d_montant}€ pour la demande #{d_id}")
-                                str_app.success("Décaissé avec succès !")
-                                str_app.rerun()
+                        with str_app.spinner("Traitement de la décision exécutive..."):
+                            if action_fondateur == "Signer & Décaisser":
+                                if solde_restant >= d_montant:
+                                    nouveau_solde = solde_restant - d_montant
+                                    set_valeur_globale("solde_restant", nouveau_solde)
+                                    
+                                    conn = get_db_connection()
+                                    cursor = conn.cursor()
+                                    cursor.execute('''
+                                        UPDATE demandes 
+                                        SET etape_actuelle = 'termine', statut = 'Signé & Exécuté par le Fondateur'
+                                        WHERE id = ?
+                                    ''', (d_id,))
+                                    conn.commit()
+                                    conn.close()
+                                    
+                                    ajouter_log("Signature Fondateur", "Fondateur", f"Décaissement de {d_montant}€ pour la demande #{d_id}")
+                                    str_app.success("Décaissé avec succès !")
+                                    str_app.rerun()
+                                else:
+                                    str_app.error("Solde insuffisant pour décaisser ce montant.")
                             else:
-                                str_app.error("Solde insuffisant pour décaisser ce montant.")
-                        else:
-                            if not motif_fondateur:
-                                str_app.error("Veuillez saisir un motif pour justifier le refus de la direction.")
-                            else:
-                                etape_suivante = "bloque" if action_fondateur == "Refus définitif (Bloqué)" else "modification"
-                                statut_suivi = "Refusé définitivement par le Fondateur" if action_fondateur == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
-                                
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                cursor.execute('''
-                                    UPDATE demandes 
-                                    SET motif_refus = ?, etape_actuelle = ?, statut = ?
-                                    WHERE id = ?
-                                ''', (motif_fondateur, etape_suivante, statut_suivi, d_id))
-                                conn.commit()
-                                conn.close()
-                                
-                                ajouter_log("Refus Fondateur", "Fondateur", f"Demande #{d_id} refusée par la Direction. Motif : {motif_fondateur}")
-                                str_app.rerun()
+                                if not motif_fondateur:
+                                    str_app.error("Veuillez saisir un motif pour justifier le refus de la direction.")
+                                else:
+                                    etape_suivante = "bloque" if action_fondateur == "Refus définitif (Bloqué)" else "modification"
+                                    statut_suivi = "Refusé définitivement par le Fondateur" if action_fondateur == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
+                                    
+                                    conn = get_db_connection()
+                                    cursor = conn.cursor()
+                                    cursor.execute('''
+                                        UPDATE demandes 
+                                        SET motif_refus = ?, etape_actuelle = ?, statut = ?
+                                        WHERE id = ?
+                                    ''', (motif_fondateur, etape_suivante, statut_suivi, d_id))
+                                    conn.commit()
+                                    conn.close()
+                                    
+                                    ajouter_log("Refus Fondateur", "Fondateur", f"Demande #{d_id} refusée par la Direction. Motif : {motif_fondateur}")
+                                    str_app.rerun()
     else:
         str_app.info("Aucun dossier en attente de signature.")
     
@@ -693,7 +731,6 @@ elif profil["type"] == "fondateur":
         conn.close()
         
         if tous_cc:
-            # Regrouper par département
             dict_cc = {}
             for item in tous_cc:
                 d_n, t_titre, t_date, t_dest = item
