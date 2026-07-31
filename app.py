@@ -6,6 +6,7 @@ from io import BytesIO
 from fpdf import FPDF
 import sqlite3
 import json
+import os
 
 # --- CONFIGURATION DE LA PAGE ---
 str_app.set_page_config(
@@ -13,6 +14,17 @@ str_app.set_page_config(
     page_icon="🏢",
     layout="wide"
 )
+
+# --- DOSSIERS POUR LES FICHIERS ET LE LOGO ---
+DOSSIER_UPLOADS = "uploads_devis"
+if not os.path.exists(DOSSIER_UPLOADS):
+    os.makedirs(DOSSIER_UPLOADS)
+
+DOSSIER_ASSETS = "assets"
+if not os.path.exists(DOSSIER_ASSETS):
+    os.makedirs(DOSSIER_ASSETS)
+
+CHEMIN_LOGO = os.path.join(DOSSIER_ASSETS, "logo.png")
 
 # --- STYLE CSS GLOBAL & DESIGN MODERNE ---
 str_app.markdown("""
@@ -55,7 +67,8 @@ def init_db():
             avis_achats TEXT,
             avis_finance TEXT,
             motif_refus TEXT,
-            date TEXT
+            date TEXT,
+            fichier_devis TEXT
         )
     ''')
     
@@ -243,19 +256,36 @@ conn_notif.close()
 str_app.markdown("---")
 
 
-# --- FONCTION PDF ---
+# --- FONCTION PDF AVEC INTÉGRATION DU LOGO EN DUR ---
 def generer_pdf(titre, texte_contenu, infos_complementaires=""):
     pdf = FPDF()
     pdf.add_page()
     
-    pdf.set_font("Arial", "B", 14)
-    pdf.multi_cell(0, 8, txt=titre, align="C")
-    pdf.ln(5)
+    # Insertion automatique du logo s'il est présent dans assets/logo.png
+    if os.path.exists(CHEMIN_LOGO):
+        try:
+            pdf.image(CHEMIN_LOGO, 10, 10, 25)
+        except Exception:
+            pass
+            
+    # En-tête Bureau d'Études
+    pdf.set_font("Arial", "B", 15)
+    pdf.cell(0, 10, txt="BUREAU D'ÉTUDES - DIRECTION GÉNÉRALE", ln=True, align="C")
+    pdf.set_font("Arial", "I", 10)
+    pdf.cell(0, 6, txt="Document Officiel de Validation & Traçabilité", ln=True, align="C")
+    pdf.ln(8)
+    pdf.line(10, 32, 200, 32)
+    pdf.ln(8)
+    
+    # Titre du document
+    pdf.set_font("Arial", "B", 13)
+    pdf.multi_cell(0, 8, txt=titre, align="L")
+    pdf.ln(4)
     
     if infos_complementaires:
-        pdf.set_font("Arial", "I", 11)
+        pdf.set_font("Arial", "I", 10)
         pdf.multi_cell(0, 6, txt=infos_complementaires)
-        pdf.ln(8)
+        pdf.ln(6)
         
     pdf.set_font("Arial", "", 11)
     pdf.multi_cell(0, 6, txt=texte_contenu)
@@ -403,7 +433,7 @@ def afficher_module_cahiers_charges(nom_departement):
                 str_app.write(doc_contenu)
                 pdf_io = generer_pdf(f"Cahier des Charges\n{doc_titre}", doc_contenu, f"Département: {nom_departement}\nDate: {doc_date}")
                 colA, colB = str_app.columns([1,1])
-                colA.download_button("📥 PDF", data=pdf_io, file_name=f"cc_{doc_id}.pdf", mime="application/pdf", key=f"pdf_{nom_departement}_{doc_id}")
+                colA.download_button("📥 Télécharger PDF Officiel", data=pdf_io, file_name=f"cc_{doc_id}.pdf", mime="application/pdf", key=f"pdf_{nom_departement}_{doc_id}")
                 if colB.button("🗑️ Supprimer", key=f"del_cc_{nom_departement}_{doc_id}"):
                     conn = get_db_connection()
                     cursor = conn.cursor()
@@ -426,7 +456,7 @@ def afficher_module_cahiers_charges(nom_departement):
             with str_app.expander(f"📬 De [{d_nom}] : {doc_titre}"):
                 str_app.write(doc_contenu)
                 pdf_recu = generer_pdf(f"{doc_titre}", doc_contenu, f"Émetteur: {d_nom}")
-                str_app.download_button("📥 PDF", data=pdf_recu, file_name=f"recu_{doc_id}.pdf", mime="application/pdf", key=f"recu_{d_nom}_{doc_id}")
+                str_app.download_button("📥 Télécharger PDF Officiel", data=pdf_recu, file_name=f"recu_{doc_id}.pdf", mime="application/pdf", key=f"recu_{d_nom}_{doc_id}")
 
 
 # ==========================================
@@ -443,48 +473,65 @@ def afficher_trois_modules(nom_departement):
         afficher_module_cahiers_charges(nom_departement)
 
     with tab2:
-        str_app.subheader("Exprimer un besoin / Demande d'achat")
-        with str_app.form(f"form_besoin_{nom_departement}", clear_on_submit=True):
-            titre_besoin = str_app.text_input("Intitulé de la demande")
-            desc_besoin = str_app.text_area("Spécifications techniques")
-            fournisseur_suggere = str_app.text_input("Fournisseur pressenti (optionnel)")
-            
-            submit_besoin = str_app.form_submit_button("Transmettre le besoin aux Achats")
-            if submit_besoin:
-                if titre_besoin and desc_besoin:
-                    with str_app.spinner("Transmission du besoin en cours..."):
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        cursor.execute('''
-                            INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            nom_departement, titre_besoin, desc_besoin, 0.0,
-                            fournisseur_suggere if fournisseur_suggere else "À sourcer",
-                            "En attente Achats", "achats", "En attente", "En attente", "",
-                            datetime.now().strftime("%Y-%m-%d %H:%M")
-                        ))
-                        conn.commit()
-                        conn.close()
-                        
-                        ajouter_log("Nouvelle Demande", nom_departement, f"Demande - {titre_besoin}")
-                        str_app.success("Besoin transmis avec succès ! Le formulaire a été réinitialisé.")
-                        str_app.rerun()
+        str_app.subheader("Exprimer un besoin / Demande d'achat avec Devis Externe")
+        
+        titre_besoin = str_app.text_input("Intitulé de la demande")
+        desc_besoin = str_app.text_area("Spécifications techniques")
+        fournisseur_suggere = str_app.text_input("Fournisseur pressenti (optionnel)")
+        fich_devis = str_app.file_uploader("📥 Importer un devis ou justificatif externe (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
+        
+        if str_app.button("Transmettre le besoin aux Achats"):
+            if titre_besoin and desc_besoin:
+                with str_app.spinner("Transmission du besoin et du fichier en cours..."):
+                    nom_fichier_sauve = ""
+                    if fich_devis is not None:
+                        nom_fichier_sauve = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{fich_devis.name}"
+                        chemin_complet = os.path.join(DOSSIER_UPLOADS, nom_fichier_sauve)
+                        with open(chemin_complet, "wb") as f:
+                            f.write(f_devis.getbuffer())
+                    
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        nom_departement, titre_besoin, desc_besoin, 0.0,
+                        fournisseur_suggere if fournisseur_suggere else "À sourcer",
+                        "En attente Achats", "achats", "En attente", "En attente", "",
+                        datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_sauve
+                    ))
+                    conn.commit()
+                    conn.close()
+                    
+                    ajouter_log("Nouvelle Demande", nom_departement, f"Demande - {titre_besoin}")
+                    str_app.success("Besoin transmis avec succès avec son document joint !")
+                    str_app.rerun()
+            else:
+                str_app.error("Veuillez remplir l'intitulé et les spécifications.")
 
     with tab3:
         str_app.subheader("Suivi et Modification de vos demandes")
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, titre, cahier_charges, fournisseur, statut, motif_refus FROM demandes WHERE departement = ?", (nom_departement,))
+        cursor.execute("SELECT id, titre, cahier_charges, fournisseur, statut, motif_refus, fichier_devis FROM demandes WHERE departement = ?", (nom_departement,))
         mes_demandes = cursor.fetchall()
         conn.close()
         
         if mes_demandes:
             for d in mes_demandes:
-                d_id, d_titre, d_cc, d_fourn, d_statut, d_motif = d
+                d_id, d_titre, d_cc, d_fourn, d_statut, d_motif, d_fich = d
                 with str_app.expander(f"Demande #{d_id} : {d_titre} — Statut : {d_statut}"):
                     str_app.write(f"**Spécifications :** {d_cc}")
                     str_app.write(f"**Fournisseur :** {d_fourn}")
+                    
+                    if d_fich:
+                        str_app.success(f"📎 Devis externe joint : {d_fich}")
+                        chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
+                        if os.path.exists(chemin_f):
+                            with open(chemin_f, "rb") as file_download:
+                                str_app.download_button("📥 Télécharger le devis importé", data=file_download, file_name=d_fich, key=f"dl_fich_{d_id}")
+                    
                     if d_motif:
                         str_app.error(f"❌ **Motif du refus / demande de modification :** {d_motif}")
                     
@@ -532,23 +579,29 @@ elif profil["type"] == "achats":
     col1.metric("Budget Global", f"{budget_global:,.2f} €")
     col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
     
-    # Onglets pour les Achats (File d'attente ET Cahiers des charges)
     tab_ach1, tab_ach2 = str_app.tabs(["1. File d'attente & Chiffrage", "2. Cahiers des Charges (Achats)"])
     
     with tab_ach1:
         str_app.markdown("---")
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, departement, titre, cahier_charges, fournisseur FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
+        cursor.execute("SELECT id, departement, titre, cahier_charges, fournisseur, fichier_devis FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
         demandes_achats = cursor.fetchall()
         conn.close()
         
         if demandes_achats:
             for d in demandes_achats:
-                d_id, d_dept, d_titre, d_cc, d_fourn = d
+                d_id, d_dept, d_titre, d_cc, d_fourn, d_fich = d
                 with str_app.expander(f"Besoin #{d_id} - {d_titre} (Par : {d_dept})"):
                     str_app.write(f"**Spécifications :** {d_cc}")
                     str_app.info(f"💡 **Fournisseur pressenti par le demandeur :** {d_fourn}")
+                    
+                    if d_fich:
+                        str_app.success(f"📎 Devis externe fourni : {d_fich}")
+                        chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
+                        if os.path.exists(chemin_f):
+                            with open(chemin_f, "rb") as file_download:
+                                str_app.download_button("📥 Consulter le devis externe", data=file_download, file_name=d_fich, key=f"dl_achats_{d_id}")
                     
                     with str_app.form(f"form_achats_{d_id}"):
                         fournisseur_choisi = str_app.text_input("Confirmer ou modifier le fournisseur", value=d_fourn if d_fourn != "À sourcer" else "")
@@ -606,14 +659,21 @@ elif profil["type"] == "finance":
     with tab_fin1:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, departement, titre, montant FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
+        cursor.execute("SELECT id, departement, titre, montant, fichier_devis FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
         demandes_finance = cursor.fetchall()
         conn.close()
         
         if demandes_finance:
             for d in demandes_finance:
-                d_id, d_dept, d_titre, d_montant = d
+                d_id, d_dept, d_titre, d_montant, d_fich = d
                 with str_app.expander(f"Demande #{d_id} - {d_titre} | {d_montant} € (Par : {d_dept})"):
+                    if d_fich:
+                        str_app.success(f"📎 Devis externe joint : {d_fich}")
+                        chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
+                        if os.path.exists(chemin_f):
+                            with open(chemin_f, "rb") as file_download:
+                                str_app.download_button("📥 Consulter le devis externe", data=file_download, file_name=d_fich, key=f"dl_fin_{d_id}")
+                                
                     with str_app.form(f"form_fin_{d_id}"):
                         avis = str_app.radio("Avis Financier", ["Valider & Transmettre Fondateur", "Refus définitif (Bloqué)", "Refusé avec demande de modification"])
                         motif_fin = str_app.text_input("Motif obligatoire en cas de refus")
@@ -664,16 +724,26 @@ elif profil["type"] == "fondateur":
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, departement, titre, montant, fournisseur, cahier_charges FROM demandes WHERE etape_actuelle = 'fondateur'")
+    cursor.execute("SELECT id, departement, titre, montant, fournisseur, cahier_charges, fichier_devis FROM demandes WHERE etape_actuelle = 'fondateur'")
     demandes_fondateur = cursor.fetchall()
     conn.close()
     
     if demandes_fondateur:
         for d in demandes_fondateur:
-            d_id, d_dept, d_titre, d_montant, d_fourn, d_cc = d
+            d_id, d_dept, d_titre, d_montant, d_fourn, d_cc, d_fich = d
             with str_app.expander(f"Dossier #{d_id} - {d_titre} | {d_montant} € ({d_dept})"):
                 str_app.write(f"🛒 **Fournisseur :** {d_fourn}")
                 str_app.write(f"📝 **Spécifications :** {d_cc}")
+                
+                if d_fich:
+                    str_app.success(f"📎 Devis externe joint : {d_fich}")
+                    chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
+                    if os.path.exists(chemin_f):
+                        with open(chemin_f, "rb") as file_download:
+                            str_app.download_button("📥 Consulter le devis externe", data=file_download, file_name=d_fich, key=f"dl_fonde_{d_id}")
+                
+                pdf_dossier = generer_pdf(f"Bon de Commande & Validation\nDossier #{d_id} : {d_titre}", f"Département demandeur: {d_dept}\nFournisseur: {d_fourn}\nMontant: {d_montant} EUR\n\nSpécifications:\n{d_cc}", "Validé et Signé par la Direction Générale")
+                str_app.download_button("📥 Télécharger le Bon de Commande Officiel (PDF)", data=pdf_dossier, file_name=f"bon_commande_{d_id}.pdf", mime="application/pdf", key=f"pdf_cmd_{d_id}")
                 
                 with str_app.form(f"form_fondateur_{d_id}"):
                     action_fondateur = str_app.radio("Décision de la Direction", [
