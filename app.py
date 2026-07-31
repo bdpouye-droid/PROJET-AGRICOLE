@@ -23,8 +23,8 @@ if 'global_store' not in str_app.session_state:
         "demandes": [],
         "cahiers_charges": {}, 
         "messages_coordination": [],
-        "journaux_bord": {}, # NOUVEAU : Journal de bord par département
-        "logs_audit": []     # Réservé au Fondateur
+        "journaux_bord": {},
+        "logs_audit": []
     }
 
 store = str_app.session_state.global_store
@@ -37,7 +37,7 @@ def ajouter_log(action, acteur, details):
         "details": details
     })
 
-# --- DICTIONNAIRE DES UTILISATEURS & RÔLES (15 COLLABORATEURS / DÉPARTEMENTS) ---
+# --- DICTIONNAIRE DES UTILISATEURS & RÔLES ---
 UTILISATEURS = {
     "DEP1": {"nom": "Agriculture", "mdp": "DEP123", "type": "standard", "dept": "Agriculture"},
     "DEP2": {"nom": "Élevage & Halieutique", "mdp": "DEP123", "type": "standard", "dept": "Élevage & Halieutique"},
@@ -137,7 +137,6 @@ def generer_pdf(titre, texte_contenu, infos_complementaires=""):
 # ESPACE DE COORDINATION & JOURNAL DE BORD PERSONNEL
 # ==========================================
 def afficher_espace_coordination_et_journal(nom_departement):
-    # Fil de coordination partagé
     with str_app.expander("💬 **Espace de Notes & Réunions de Coordination (Partagé)**"):
         with str_app.form(f"form_coord_{nom_departement}", clear_on_submit=True):
             texte_msg = str_app.text_input("Votre message / note de coordination")
@@ -154,7 +153,6 @@ def afficher_espace_coordination_et_journal(nom_departement):
             for m in reversed(store["messages_coordination"]):
                 str_app.markdown(f"> **[{m['date']}] {m['auteur']}** : {m['texte']}")
 
-    # NOUVEAU : Journal de bord personnel et quotidien du département
     with str_app.expander(f"📔 **Journal de Bord Quotidien ({nom_departement})**"):
         str_app.write("Consignez ici vos notes, avancements et points quotidiens au jour le jour.")
         with str_app.form(f"form_journal_{nom_departement}", clear_on_submit=True):
@@ -204,7 +202,7 @@ def afficher_suivi_global():
 
 
 # ==========================================
-# MODULES : CAHIERS DES CHARGES (Standard & Finance)
+# MODULES : CAHIERS DES CHARGES
 # ==========================================
 def afficher_module_cahiers_charges(nom_departement):
     str_app.subheader("Rédiger et partager un cahier des charges")
@@ -311,7 +309,6 @@ def afficher_trois_modules(nom_departement):
                     if d.get('motif_refus'):
                         str_app.error(f"❌ **Motif du refus / demande de modification :** {d['motif_refus']}")
                     
-                    # Si refusé avec demande de modification, l'initiateur peut modifier et resoumettre
                     if d['statut'] == "Refusé avec demande de modification":
                         str_app.info("Vous pouvez modifier votre demande ci-dessous et la soumettre à nouveau.")
                         with str_app.form(f"form_modif_{d['id']}"):
@@ -450,20 +447,46 @@ elif profil["type"] == "fondateur":
         for d in demandes_fondateur:
             with str_app.expander(f"Dossier #{d['id']} - {d['titre']} | {d['montant']} € ({d['departement']})"):
                 str_app.write(f"🛒 **Fournisseur :** {d['fournisseur']}")
-                if str_app.button(f"Signer et Décaisser #{d['id']}", key=f"btn_sign_{d['id']}"):
-                    if store['solde_restant'] >= d['montant']:
-                        store['solde_restant'] -= d['montant']
-                        d['etape_actuelle'] = "termine"
-                        d['statut'] = "Signé & Exécuté par le Fondateur"
-                        ajouter_log("Signature Fondateur", "Fondateur", f"Décaissement de {d['montant']}€ pour la demande #{d['id']}")
-                        str_app.success("Décaissé avec succès !")
-                        str_app.rerun()
+                str_app.write(f"📝 **Spécifications :** {d['cahier_charges']}")
+                
+                # NOUVEAU : Formulaire complet pour le Fondateur (Signer OU Refuser/Bloquer/Demander modification)
+                with str_app.form(f"form_fondateur_{d['id']}"):
+                    action_fondateur = str_app.radio("Décision de la Direction", [
+                        "Signer & Décaisser", 
+                        "Refus définitif (Bloqué)", 
+                        "Refusé avec demande de modification"
+                    ])
+                    motif_fondateur = str_app.text_input("Motif obligatoire en cas de refus / blocage")
+                    
+                    if str_app.form_submit_button("Valider la décision exécutive"):
+                        if action_fondateur == "Signer & Décaisser":
+                            if store['solde_restant'] >= d['montant']:
+                                store['solde_restant'] -= d['montant']
+                                d['etape_actuelle'] = "termine"
+                                d['statut'] = "Signé & Exécuté par le Fondateur"
+                                ajouter_log("Signature Fondateur", "Fondateur", f"Décaissement de {d['montant']}€ pour la demande #{d['id']}")
+                                str_app.success("Décaissé avec succès !")
+                                str_app.rerun()
+                            else:
+                                str_app.error("Solde insuffisant pour décaisser ce montant.")
+                        else:
+                            if not motif_fondateur:
+                                str_app.error("Veuillez saisir un motif pour justifier le refus de la direction.")
+                            else:
+                                d['motif_refus'] = motif_fondateur
+                                if action_fondateur == "Refus définitif (Bloqué)":
+                                    d['etape_actuelle'] = "bloque"
+                                    d['statut'] = "Refusé définitivement par le Fondateur"
+                                else:
+                                    d['etape_actuelle'] = "modification"
+                                    d['statut'] = "Refusé avec demande de modification"
+                                ajouter_log("Refus Fondateur", "Fondateur", f"Demande #{d['id']} refusée par la Direction. Motif : {motif_fondateur}")
+                                str_app.rerun()
     else:
         str_app.info("Aucun dossier en attente de signature.")
     
     afficher_suivi_global()
     
-    # VUE PANORAMIQUE SUR TOUS LES CAHIERS DES CHARGES
     with str_app.expander("📚 **Vue Panoramique de TOUS les Cahiers des Charges de l'Entreprise**"):
         if store["cahiers_charges"]:
             for d_nom, docs in store["cahiers_charges"].items():
@@ -473,7 +496,6 @@ elif profil["type"] == "fondateur":
         else:
             str_app.info("Aucun cahier des charges enregistré pour le moment.")
 
-    # VUE SUR TOUS LES JOURNAUX DE BORD DES DÉPARTEMENTS
     with str_app.expander("📖 **Journaux de Bord Quotidiens de TOUS les Départements**"):
         if store["journaux_bord"]:
             for d_nom, entrees in store["journaux_bord"].items():
@@ -484,7 +506,6 @@ elif profil["type"] == "fondateur":
         else:
             str_app.info("Aucune entrée dans les journaux de bord pour le moment.")
 
-    # JOURNAL D'AUDIT FINANCIER EXCLUSIF AU FONDATEUR
     with str_app.expander("🔒 **Journal d'Audit & Traçabilité Financière (Accès Réservé Fondateur)**"):
         if store["logs_audit"]:
             str_app.dataframe(pd.DataFrame(store["logs_audit"]), use_container_width=True)
