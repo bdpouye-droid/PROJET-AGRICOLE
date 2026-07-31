@@ -20,11 +20,8 @@ DOSSIER_UPLOADS = "uploads_devis"
 if not os.path.exists(DOSSIER_UPLOADS):
     os.makedirs(DOSSIER_UPLOADS)
 
-DOSSIER_ASSETS = "assets"
-if not os.path.exists(DOSSIER_ASSETS):
-    os.makedirs(DOSSIER_ASSETS)
-
-CHEMIN_LOGO = os.path.join(DOSSIER_ASSETS, "logo.png")
+# Le logo est directement à la racine du projet
+CHEMIN_LOGO = "logo.png"
 
 # --- STYLE CSS GLOBAL & DESIGN MODERNE ---
 str_app.markdown("""
@@ -169,7 +166,13 @@ UTILISATEURS = {
     "fondateur": {"nom": "Fondateur / Direction Générale", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
 }
 
-# --- GESTION DE LA CONNEXION (SIDEBAR ÉPURÉE) ---
+# --- GESTION DE LA CONNEXION (SIDEBAR AVEC LOGO) ---
+if os.path.exists(CHEMIN_LOGO):
+    try:
+        str_app.sidebar.image(CHEMIN_LOGO, width=120)
+    except Exception:
+        pass
+
 str_app.sidebar.title("🏢 Bureau d'Études")
 str_app.sidebar.markdown("---")
 
@@ -256,12 +259,12 @@ conn_notif.close()
 str_app.markdown("---")
 
 
-# --- FONCTION PDF AVEC INTÉGRATION DU LOGO EN DUR ---
+# --- FONCTION PDF AVEC INTÉGRATION DU LOGO ---
 def generer_pdf(titre, texte_contenu, infos_complementaires=""):
     pdf = FPDF()
     pdf.add_page()
     
-    # Insertion automatique du logo s'il est présent dans assets/logo.png
+    # Insertion automatique du logo en haut du PDF s'il est présent
     if os.path.exists(CHEMIN_LOGO):
         try:
             pdf.image(CHEMIN_LOGO, 10, 10, 25)
