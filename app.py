@@ -85,16 +85,19 @@ else:
     str_app.sidebar.success(f"Connecté en tant que :\n**{infos_user['nom']}**")
     str_app.sidebar.markdown("---")
     
-    if str_app.sidebar.button("🔄 Réinitialiser l'application (Reset)"):
-        store["solde_restant"] = store["budget_global"]
-        store["demandes"] = []
-        store["cahiers_charges"] = {}
-        store["messages_coordination"] = []
-        store["journaux_bord"] = {}
-        store["logs_audit"] = []
-        ajouter_log("Réinitialisation", infos_user['nom'], "Base de données remise à zéro")
-        str_app.success("Application réinitialisée à zéro !")
-        str_app.rerun()
+    # RESTRICTION : Le bouton Reset n'apparaît que pour le Fondateur
+    if str_app.session_state.user_connecte == "fondateur":
+        if str_app.sidebar.button("🔄 Réinitialiser l'application (Reset)"):
+            store["solde_restant"] = store["budget_global"]
+            store["demandes"] = []
+            store["cahiers_charges"] = {}
+            store["messages_coordination"] = []
+            store["journaux_bord"] = {}
+            store["logs_audit"] = []
+            ajouter_log("Réinitialisation", infos_user['nom'], "Base de données remise à zéro")
+            str_app.success("Application réinitialisée à zéro !")
+            str_app.rerun()
+        str_app.sidebar.markdown("---")
 
     if str_app.sidebar.button("Se déconnecter"):
         ajouter_log("Déconnexion", infos_user['nom'], "Déconnexion de l'utilisateur")
@@ -449,7 +452,6 @@ elif profil["type"] == "fondateur":
                 str_app.write(f"🛒 **Fournisseur :** {d['fournisseur']}")
                 str_app.write(f"📝 **Spécifications :** {d['cahier_charges']}")
                 
-                # NOUVEAU : Formulaire complet pour le Fondateur (Signer OU Refuser/Bloquer/Demander modification)
                 with str_app.form(f"form_fondateur_{d['id']}"):
                     action_fondateur = str_app.radio("Décision de la Direction", [
                         "Signer & Décaisser", 
