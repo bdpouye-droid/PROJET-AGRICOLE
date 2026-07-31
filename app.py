@@ -335,7 +335,6 @@ def afficher_espace_coordination_et_journal(nom_departement):
 # VUE GLOBALE ET LISIBLE DES DEMANDES (RESTREINTE)
 # ==========================================
 def afficher_suivi_global():
-    # Restriction : Seuls Achats, Finance et Fondateur ont accès au tableau de bord budgétaire global
     if profil["type"] in ["achats", "finance", "fondateur"]:
         str_app.markdown("---")
         with str_app.expander("📊 **Tableau de Suivi Global de TOUTES les Demandes**"):
@@ -528,64 +527,71 @@ if profil["type"] == "standard":
     afficher_espace_coordination_et_journal(nom_dept)
 
 elif profil["type"] == "achats":
-    str_app.subheader("🛒 Achats - Sourcing & Chiffrage")
+    str_app.subheader("🛒 Achats - Sourcing, Chiffrage & Cahiers des Charges")
     col1, col2 = str_app.columns(2)
     col1.metric("Budget Global", f"{budget_global:,.2f} €")
     col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
     
-    str_app.markdown("---")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, departement, titre, cahier_charges, fournisseur FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
-    demandes_achats = cursor.fetchall()
-    conn.close()
+    # Onglets pour les Achats (File d'attente ET Cahiers des charges)
+    tab_ach1, tab_ach2 = str_app.tabs(["1. File d'attente & Chiffrage", "2. Cahiers des Charges (Achats)"])
     
-    if demandes_achats:
-        for d in demandes_achats:
-            d_id, d_dept, d_titre, d_cc, d_fourn = d
-            with str_app.expander(f"Besoin #{d_id} - {d_titre} (Par : {d_dept})"):
-                str_app.write(f"**Spécifications :** {d_cc}")
-                str_app.info(f"💡 **Fournisseur pressenti par le demandeur :** {d_fourn}")
-                
-                with str_app.form(f"form_achats_{d_id}"):
-                    fournisseur_choisi = str_app.text_input("Confirmer ou modifier le fournisseur", value=d_fourn if d_fourn != "À sourcer" else "")
-                    montant_chiffre = str_app.number_input("Montant exact (€)", min_value=0.0, step=100.0)
-                    action_achats = str_app.radio("Décision", ["Valider & Transmettre Finance", "Refus définitif (Bloqué)", "Refusé avec demande de modification"], key=f"a_achats_{d_id}")
-                    motif = str_app.text_input("Motif obligatoire en cas de refus / blocage")
+    with tab_ach1:
+        str_app.markdown("---")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, departement, titre, cahier_charges, fournisseur FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
+        demandes_achats = cursor.fetchall()
+        conn.close()
+        
+        if demandes_achats:
+            for d in demandes_achats:
+                d_id, d_dept, d_titre, d_cc, d_fourn = d
+                with str_app.expander(f"Besoin #{d_id} - {d_titre} (Par : {d_dept})"):
+                    str_app.write(f"**Spécifications :** {d_cc}")
+                    str_app.info(f"💡 **Fournisseur pressenti par le demandeur :** {d_fourn}")
                     
-                    if str_app.form_submit_button("Valider la décision"):
-                        with str_app.spinner("Traitement de la décision Achats..."):
-                            conn = get_db_connection()
-                            cursor = conn.cursor()
-                            if action_achats == "Valider & Transmettre Finance" and montant_chiffre > 0:
-                                cursor.execute('''
-                                    UPDATE demandes 
-                                    SET fournisseur = ?, montant = ?, avis_achats = 'Validé', etape_actuelle = 'finance', statut = 'En attente Finance'
-                                    WHERE id = ?
-                                ''', (fournisseur_choisi, montant_chiffre, d_id))
-                                conn.commit()
-                                conn.close()
-                                ajouter_log("Validation Achats", "Achats", f"Demande #{d_id} chiffrée à {montant_chiffre}€")
-                                str_app.rerun()
-                            elif "Refus" in action_achats:
-                                if not motif:
-                                    str_app.error("Veuillez saisir un motif pour justifier le refus.")
-                                    conn.close()
-                                else:
-                                    etape_suivante = "bloque" if action_achats == "Refus définitif (Bloqué)" else "modification"
-                                    statut_suivi = "Refusé définitivement par les Achats" if action_achats == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
+                    with str_app.form(f"form_achats_{d_id}"):
+                        fournisseur_choisi = str_app.text_input("Confirmer ou modifier le fournisseur", value=d_fourn if d_fourn != "À sourcer" else "")
+                        montant_chiffre = str_app.number_input("Montant exact (€)", min_value=0.0, step=100.0)
+                        action_achats = str_app.radio("Décision", ["Valider & Transmettre Finance", "Refus définitif (Bloqué)", "Refusé avec demande de modification"], key=f"a_achats_{d_id}")
+                        motif = str_app.text_input("Motif obligatoire en cas de refus / blocage")
+                        
+                        if str_app.form_submit_button("Valider la décision"):
+                            with str_app.spinner("Traitement de la décision Achats..."):
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                if action_achats == "Valider & Transmettre Finance" and montant_chiffre > 0:
                                     cursor.execute('''
                                         UPDATE demandes 
-                                        SET avis_achats = 'Refusé', motif_refus = ?, etape_actuelle = ?, statut = ?
+                                        SET fournisseur = ?, montant = ?, avis_achats = 'Validé', etape_actuelle = 'finance', statut = 'En attente Finance'
                                         WHERE id = ?
-                                    ''', (motif, etape_suivante, statut_suivi, d_id))
+                                    ''', (fournisseur_choisi, montant_chiffre, d_id))
                                     conn.commit()
                                     conn.close()
-                                    ajouter_log("Refus Achats", "Achats", f"Demande #{d_id} refusée. Motif : {motif}")
+                                    ajouter_log("Validation Achats", "Achats", f"Demande #{d_id} chiffrée à {montant_chiffre}€")
                                     str_app.rerun()
-    else:
-        str_app.info("Aucun besoin en attente de chiffrage.")
-    
+                                elif "Refus" in action_achats:
+                                    if not motif:
+                                        str_app.error("Veuillez saisir un motif pour justifier le refus.")
+                                        conn.close()
+                                    else:
+                                        etape_suivante = "bloque" if action_achats == "Refus définitif (Bloqué)" else "modification"
+                                        statut_suivi = "Refusé définitivement par les Achats" if action_achats == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
+                                        cursor.execute('''
+                                            UPDATE demandes 
+                                            SET avis_achats = 'Refusé', motif_refus = ?, etape_actuelle = ?, statut = ?
+                                            WHERE id = ?
+                                        ''', (motif, etape_suivante, statut_suivi, d_id))
+                                        conn.commit()
+                                        conn.close()
+                                        ajouter_log("Refus Achats", "Achats", f"Demande #{d_id} refusée. Motif : {motif}")
+                                        str_app.rerun()
+        else:
+            str_app.info("Aucun besoin en attente de chiffrage.")
+            
+    with tab_ach2:
+        afficher_module_cahiers_charges(nom_dept)
+
     afficher_suivi_global()
     afficher_espace_coordination_et_journal(nom_dept)
 
