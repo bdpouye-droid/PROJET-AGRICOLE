@@ -2,6 +2,8 @@ import streamlit as str_app
 import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
+from io import BytesIO
+from fpdf import FPDF
 
 # --- CONFIGURATION DE LA PAGE ---
 str_app.set_page_config(
@@ -43,11 +45,11 @@ UTILISATEURS = {
     "fondateur": {"nom": "Fondateur / Direction Générale", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
 }
 
-# --- GESTION DE LA CONNEXION & LOGO (SIDEBAR) ---
+# --- GESTION DU LOGO & CONNEXION (SIDEBAR) ---
 try:
     str_app.sidebar.image("logo.png", use_container_width=True)
 except Exception:
-    pass
+    pass # Si pas de logo.png sur GitHub, l'application continue sans bloquer
 
 str_app.sidebar.title("🏢 Bureau d'Études")
 str_app.sidebar.markdown("---")
@@ -91,6 +93,27 @@ nom_dept = profil["dept"]
 str_app.title(f"Tableau de Bord - {profil['nom']}")
 str_app.markdown("---")
 
+# --- FONCTION DE GÉNÉRATION DE PDF ---
+def generer_pdf(titre, texte_contenu, infos_complementaires=""):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, titre, 0, 1, "C")
+    pdf.ln(10)
+    
+    if infos_complementaires:
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(0, 8, infos_complementaires, 0, 1, "L")
+        pdf.ln(5)
+        
+    pdf.set_font("Arial", "", 11)
+    # Utilisation de multi_cell pour gérer les retours à la ligne propres
+    pdf.multi_cell(0, 8, texte_contenu)
+    
+    # Sortie bytes pour le bouton Streamlit
+    return pdf.output(dest='S').encode('latin1')
+
+
 # ==========================================
 # ESPACE DE COORDINATION PARTAGÉ (Commun à tous)
 # ==========================================
@@ -130,7 +153,7 @@ def afficher_trois_modules(nom_departement):
     tab1, tab2, tab3 = str_app.tabs([
         "1. Cahiers des Charges & Projets (Avis & Partage)", 
         "2. Expression des Besoins (Sans Montant)", 
-        "3. Suivi & État des Demandes (Suppression)"
+        "3. Suivi & État des Demandes (Suppression & PDF)"
     ])
     
     liste_tous_depts = [u["dept"] for u in UTILISATEURS.values()]
@@ -166,10 +189,19 @@ def afficher_trois_modules(nom_departement):
         str_app.markdown("### 📁 Mes documents enregistrés")
         if nom_departement in store["cahiers_charges"] and store["cahiers_charges"][nom_departement]:
             for idx, doc in enumerate(store["cahiers_charges"][nom_departement]):
-                col1, col2 = str_app.columns([5, 1])
+                col1, col2 = str_app.columns([4, 1])
                 with col1:
                     with str_app.expander(f"Doc #{doc.get('id', idx+1)} : {doc['titre']} (Partagé avec : {doc.get('destinataire_avis', 'Interne')})"):
                         str_app.write(doc['contenu'])
+                        # Bouton de téléchargement PDF pour le Cahier des Charges
+                        pdf_bytes = generer_pdf(f"Cahier des Charges - {doc['titre']}", doc['contenu'], f"Departement: {nom_departement} | Date: {doc['date']}")
+                        str_app.download_button(
+                            label="📥 Télécharger en PDF",
+                            data=pdf_bytes,
+                            file_name=f"cahier_des_charges_{doc['id']}.pdf",
+                            mime="application/pdf",
+                            key=f"pdf_cc_{nom_departement}_{idx}"
+                        )
                 with col2:
                     if str_app.button(f"Supprimer", key=f"del_cc_{nom_departement}_{idx}"):
                         store["cahiers_charges"][nom_departement].pop(idx)
@@ -191,6 +223,14 @@ def afficher_trois_modules(nom_departement):
             for d_expediteur, doc in documents_recus:
                 with str_app.expander(f"📬 De [{d_expediteur}] : {doc['titre']} (Date: {doc['date']})"):
                     str_app.write(doc['contenu'])
+                    pdf_bytes_recu = generer_pdf(f"Avis demande - {doc['titre']}", doc['contenu'], f"Emetteur: {d_expediteur} | Destinataire avis: {nom_departement}")
+                    str_app.download_button(
+                        label="📥 Télécharger ce document en PDF",
+                        data=pdf_bytes_recu,
+                        file_name=f"avis_{doc['titre']}.pdf",
+                        mime="application/pdf",
+                        key=f"pdf_recu_{d_expediteur}_{doc['id']}"
+                    )
         else:
             str_app.info("Aucun document partagé pour avis à votre intention.")
 
@@ -227,23 +267,35 @@ def afficher_trois_modules(nom_departement):
                     str_app.error("Veuillez renseigner le titre et les spécifications.")
 
     with tab3:
-        str_app.subheader("Suivi de vos demandes & Suppression")
+        str_app.subheader("Suivi de vos demandes, Suppression & Téléchargement PDF")
         mes_demandes = [d for d in store["demandes"] if d["departement"] == nom_departement]
         if mes_demandes:
             df_mes_demandes = pd.DataFrame(mes_demandes)
             str_app.dataframe(df_mes_demandes[["id", "titre", "montant", "fournisseur", "statut", "date"]], use_container_width=True)
             
             str_app.markdown("---")
-            str_app.markdown("### 🗑️ Supprimer une demande")
             for d in mes_demandes:
-                col_a, col_b = str_app.columns([4, 1])
-                col_a.write(f"**Demande #{d['id']}** : {d['titre']} (*{d['statut']}*)")
-                if col_b.button(f"Supprimer #{d['id']}", key=f"del_{d['id']}"):
-                    if d['etape_actuelle'] == "termine" and d['montant'] > 0:
-                        store["solde_restant"] += d['montant']
-                    store["demandes"] = [item for item in store["demandes"] if item['id'] != d['id']]
-                    str_app.success(f"Demande #{d['id']} supprimée !")
-                    str_app.rerun()
+                with str_app.expander(f"Demande #{d['id']} : {d['titre']} - Statut : {d['statut']}"):
+                    str_app.write(f"**Spécifications :** {d['cahier_charges']}")
+                    str_app.write(f"**Montant :** {d['montant']:,.2f} € | **Fournisseur :** {d['fournisseur']}")
+                    
+                    # Bouton PDF de la demande
+                    texte_pdf = f"Demande ID: {d['id']}\nTitre: {d['titre']}\nDepartement: {d['departement']}\nStatut: {d['statut']}\nMontant: {d['montant']} EUR\nFournisseur: {d['fournisseur']}\n\nSpecifications:\n{d['cahier_charges']}"
+                    pdf_demande = generer_pdf(f"Bon de Demande d'Achat #{d['id']}", texte_pdf, f"Date: {d['date']}")
+                    str_app.download_button(
+                        label="📄 Télécharger la demande en PDF",
+                        data=pdf_demande,
+                        file_name=f"demande_achat_{d['id']}.pdf",
+                        mime="application/pdf",
+                        key=f"pdf_demande_{d['id']}"
+                    )
+                    
+                    if str_app.button(f"Supprimer la demande #{d['id']}", key=f"del_{d['id']}"):
+                        if d['etape_actuelle'] == "termine" and d['montant'] > 0:
+                            store["solde_restant"] += d['montant']
+                        store["demandes"] = [item for item in store["demandes"] if item['id'] != d['id']]
+                        str_app.success(f"Demande #{d['id']} supprimée !")
+                        str_app.rerun()
         else:
             str_app.info("Aucune demande enregistrée pour le moment.")
 
