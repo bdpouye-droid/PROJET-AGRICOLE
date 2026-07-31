@@ -22,15 +22,48 @@ if not os.path.exists(DOSSIER_UPLOADS):
 
 CHEMIN_LOGO = "logo.png"
 
-# --- STYLE CSS GLOBAL & DESIGN MODERNE ---
+# --- STYLE CSS DESIGN & MODERNE (SaaS Look) ---
 str_app.markdown("""
     <style>
-    .stButton>button {
-        border-radius: 8px;
-        font-weight: bold;
+    /* Style général et typographie */
+    .stApp {
+        background-color: #0e1117;
     }
+    
+    /* Boutons modernes avec effet de survol */
+    .stButton>button {
+        border-radius: 10px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 15px rgba(0, 150, 255, 0.25);
+        border-color: #1f6feb;
+    }
+    
+    /* Champs de texte élégants */
     .stTextInput>div>div>input, .stTextArea>div>div>textarea {
-        border-radius: 6px;
+        border-radius: 8px;
+        border: 1px solid #30363d;
+        background-color: #161b22;
+        color: #c9d1d9;
+    }
+    
+    /* Expander / Conteneurs repliables stylés */
+    .streamlit-expanderHeader {
+        background-color: #161b22;
+        border-radius: 8px;
+        border: 1px solid #30363d;
+        font-weight: 600;
+    }
+    
+    /* Métriques épurées */
+    div[data-testid="stMetricValue"] {
+        font-size: 1.8rem;
+        font-weight: 700;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -165,8 +198,12 @@ UTILISATEURS = {
     "fondateur": {"nom": "Fondateur / Direction Générale", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
 }
 
-# --- GESTION DE LA CONNEXION (SIDEBAR) ---
-str_app.sidebar.title("🏢 Bureau d'Études")
+# --- GESTION DE LA CONNEXION (SIDEBAR AVEC LOGO SÉCURISÉ) ---
+if os.path.exists(CHEMIN_LOGO):
+    str_app.sidebar.image(CHEMIN_LOGO, use_column_width=True)
+else:
+    str_app.sidebar.markdown("## 🏢 Bureau d'Études")
+
 str_app.sidebar.markdown("---")
 
 if 'user_connecte' not in str_app.session_state:
@@ -178,7 +215,7 @@ if str_app.session_state.user_connecte is None:
     password = str_app.sidebar.text_input("Mot de passe", type="password")
     
     if str_app.sidebar.button("Se connecter"):
-        with str_app.spinner("Connexion en cours..."):
+        with str_app.spinner("Vérification des accès..."):
             if username in UTILISATEURS and UTILISATEURS[username]["mdp"] == password:
                 str_app.session_state.user_connecte = username
                 ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
@@ -193,7 +230,7 @@ else:
     
     if str_app.session_state.user_connecte == "fondateur":
         if str_app.sidebar.button("🔄 Réinitialiser l'application (Reset)"):
-            with str_app.spinner("Réinitialisation de l'application..."):
+            with str_app.spinner("Réinitialisation complète..."):
                 budget_init = get_valeur_globale("budget_global")
                 set_valeur_globale("solde_restant", budget_init)
                 
@@ -213,7 +250,7 @@ else:
         str_app.sidebar.markdown("---")
 
     if str_app.sidebar.button("Se déconnecter"):
-        with str_app.spinner("Déconnexion..."):
+        with str_app.spinner("Déconnexion sécurisée..."):
             ajouter_log("Déconnexion", infos_user['nom'], "Déconnexion de l'utilisateur")
             str_app.session_state.user_connecte = None
             str_app.rerun()
@@ -298,7 +335,7 @@ def afficher_espace_coordination_et_journal(nom_departement):
             texte_msg = str_app.text_input("Votre message / note de coordination")
             submit_msg = str_app.form_submit_button("Publier le message")
             if submit_msg and texte_msg:
-                with str_app.spinner("Publication du message..."):
+                with str_app.spinner("Publication en cours..."):
                     conn = get_db_connection()
                     cursor = conn.cursor()
                     cursor.execute(
@@ -327,7 +364,7 @@ def afficher_espace_coordination_et_journal(nom_departement):
             submit_j = str_app.form_submit_button("Ajouter au journal")
             
             if submit_j and titre_j and texte_j:
-                with str_app.spinner("Enregistrement au journal..."):
+                with str_app.spinner("Enregistrement..."):
                     conn = get_db_connection()
                     cursor = conn.cursor()
                     cursor.execute(
@@ -394,7 +431,7 @@ def afficher_module_cahiers_charges(nom_departement):
         
         if submit_cc:
             if titre_doc and contenu_doc:
-                with str_app.spinner("Enregistrement et partage du document..."):
+                with str_app.spinner("Enregistrement et partage..."):
                     conn = get_db_connection()
                     cursor = conn.cursor()
                     cursor.execute(
@@ -467,13 +504,10 @@ def afficher_trois_modules(nom_departement):
     with tab2:
         str_app.subheader("Exprimer un besoin / Demande d'achat avec Justificatif Externe")
         
-        # Utilisation d'un st.form avec clear_on_submit=True pour vider automatiquement les champs après validation
         with str_app.form("form_expression_besoin", clear_on_submit=True):
             titre_besoin = str_app.text_input("Intitulé de la demande")
             desc_besoin = str_app.text_area("Spécifications techniques / Justificatif")
             fournisseur_suggere = str_app.text_input("Fournisseur pressenti (optionnel)")
-            
-            # Note : st.file_uploader géré dans un formulaire nécessite la validation du formulaire
             fich_devis = str_app.file_uploader("📥 Importer un devis ou justificatif externe (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
             
             submit_besoin = str_app.form_submit_button("Transmettre le besoin aux Achats")
@@ -531,7 +565,6 @@ def afficher_trois_modules(nom_departement):
                     if d_motif:
                         str_app.error(f"❌ **Motif du refus / demande de modification :** {d_motif}")
                     
-                    # Option d'annulation de la demande si elle n'est pas encore terminée ou déjà annulée
                     if d_statut not in ["Approuvé et Signé", "Annulé par le département"]:
                         if str_app.button(f"🚫 Annuler définitivement cette demande #{d_id}", key=f"btn_annuler_{d_id}"):
                             conn = get_db_connection()
@@ -551,7 +584,7 @@ def afficher_trois_modules(nom_departement):
                             nouveau_fournisseur = str_app.text_input("Modifier le fournisseur", value=d_fourn)
                             
                             if str_app.form_submit_button("Soumettre à nouveau la demande modifiée"):
-                                with str_app.spinner("Mise à jour et ré-soumission..."):
+                                with str_app.spinner("Mise à jour..."):
                                     conn = get_db_connection()
                                     cursor = conn.cursor()
                                     cursor.execute('''
@@ -619,7 +652,7 @@ elif profil["type"] == "achats":
                         motif = str_app.text_input("Motif obligatoire en cas de refus / blocage")
                         
                         if str_app.form_submit_button("Valider la décision"):
-                            with str_app.spinner("Traitement de la décision Achats..."):
+                            with str_app.spinner("Traitement en cours..."):
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
                                 if action_achats == "Valider & Transmettre Finance" and montant_chiffre > 0:
@@ -668,7 +701,6 @@ elif profil["type"] == "finance":
     with tab_fin1:
         conn = get_db_connection()
         cursor = conn.cursor()
-        # Contrôle complet : on récupère toutes les informations pour le département Finance
         cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, fichier_devis FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
         demandes_finance = cursor.fetchall()
         conn.close()
@@ -695,7 +727,7 @@ elif profil["type"] == "finance":
                         motif = str_app.text_input("Motif obligatoire en cas de refus / blocage")
                         
                         if str_app.form_submit_button("Valider la décision"):
-                            with str_app.spinner("Traitement de la décision Finance..."):
+                            with str_app.spinner("Traitement en cours..."):
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
                                 if action_finance == "Valider & Transmettre Direction":
@@ -743,7 +775,6 @@ elif profil["type"] == "fondateur":
     with tab_fond1:
         conn = get_db_connection()
         cursor = conn.cursor()
-        # Contrôle complet : on récupère toutes les informations pour la Direction Générale
         cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, fichier_devis FROM demandes WHERE etape_actuelle = 'fondateur'")
         demandes_finales = cursor.fetchall()
         conn.close()
@@ -770,7 +801,7 @@ elif profil["type"] == "fondateur":
                         motif = str_app.text_input("Motif en cas de rejet")
                         
                         if str_app.form_submit_button("Exécuter la décision"):
-                            with str_app.spinner("Traitement du dossier..."):
+                            with str_app.spinner("Signature en cours..."):
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
                                 if action_fondateur == "Signer et Approuver":
