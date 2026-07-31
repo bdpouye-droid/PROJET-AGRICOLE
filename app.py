@@ -20,7 +20,6 @@ DOSSIER_UPLOADS = "uploads_devis"
 if not os.path.exists(DOSSIER_UPLOADS):
     os.makedirs(DOSSIER_UPLOADS)
 
-# Le logo est directement à la racine du projet
 CHEMIN_LOGO = "logo.png"
 
 # --- STYLE CSS GLOBAL & DESIGN MODERNE ---
@@ -225,7 +224,7 @@ nom_dept = profil["dept"]
 
 str_app.title(f"Tableau de Bord - {profil['nom']}")
 
-# --- BANNIÈRES DE NOTIFICATIONS DÈS LA CONNEXION ---
+# --- BANNIÈRES DE NOTIFICATIONS ---
 conn_notif = get_db_connection()
 cursor_notif = conn_notif.cursor()
 if profil["type"] == "achats":
@@ -252,19 +251,17 @@ conn_notif.close()
 
 str_app.markdown("---")
 
-# --- FONCTION PDF AVEC INTÉGRATION DU LOGO ---
+# --- FONCTION PDF ---
 def generer_pdf(titre, texte_contenu, infos_complementaires=""):
     pdf = FPDF()
     pdf.add_page()
     
-    # Insertion automatique du logo en haut du PDF s'il est présent
     if os.path.exists(CHEMIN_LOGO):
         try:
             pdf.image(CHEMIN_LOGO, 10, 10, 25)
         except Exception:
             pass
             
-    # En-tête Bureau d'Études
     pdf.set_font("Arial", "B", 15)
     pdf.cell(0, 10, txt="BUREAU D'ÉTUDES - DIRECTION GÉNÉRALE", ln=True, align="C")
     pdf.set_font("Arial", "I", 10)
@@ -273,7 +270,6 @@ def generer_pdf(titre, texte_contenu, infos_complementaires=""):
     pdf.line(10, 32, 200, 32)
     pdf.ln(8)
     
-    # Titre du document
     pdf.set_font("Arial", "B", 13)
     pdf.multi_cell(0, 8, txt=titre, align="L")
     pdf.ln(4)
@@ -294,7 +290,7 @@ def generer_pdf(titre, texte_contenu, infos_complementaires=""):
 
 
 # ==========================================
-# ESPACE DE COORDINATION & JOURNAL DE BORD PERSONNEL
+# ESPACE DE COORDINATION & JOURNAL DE BORD
 # ==========================================
 def afficher_espace_coordination_et_journal(nom_departement):
     with str_app.expander("💬 **Espace de Notes & Réunions de Coordination (Fil partagé)**"):
@@ -358,7 +354,7 @@ def afficher_espace_coordination_et_journal(nom_departement):
 
 
 # ==========================================
-# VUE GLOBALE ET LISIBLE DES DEMANDES (RESTREINTE)
+# VUE GLOBALE ET LISIBLE DES DEMANDES
 # ==========================================
 def afficher_suivi_global():
     if profil["type"] in ["achats", "finance", "fondateur"]:
@@ -469,16 +465,21 @@ def afficher_trois_modules(nom_departement):
         afficher_module_cahiers_charges(nom_departement)
 
     with tab2:
-        str_app.subheader("Exprimer un besoin / Demande d'achat avec Devis Externe")
+        str_app.subheader("Exprimer un besoin / Demande d'achat avec Justificatif Externe")
         
-        titre_besoin = str_app.text_input("Intitulé de la demande")
-        desc_besoin = str_app.text_area("Spécifications techniques")
-        fournisseur_suggere = str_app.text_input("Fournisseur pressenti (optionnel)")
-        fich_devis = str_app.file_uploader("📥 Importer un devis ou justificatif externe (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
-        
-        if str_app.button("Transmettre le besoin aux Achats"):
-            if titre_besoin and desc_besoin:
-                with str_app.spinner("Transmission du besoin et du fichier en cours..."):
+        # Utilisation d'un st.form avec clear_on_submit=True pour vider automatiquement les champs après validation
+        with str_app.form("form_expression_besoin", clear_on_submit=True):
+            titre_besoin = str_app.text_input("Intitulé de la demande")
+            desc_besoin = str_app.text_area("Spécifications techniques / Justificatif")
+            fournisseur_suggere = str_app.text_input("Fournisseur pressenti (optionnel)")
+            
+            # Note : st.file_uploader géré dans un formulaire nécessite la validation du formulaire
+            fich_devis = str_app.file_uploader("📥 Importer un devis ou justificatif externe (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
+            
+            submit_besoin = str_app.form_submit_button("Transmettre le besoin aux Achats")
+            
+            if submit_besoin:
+                if titre_besoin and desc_besoin:
                     nom_fichier_sauve = ""
                     if fich_devis is not None:
                         nom_fichier_sauve = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{fich_devis.name}"
@@ -501,13 +502,12 @@ def afficher_trois_modules(nom_departement):
                     conn.close()
                     
                     ajouter_log("Nouvelle Demande", nom_departement, f"Demande - {titre_besoin}")
-                    str_app.success("Besoin transmis avec succès avec son document joint !")
-                    str_app.rerun()
-            else:
-                str_app.error("Veuillez remplir l'intitulé et les spécifications.")
+                    str_app.success("Besoin transmis avec succès ! Les champs ont été réinitialisés.")
+                else:
+                    str_app.error("Veuillez remplir l'intitulé et les spécifications.")
 
     with tab3:
-        str_app.subheader("Suivi et Modification de vos demandes")
+        str_app.subheader("Suivi, Modification et Annulation de vos demandes")
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, titre, cahier_charges, fournisseur, statut, motif_refus, fichier_devis FROM demandes WHERE departement = ?", (nom_departement,))
@@ -522,15 +522,27 @@ def afficher_trois_modules(nom_departement):
                     str_app.write(f"**Fournisseur :** {d_fourn}")
                     
                     if d_fich:
-                        str_app.success(f"📎 Devis externe joint : {d_fich}")
+                        str_app.success(f"📎 Fichier/Devis externe joint : {d_fich}")
                         chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
                         if os.path.exists(chemin_f):
                             with open(chemin_f, "rb") as file_download:
-                                str_app.download_button("📥 Télécharger le devis importé", data=file_download, file_name=d_fich, key=f"dl_fich_{d_id}")
+                                str_app.download_button("📥 Télécharger le document joint", data=file_download, file_name=d_fich, key=f"dl_fich_{d_id}")
                     
                     if d_motif:
                         str_app.error(f"❌ **Motif du refus / demande de modification :** {d_motif}")
                     
+                    # Option d'annulation de la demande si elle n'est pas encore terminée ou déjà annulée
+                    if d_statut not in ["Approuvé et Signé", "Annulé par le département"]:
+                        if str_app.button(f"🚫 Annuler définitivement cette demande #{d_id}", key=f"btn_annuler_{d_id}"):
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("UPDATE demandes SET statut = 'Annulé par le département', etape_actuelle = 'annule' WHERE id = ?", (d_id,))
+                            conn.commit()
+                            conn.close()
+                            ajouter_log("Annulation Demande", nom_departement, f"Demande #{d_id} annulée par l'émetteur")
+                            str_app.success("La demande a été annulée avec succès.")
+                            str_app.rerun()
+
                     if d_statut == "Refusé avec demande de modification":
                         str_app.info("Vous pouvez modifier votre demande ci-dessous et la soumettre à nouveau.")
                         with str_app.form(f"form_modif_{d_id}"):
@@ -589,15 +601,16 @@ elif profil["type"] == "achats":
             for d in demandes_achats:
                 d_id, d_dept, d_titre, d_cc, d_fourn, d_fich = d
                 with str_app.expander(f"Besoin #{d_id} - {d_titre} (Par : {d_dept})"):
-                    str_app.write(f"**Spécifications :** {d_cc}")
+                    str_app.write(f"**Intitulé complet :** {d_titre}")
+                    str_app.write(f"**Spécifications techniques / Justificatif :** {d_cc}")
                     str_app.info(f"💡 **Fournisseur pressenti par le demandeur :** {d_fourn}")
                     
                     if d_fich:
-                        str_app.success(f"📎 Devis externe fourni : {d_fich}")
+                        str_app.success(f"📎 Fichier externe joint : {d_fich}")
                         chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
                         if os.path.exists(chemin_f):
                             with open(chemin_f, "rb") as file_download:
-                                str_app.download_button("📥 Consulter le devis externe", data=file_download, file_name=d_fich, key=f"dl_achats_{d_id}")
+                                str_app.download_button("📥 Consulter le document externe", data=file_download, file_name=d_fich, key=f"dl_achats_{d_id}")
                     
                     with str_app.form(f"form_achats_{d_id}"):
                         fournisseur_choisi = str_app.text_input("Confirmer ou modifier le fournisseur", value=d_fourn if d_fourn != "À sourcer" else "")
@@ -655,20 +668,27 @@ elif profil["type"] == "finance":
     with tab_fin1:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, departement, titre, montant, fichier_devis FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
+        # Contrôle complet : on récupère toutes les informations pour le département Finance
+        cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, fichier_devis FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
         demandes_finance = cursor.fetchall()
         conn.close()
         
         if demandes_finance:
             for d in demandes_finance:
-                d_id, d_dept, d_titre, d_montant, d_fich = d
-                with str_app.expander(f"Demande #{d_id} - {d_titre} | {d_montant} € (Par : {d_dept})"):
+                d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich = d
+                with str_app.expander(f"Demande #{d_id} - {d_titre} | {d_montant} € (Émetteur : {d_dept})"):
+                    str_app.markdown(f"**Département Émetteur :** {d_dept}")
+                    str_app.markdown(f"**Intitulé :** {d_titre}")
+                    str_app.markdown(f"**Spécifications techniques / Justificatif :** {d_cc}")
+                    str_app.markdown(f"**Fournisseur validé par les Achats :** {d_fourn}")
+                    str_app.markdown(f"**Montant chiffré :** {d_montant:,.2f} €")
+                    
                     if d_fich:
-                        str_app.success(f"📎 Devis externe joint : {d_fich}")
+                        str_app.success(f"📎 Fichier externe joint : {d_fich}")
                         chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
                         if os.path.exists(chemin_f):
                             with open(chemin_f, "rb") as file_download:
-                                str_app.download_button("📥 Consulter le devis externe", data=file_download, file_name=d_fich, key=f"dl_fin_{d_id}")
+                                str_app.download_button("📥 Consulter le document externe", data=file_download, file_name=d_fich, key=f"dl_fin_{d_id}")
                     
                     with str_app.form(f"form_finance_{d_id}"):
                         action_finance = str_app.radio("Décision Finance", ["Valider & Transmettre Direction", "Refus définitif (Bloqué)", "Refusé avec demande de modification"], key=f"a_fin_{d_id}")
@@ -723,20 +743,27 @@ elif profil["type"] == "fondateur":
     with tab_fond1:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, departement, titre, montant, fournisseur, fichier_devis FROM demandes WHERE etape_actuelle = 'fondateur'")
+        # Contrôle complet : on récupère toutes les informations pour la Direction Générale
+        cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, fichier_devis FROM demandes WHERE etape_actuelle = 'fondateur'")
         demandes_finales = cursor.fetchall()
         conn.close()
         
         if demandes_finales:
             for d in demandes_finales:
-                d_id, d_dept, d_titre, d_montant, d_fourn, d_fich = d
-                with str_app.expander(f"Dossier #{d_id} - {d_titre} | {d_montant} € (Fournisseur : {d_fourn})"):
+                d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich = d
+                with str_app.expander(f"Dossier #{d_id} - {d_titre} | {d_montant} € (Émetteur : {d_dept})"):
+                    str_app.markdown(f"**Département Émetteur :** {d_dept}")
+                    str_app.markdown(f"**Intitulé :** {d_titre}")
+                    str_app.markdown(f"**Spécifications techniques / Justificatif :** {d_cc}")
+                    str_app.markdown(f"**Fournisseur validé :** {d_fourn}")
+                    str_app.markdown(f"**Montant total :** {d_montant:,.2f} €")
+                    
                     if d_fich:
-                        str_app.success(f"📎 Devis final joint : {d_fich}")
+                        str_app.success(f"📎 Fichier externe joint : {d_fich}")
                         chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
                         if os.path.exists(chemin_f):
                             with open(chemin_f, "rb") as file_download:
-                                str_app.download_button("📥 Consulter le devis final", data=file_download, file_name=d_fich, key=f"dl_fond_{d_id}")
+                                str_app.download_button("📥 Consulter le document externe", data=file_download, file_name=d_fich, key=f"dl_fond_{d_id}")
                     
                     with str_app.form(f"form_fondateur_{d_id}"):
                         action_fondateur = str_app.radio("Décision Finale", ["Signer et Approuver", "Rejeter (Bloqué)"], key=f"a_fond_{d_id}")
@@ -780,7 +807,7 @@ elif profil["type"] == "fondateur":
     afficher_suivi_global()
     afficher_espace_coordination_et_journal(nom_dept)
 
-# --- MODULE AUDIT (RESERVÉ AUX RÔLES SUPERVISEURS) ---
+# --- MODULE AUDIT ---
 str_app.markdown("---")
 with str_app.expander("🔍 **Registre d'Audit & Traçabilité (Réservé)**"):
     if profil["type"] in ["achats", "finance", "fondateur"]:
