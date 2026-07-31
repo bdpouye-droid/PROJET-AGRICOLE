@@ -166,13 +166,7 @@ UTILISATEURS = {
     "fondateur": {"nom": "Fondateur / Direction Générale", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
 }
 
-# --- GESTION DE LA CONNEXION (SIDEBAR AVEC LOGO) ---
-if os.path.exists(CHEMIN_LOGO):
-    try:
-        str_app.sidebar.image(CHEMIN_LOGO, width=120)
-    except Exception:
-        pass
-
+# --- GESTION DE LA CONNEXION (SIDEBAR) ---
 str_app.sidebar.title("🏢 Bureau d'Études")
 str_app.sidebar.markdown("---")
 
@@ -257,7 +251,6 @@ elif profil["type"] == "standard":
 conn_notif.close()
 
 str_app.markdown("---")
-
 
 # --- FONCTION PDF AVEC INTÉGRATION DU LOGO ---
 def generer_pdf(titre, texte_contenu, infos_complementaires=""):
@@ -491,7 +484,7 @@ def afficher_trois_modules(nom_departement):
                         nom_fichier_sauve = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{fich_devis.name}"
                         chemin_complet = os.path.join(DOSSIER_UPLOADS, nom_fichier_sauve)
                         with open(chemin_complet, "wb") as f:
-                            f.write(f_devis.getbuffer())
+                            f.write(fich_devis.getbuffer())
                     
                     conn = get_db_connection()
                     cursor = conn.cursor()
@@ -676,42 +669,42 @@ elif profil["type"] == "finance":
                         if os.path.exists(chemin_f):
                             with open(chemin_f, "rb") as file_download:
                                 str_app.download_button("📥 Consulter le devis externe", data=file_download, file_name=d_fich, key=f"dl_fin_{d_id}")
-                                
-                    with str_app.form(f"form_fin_{d_id}"):
-                        avis = str_app.radio("Avis Financier", ["Valider & Transmettre Fondateur", "Refus définitif (Bloqué)", "Refusé avec demande de modification"])
-                        motif_fin = str_app.text_input("Motif obligatoire en cas de refus")
+                    
+                    with str_app.form(f"form_finance_{d_id}"):
+                        action_finance = str_app.radio("Décision Finance", ["Valider & Transmettre Direction", "Refus définitif (Bloqué)", "Refusé avec demande de modification"], key=f"a_fin_{d_id}")
+                        motif = str_app.text_input("Motif obligatoire en cas de refus / blocage")
+                        
                         if str_app.form_submit_button("Valider la décision"):
                             with str_app.spinner("Traitement de la décision Finance..."):
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
-                                if avis == "Valider & Transmettre Fondateur":
+                                if action_finance == "Valider & Transmettre Direction":
                                     cursor.execute('''
                                         UPDATE demandes 
-                                        SET avis_finance = 'Validé', etape_actuelle = 'fondateur', statut = 'Prêt pour Signature Finale'
+                                        SET avis_finance = 'Validé', etape_actuelle = 'fondateur', statut = 'En attente Direction Générale'
                                         WHERE id = ?
                                     ''', (d_id,))
                                     conn.commit()
-                                    conn.close()
-                                    ajouter_log("Validation Finance", "Finance", f"Budget validé pour la demande #{d_id}")
-                                    str_app.rerun()
-                                else:
-                                    if not motif_fin:
-                                        str_app.error("Veuillez saisir un motif.")
-                                        conn.close()
+                                    ajouter_log("Validation Finance", "Finance", f"Demande #{d_id} budgétairement approuvée")
+                                    str_app.success("Demande validée et transmise à la Direction !")
+                                elif "Refus" in action_finance:
+                                    if not motif:
+                                        str_app.error("Veuillez saisir un motif de refus.")
                                     else:
-                                        etape_suivante = "bloque" if avis == "Refus définitif (Bloqué)" else "modification"
-                                        statut_suivi = "Refusé par la Finance" if avis == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
+                                        etape_suivante = "bloque" if action_finance == "Refus définitif (Bloqué)" else "modification"
+                                        statut_suivi = "Refusé définitivement par la Finance" if action_finance == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
                                         cursor.execute('''
                                             UPDATE demandes 
                                             SET avis_finance = 'Refusé', motif_refus = ?, etape_actuelle = ?, statut = ?
                                             WHERE id = ?
-                                        ''', (motif_fin, etape_suivante, statut_suivi, d_id))
+                                        ''', (motif, etape_suivante, statut_suivi, d_id))
                                         conn.commit()
-                                        conn.close()
-                                        ajouter_log("Refus Finance", "Finance", f"Demande #{d_id} refusée. Motif : {motif_fin}")
-                                        str_app.rerun()
+                                        ajouter_log("Refus Finance", "Finance", f"Demande #{d_id} refusée. Motif : {motif}")
+                                        str_app.success("Demande refusée.")
+                                conn.close()
+                                str_app.rerun()
         else:
-            str_app.info("Aucune demande en attente d'avis financier.")
+            str_app.info("Aucune demande en attente de contrôle budgétaire.")
             
     with tab_fin2:
         afficher_module_cahiers_charges(nom_dept)
@@ -720,141 +713,80 @@ elif profil["type"] == "finance":
     afficher_espace_coordination_et_journal(nom_dept)
 
 elif profil["type"] == "fondateur":
-    str_app.subheader("⭐ Bureau du Fondateur - Direction Générale")
+    str_app.subheader("⭐ Direction Générale - Validation & Signature Exécutive")
     col1, col2 = str_app.columns(2)
     col1.metric("Budget Global", f"{budget_global:,.2f} €")
-    col2.metric("Solde Disponible", f"{solde_restant:,.2f} €")
+    col2.metric("Solde Actuel", f"{solde_restant:,.2f} €")
     
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, departement, titre, montant, fournisseur, cahier_charges, fichier_devis FROM demandes WHERE etape_actuelle = 'fondateur'")
-    demandes_fondateur = cursor.fetchall()
-    conn.close()
+    tab_fond1, tab_fond2 = str_app.tabs(["1. Signatures en Attente", "2. Cahiers des Charges (Direction)"])
     
-    if demandes_fondateur:
-        for d in demandes_fondateur:
-            d_id, d_dept, d_titre, d_montant, d_fourn, d_cc, d_fich = d
-            with str_app.expander(f"Dossier #{d_id} - {d_titre} | {d_montant} € ({d_dept})"):
-                str_app.write(f"🛒 **Fournisseur :** {d_fourn}")
-                str_app.write(f"📝 **Spécifications :** {d_cc}")
-                
-                if d_fich:
-                    str_app.success(f"📎 Devis externe joint : {d_fich}")
-                    chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
-                    if os.path.exists(chemin_f):
-                        with open(chemin_f, "rb") as file_download:
-                            str_app.download_button("📥 Consulter le devis externe", data=file_download, file_name=d_fich, key=f"dl_fonde_{d_id}")
-                
-                pdf_dossier = generer_pdf(f"Bon de Commande & Validation\nDossier #{d_id} : {d_titre}", f"Département demandeur: {d_dept}\nFournisseur: {d_fourn}\nMontant: {d_montant} EUR\n\nSpécifications:\n{d_cc}", "Validé et Signé par la Direction Générale")
-                str_app.download_button("📥 Télécharger le Bon de Commande Officiel (PDF)", data=pdf_dossier, file_name=f"bon_commande_{d_id}.pdf", mime="application/pdf", key=f"pdf_cmd_{d_id}")
-                
-                with str_app.form(f"form_fondateur_{d_id}"):
-                    action_fondateur = str_app.radio("Décision de la Direction", [
-                        "Signer & Décaisser", 
-                        "Refus définitif (Bloqué)", 
-                        "Refusé avec demande de modification"
-                    ])
-                    motif_fondateur = str_app.text_input("Motif obligatoire en cas de refus / blocage")
+    with tab_fond1:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, departement, titre, montant, fournisseur, fichier_devis FROM demandes WHERE etape_actuelle = 'fondateur'")
+        demandes_finales = cursor.fetchall()
+        conn.close()
+        
+        if demandes_finales:
+            for d in demandes_finales:
+                d_id, d_dept, d_titre, d_montant, d_fourn, d_fich = d
+                with str_app.expander(f"Dossier #{d_id} - {d_titre} | {d_montant} € (Fournisseur : {d_fourn})"):
+                    if d_fich:
+                        str_app.success(f"📎 Devis final joint : {d_fich}")
+                        chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
+                        if os.path.exists(chemin_f):
+                            with open(chemin_f, "rb") as file_download:
+                                str_app.download_button("📥 Consulter le devis final", data=file_download, file_name=d_fich, key=f"dl_fond_{d_id}")
                     
-                    if str_app.form_submit_button("Valider la décision exécutive"):
-                        with str_app.spinner("Traitement de la décision exécutive..."):
-                            if action_fondateur == "Signer & Décaisser":
-                                if solde_restant >= d_montant:
+                    with str_app.form(f"form_fondateur_{d_id}"):
+                        action_fondateur = str_app.radio("Décision Finale", ["Signer et Approuver", "Rejeter (Bloqué)"], key=f"a_fond_{d_id}")
+                        motif = str_app.text_input("Motif en cas de rejet")
+                        
+                        if str_app.form_submit_button("Exécuter la décision"):
+                            with str_app.spinner("Traitement du dossier..."):
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                if action_fondateur == "Signer et Approuver":
                                     nouveau_solde = solde_restant - d_montant
                                     set_valeur_globale("solde_restant", nouveau_solde)
-                                    
-                                    conn = get_db_connection()
-                                    cursor = conn.cursor()
                                     cursor.execute('''
                                         UPDATE demandes 
-                                        SET etape_actuelle = 'termine', statut = 'Signé & Exécuté par le Fondateur'
+                                        SET etape_actuelle = 'termine', statut = 'Approuvé et Signé'
                                         WHERE id = ?
                                     ''', (d_id,))
                                     conn.commit()
-                                    conn.close()
-                                    
-                                    ajouter_log("Signature Fondateur", "Fondateur", f"Décaissement de {d_montant}€ pour la demande #{d_id}")
-                                    str_app.success("Décaissé avec succès !")
-                                    str_app.rerun()
+                                    ajouter_log("Signature Finale", "Direction", f"Dossier #{d_id} signé. Solde déduit de {d_montant}€")
+                                    str_app.success("Dossier signé et budget mis à jour !")
                                 else:
-                                    str_app.error("Solde insuffisant pour décaisser ce montant.")
-                            else:
-                                if not motif_fondateur:
-                                    str_app.error("Veuillez saisir un motif pour justifier le refus de la direction.")
-                                else:
-                                    etape_suivante = "bloque" if action_fondateur == "Refus définitif (Bloqué)" else "modification"
-                                    statut_suivi = "Refusé définitivement par le Fondateur" if action_fondateur == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
-                                    
-                                    conn = get_db_connection()
-                                    cursor = conn.cursor()
-                                    cursor.execute('''
-                                        UPDATE demandes 
-                                        SET motif_refus = ?, etape_actuelle = ?, statut = ?
-                                        WHERE id = ?
-                                    ''', (motif_fondateur, etape_suivante, statut_suivi, d_id))
-                                    conn.commit()
-                                    conn.close()
-                                    
-                                    ajouter_log("Refus Fondateur", "Fondateur", f"Demande #{d_id} refusée par la Direction. Motif : {motif_fondateur}")
-                                    str_app.rerun()
-    else:
-        str_app.info("Aucun dossier en attente de signature.")
-    
+                                    if not motif:
+                                        str_app.error("Veuillez saisir un motif de rejet.")
+                                    else:
+                                        cursor.execute('''
+                                            UPDATE demandes 
+                                            SET etape_actuelle = 'bloque', statut = 'Rejeté par la Direction', motif_refus = ?
+                                            WHERE id = ?
+                                        ''', (motif, d_id))
+                                        conn.commit()
+                                        ajouter_log("Rejet Direction", "Direction", f"Dossier #{d_id} rejeté. Motif : {motif}")
+                                        str_app.success("Dossier rejeté.")
+                                conn.close()
+                                str_app.rerun()
+        else:
+            str_app.info("Aucun dossier en attente de signature finale.")
+            
+    with tab_fond2:
+        afficher_module_cahiers_charges(nom_dept)
+
     afficher_suivi_global()
-    
-    with str_app.expander("📚 **Vue Panoramique de TOUS les Cahiers des Charges de l'Entreprise**"):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT departement, titre, date, destinataires_avis FROM cahiers_charges")
-        tous_cc = cursor.fetchall()
-        conn.close()
-        
-        if tous_cc:
-            dict_cc = {}
-            for item in tous_cc:
-                d_n, t_titre, t_date, t_dest = item
-                if d_n not in dict_cc:
-                    dict_cc[d_n] = []
-                dict_cc[d_n].append({"titre": t_titre, "date": t_date, "dest": json.loads(t_dest) if t_dest else []})
-                
-            for d_nom, docs in dict_cc.items():
-                str_app.markdown(f"### Département : {d_nom}")
-                for doc in docs:
-                    str_app.markdown(f"- **{doc['titre']}** (Date : {doc['date']}) — Partagé avec : {', '.join(doc['dest'])}")
-        else:
-            str_app.info("Aucun cahier des charges enregistré pour le moment.")
+    afficher_espace_coordination_et_journal(nom_dept)
 
-    with str_app.expander("📖 **Journaux de Bord Quotidiens de TOUS les Départements**"):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT departement, titre, texte, date FROM journaux_bord ORDER BY id DESC")
-        tous_journaux = cursor.fetchall()
-        conn.close()
-        
-        if tous_journaux:
-            dict_j = {}
-            for item in tous_journaux:
-                d_n, j_titre, j_texte, j_date = item
-                if d_n not in dict_j:
-                    dict_j[d_n] = []
-                dict_j[d_n].append({"titre": j_titre, "texte": j_texte, "date": j_date})
-                
-            for d_nom, entrees in dict_j.items():
-                str_app.markdown(f"### 🏢 {d_nom}")
-                for ent in entrees:
-                    str_app.markdown(f"> **[{ent['date']}] {ent['titre']}**\n> {ent['texte']}")
-                str_app.markdown("---")
-        else:
-            str_app.info("Aucune entrée dans les journaux de bord pour le moment.")
-
-    with str_app.expander("🔒 **Journal d'Audit & Traçabilité Financière (Accès Réservé Fondateur)**"):
+# --- MODULE AUDIT (RESERVÉ AUX RÔLES SUPERVISEURS) ---
+str_app.markdown("---")
+with str_app.expander("🔍 **Registre d'Audit & Traçabilité (Réservé)**"):
+    if profil["type"] in ["achats", "finance", "fondateur"]:
         conn = get_db_connection()
         df_logs = pd.read_sql_query("SELECT date, acteur, action, details FROM logs_audit ORDER BY id DESC", conn)
         conn.close()
-        
-        if not df_logs.empty:
-            str_app.dataframe(df_logs, use_container_width=True)
-        else:
-            str_app.write("Aucune activité enregistrée.")
-    
-    afficher_espace_coordination_et_journal(nom_dept)
+        str_app.dataframe(df_logs, use_container_width=True)
+    else:
+        str_app.warning("Vous n'avez pas les droits nécessaires pour consulter le registre d'audit global.")
