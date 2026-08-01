@@ -98,6 +98,17 @@ def init_db():
         )
     ''')
     
+    # Sécurité migration colonnes si la table existait déjà
+    try:
+        cursor.execute("ALTER TABLE cahiers_charges ADD COLUMN fichier_attache TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE demandes ADD COLUMN fichier_devis TEXT")
+    except sqlite3.OperationalError:
+        pass
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS messages_coordination (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,7 +190,7 @@ def ajouter_log(action, acteur, details):
     conn.commit()
     conn.close()
 
-# --- DICTIONNAIRE DES 15 DÉPARTEMENTS ---
+# --- DICTIONNAIRE DES DÉPARTEMENTS ---
 UTILISATEURS = {
     "DEP1": {"nom": "Agriculture", "mdp": "DEP123", "type": "standard", "dept": "Agriculture"},
     "DEP2": {"nom": "Élevage & Halieutique", "mdp": "DEP123", "type": "standard", "dept": "Élevage & Halieutique"},
@@ -216,13 +227,12 @@ if str_app.session_state.user_connecte is None:
     password = str_app.sidebar.text_input("Mot de passe", type="password")
     
     if str_app.sidebar.button("Se connecter"):
-        with str_app.spinner("Vérification des accès..."):
-            if username in UTILISATEURS and UTILISATEURS[username]["mdp"] == password:
-                str_app.session_state.user_connecte = username
-                ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
-                str_app.rerun()
-            else:
-                str_app.sidebar.error("Identifiant ou mot de passe incorrect.")
+        if username in UTILISATEURS and UTILISATEURS[username]["mdp"] == password:
+            str_app.session_state.user_connecte = username
+            ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
+            str_app.rerun()
+        else:
+            str_app.sidebar.error("Identifiant ou mot de passe incorrect.")
     str_app.stop()
 else:
     infos_user = UTILISATEURS[str_app.session_state.user_connecte]
@@ -231,31 +241,29 @@ else:
     
     if str_app.session_state.user_connecte == "fondateur":
         if str_app.sidebar.button("🔄 Réinitialiser l'application (Reset)"):
-            with str_app.spinner("Réinitialisation complète..."):
-                budget_init = get_valeur_globale("budget_global")
-                set_valeur_globale("solde_restant", budget_init)
-                
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM demandes")
-                cursor.execute("DELETE FROM cahiers_charges")
-                cursor.execute("DELETE FROM messages_coordination")
-                cursor.execute("DELETE FROM journaux_bord")
-                cursor.execute("DELETE FROM logs_audit")
-                cursor.execute("DELETE FROM multi_stocks")
-                conn.commit()
-                conn.close()
-                
-                ajouter_log("Réinitialisation", infos_user['nom'], "Base de données remise à zéro")
-                str_app.success("Application réinitialisée à zéro !")
-                str_app.rerun()
+            budget_init = get_valeur_globale("budget_global")
+            set_valeur_globale("solde_restant", budget_init)
+            
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM demandes")
+            cursor.execute("DELETE FROM cahiers_charges")
+            cursor.execute("DELETE FROM messages_coordination")
+            cursor.execute("DELETE FROM journaux_bord")
+            cursor.execute("DELETE FROM logs_audit")
+            cursor.execute("DELETE FROM multi_stocks")
+            conn.commit()
+            conn.close()
+            
+            ajouter_log("Réinitialisation", infos_user['nom'], "Base de données remise à zéro")
+            str_app.success("Application réinitialisée à zéro !")
+            str_app.rerun()
         str_app.sidebar.markdown("---")
 
     if str_app.sidebar.button("Se déconnecter"):
-        with str_app.spinner("Déconnexion sécurisée..."):
-            ajouter_log("Déconnexion", infos_user['nom'], "Déconnexion de l'utilisateur")
-            str_app.session_state.user_connecte = None
-            str_app.rerun()
+        ajouter_log("Déconnexion", infos_user['nom'], "Déconnexion de l'utilisateur")
+        str_app.session_state.user_connecte = None
+        str_app.rerun()
 
 user_key = str_app.session_state.user_connecte
 profil = UTILISATEURS[user_key]
@@ -263,7 +271,7 @@ nom_dept = profil["dept"]
 
 str_app.title(f"Tableau de Bord - {profil['nom']}")
 
-# --- GESTION DE LA CONFIDENTIALITÉ DU BUDGET ---
+# --- GESTION DU BUDGET ---
 if 'afficher_budget' not in str_app.session_state:
     str_app.session_state.afficher_budget = False
 
@@ -354,7 +362,7 @@ def generer_pdf(titre, texte_contenu, infos_complementaires=""):
 
 
 # ==========================================
-# MODULE COLLABORATIF : ESPACE TEAMS & JOURNAL
+# ESPACE DE COORDINATION & JOURNAL
 # ==========================================
 def afficher_espace_coordination_et_journal(nom_departement):
     with str_app.expander("💬 **Espace de Coordination Collaboratif (Fil Partagé avec Suppression)**"):
@@ -363,16 +371,15 @@ def afficher_espace_coordination_et_journal(nom_departement):
             texte_msg = str_app.text_input("Publier une note ou un compte-rendu dans le fil")
             submit_msg = str_app.form_submit_button("Envoyer dans le fil")
             if submit_msg and texte_msg:
-                with str_app.spinner("Publication..."):
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "INSERT INTO messages_coordination (auteur, texte, date) VALUES (?, ?, ?)",
-                        (nom_departement, texte_msg, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                    )
-                    conn.commit()
-                    conn.close()
-                    str_app.rerun()
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO messages_coordination (auteur, texte, date) VALUES (?, ?, ?)",
+                    (nom_departement, texte_msg, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                )
+                conn.commit()
+                conn.close()
+                str_app.rerun()
         
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -411,17 +418,16 @@ def afficher_espace_coordination_et_journal(nom_departement):
             submit_j = str_app.form_submit_button("Ajouter au journal")
             
             if submit_j and titre_j and texte_j:
-                with str_app.spinner("Enregistrement..."):
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "INSERT INTO journaux_bord (departement, titre, texte, auteur, date) VALUES (?, ?, ?, ?, ?)",
-                        (nom_departement, titre_j, texte_j, nom_departement, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                    )
-                    conn.commit()
-                    conn.close()
-                    str_app.success("Entrée enregistrée !")
-                    str_app.rerun()
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO journaux_bord (departement, titre, texte, auteur, date) VALUES (?, ?, ?, ?, ?)",
+                    (nom_departement, titre_j, texte_j, nom_departement, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                )
+                conn.commit()
+                conn.close()
+                str_app.success("Entrée enregistrée !")
+                str_app.rerun()
         
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -460,18 +466,17 @@ def afficher_module_cahiers_charges(nom_departement):
                     with open(chemin_complet, "wb") as f:
                         f.write(fich_doc.getbuffer())
 
-                with str_app.spinner("Enregistrement..."):
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "INSERT INTO cahiers_charges (departement, titre, contenu, date, destinataires_avis, fichier_attache) VALUES (?, ?, ?, ?, ?, ?)",
-                        (nom_departement, titre_doc, contenu_doc, datetime.now().strftime("%Y-%m-%d"), json.dumps(destinataires_avis), nom_fich_sauve)
-                    )
-                    conn.commit()
-                    conn.close()
-                    ajouter_log("Cahier des Charges", nom_departement, f"Import/Création: {titre_doc}")
-                    str_app.success("Document importé et partagé avec succès !")
-                    str_app.rerun()
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO cahiers_charges (departement, titre, contenu, date, destinataires_avis, fichier_attache) VALUES (?, ?, ?, ?, ?, ?)",
+                    (nom_departement, titre_doc, contenu_doc, datetime.now().strftime("%Y-%m-%d"), json.dumps(destinataires_avis), nom_fich_sauve)
+                )
+                conn.commit()
+                conn.close()
+                ajouter_log("Cahier des Charges", nom_departement, f"Import/Création: {titre_doc}")
+                str_app.success("Document importé et partagé avec succès !")
+                str_app.rerun()
             else:
                 str_app.error("Veuillez renseigner un intitulé et une description.")
     
@@ -533,11 +538,11 @@ def afficher_module_cahiers_charges(nom_departement):
 
 
 # ==========================================
-# MODULE LOGISTIQUE & MULTI-STOCKS (96 HECTARES) - DÉDIÉ LOGISTIQUE
+# MODULE LOGISTIQUE & MULTI-STOCKS (96 HECTARES)
 # ==========================================
 def afficher_module_logistique_96ha(nom_departement):
     str_app.subheader("📦 Logistique Avancée & Gestion Multi-Stocks (96 Hectares)")
-    str_app.markdown("Pilotage global des flux de marchandises, des zones de stockage, de la chaîne du froid et de la flotte (Attribué au département Logistique).")
+    str_app.markdown("Pilotage global des flux de marchandises, des zones de stockage, de la chaîne du froid et de la flotte.")
 
     tab_stock, tab_flotte, tab_haccp = str_app.tabs(["1. Cartographie Multi-Stocks & Seuils", "2. Flotte & Expéditions", "3. Traçabilité Chaîne du Froid"])
 
@@ -545,15 +550,15 @@ def afficher_module_logistique_96ha(nom_departement):
         str_app.markdown("### Gestion des stocks par zone (96 ha)")
         with str_app.form("form_ajout_stock", clear_on_submit=True):
             col1, col2 = str_app.columns(2)
-            zone = col1.selectbox("Zone de Stockage", ["Stock Intrants (Semences, Engrais, Aliments)", "Stock Pièces de Rechange & Maintenance", "Stock Produits Finis - Zone Sèche", "Stock Produits Finis - Température Dirigée / Chambre Froide"])
+            zone = col1.selectbox("Zone de Stockage", ["Stock Intrants", "Stock Pièces de Rechange & Maintenance", "Stock Produits Finis - Zone Sèche", "Stock Produits Finis - Chambre Froide"])
             article = col2.text_input("Désignation de l'article / Produit")
             
             col3, col4, col5 = str_app.columns(3)
             quantite = col3.number_input("Quantité actuelle", min_value=0.0, step=1.0)
             unite = col4.text_input("Unité (ex: kg, pièces, litres)")
-            seuil_min = col5.number_input("Seuil d'alerte Minimum (Anti-rupture)", min_value=0.0, step=1.0)
+            seuil_min = col5.number_input("Seuil d'alerte Minimum", min_value=0.0, step=1.0)
             
-            seuil_max = str_app.number_input("Seuil d'alerte Maximum (Anti-saturation)", min_value=0.0, step=1.0)
+            seuil_max = str_app.number_input("Seuil d'alerte Maximum", min_value=0.0, step=1.0)
             statut_haccp = str_app.selectbox("Conformité Chaîne du froid / Normes", ["Conforme Standard", "Conforme Chambre Froide (0-4°C)", "Conforme Congélation (-18°C)"])
 
             if str_app.form_submit_button("Enregistrer / Mettre à jour le stock"):
@@ -566,7 +571,7 @@ def afficher_module_logistique_96ha(nom_departement):
                     )
                     conn.commit()
                     conn.close()
-                    str_app.success("Article enregistré dans la cartographie des stocks !")
+                    str_app.success("Article enregistré !")
                     str_app.rerun()
 
         str_app.markdown("---")
@@ -597,11 +602,8 @@ def afficher_module_logistique_96ha(nom_departement):
 
     with tab_flotte:
         str_app.subheader("Suivi des Expéditions et de la Flotte de Camions")
-        str_app.markdown("Pilotage des bons de livraison, camions frigorifiques et transport interne / externe sur les 96 hectares.")
-
     with tab_haccp:
         str_app.subheader("Traçabilité Logistique & Chaîne du Froid")
-        str_app.markdown("Registre des températures et contrôles logistiques des flux sortants et entrants.")
 
 
 # ==========================================
@@ -609,8 +611,7 @@ def afficher_module_logistique_96ha(nom_departement):
 # ==========================================
 def afficher_module_hse(nom_departement):
     str_app.subheader("🛡️ Sécurité, HSE & Conformité (HACCP / GlobalG.AP)")
-    str_app.markdown("Pilotage officiel des audits sanitaires, de la conformité GlobalG.AP et de la sécurité sur le site de 96 hectares.")
-    str_app.info("Module de contrôle sanitaire et d'audit actif pour garantir la conformité aux normes internationales.")
+    str_app.markdown("Pilotage officiel des audits sanitaires, de la conformité GlobalG.AP et de la sécurité sur le site.")
 
 
 # ==========================================
@@ -712,7 +713,7 @@ def afficher_module_expression_et_suivi(nom_departement):
 
 
 # ==========================================
-# TABLEAU DE SUIVI GLOBAL (POUR LES PÔLES DE CONTRÔLE)
+# SUIVI GLOBAL
 # ==========================================
 def afficher_suivi_global():
     if profil["type"] in ["achats", "finance", "fondateur"]:
@@ -728,21 +729,17 @@ def afficher_suivi_global():
 
 
 # ==========================================
-# ROUTAGE DES INTERFACES SELON LE RÔLE
+# ROUTAGE DES INTERFACES
 # ==========================================
-
-# 1. Départements Standards (Agriculture, Élevage, etc.)
 if profil["type"] == "standard":
     tab1, tab2 = str_app.tabs(["1. Cahiers des Charges & Documents", "2. Demandes d'Achat & Suivi"])
     with tab1:
         afficher_module_cahiers_charges(nom_dept)
     with tab2:
         afficher_module_expression_et_suivi(nom_dept)
-        
     str_app.markdown("---")
     afficher_espace_coordination_et_journal(nom_dept)
 
-# 2. Département Sécurité & HSE (Normes HACCP / GlobalG.AP)
 elif profil["type"] == "hse":
     tab1, tab2, tab3 = str_app.tabs(["1. Cahiers des Charges & Documents", "2. Normes & Audits (HACCP)", "3. Demandes d'Achat & Suivi"])
     with tab1:
@@ -751,11 +748,9 @@ elif profil["type"] == "hse":
         afficher_module_hse(nom_dept)
     with tab3:
         afficher_module_expression_et_suivi(nom_dept)
-        
     str_app.markdown("---")
     afficher_espace_coordination_et_journal(nom_dept)
 
-# 3. Département Logistique (Dédié à temps plein)
 elif profil["type"] == "logistique":
     tab1, tab2, tab3 = str_app.tabs(["1. Logistique & Multi-Stocks (96 ha)", "2. Cahiers des Charges & Documents", "3. Demandes d'Achat & Suivi"])
     with tab1:
@@ -764,14 +759,11 @@ elif profil["type"] == "logistique":
         afficher_module_cahiers_charges(nom_dept)
     with tab3:
         afficher_module_expression_et_suivi(nom_dept)
-        
     str_app.markdown("---")
     afficher_espace_coordination_et_journal(nom_dept)
 
-# 4. Département Achats
 elif profil["type"] == "achats":
     tab_ach1, tab_ach2, tab_ach3, tab_ach4 = str_app.tabs(["1. Chiffrage & Sourcing", "2. Cahiers des Charges & Documents", "3. Demandes d'Achat & Suivi", "4. Coordination"])
-    
     with tab_ach1:
         str_app.subheader("File d'attente - Achats & Approvisionnements")
         conn = get_db_connection()
@@ -822,23 +814,19 @@ elif profil["type"] == "achats":
                                     str_app.rerun()
         else:
             str_app.info("Aucune demande en attente pour les Achats.")
-            
     with tab_ach2:
         afficher_module_cahiers_charges(nom_dept)
     with tab_ach3:
         afficher_module_expression_et_suivi(nom_dept)
     with tab_ach4:
         afficher_espace_coordination_et_journal(nom_dept)
-
     afficher_suivi_global()
 
-# 5. Département Finance & Comptabilité
 elif profil["type"] == "finance":
     str_app.subheader("Contrôle Budgétaire & Comptabilité")
     afficher_indicateurs_budgetaires_securises()
     
     tab_fin1, tab_fin2, tab_fin3, tab_fin4 = str_app.tabs(["1. Contrôle Budgétaire", "2. Cahiers des Charges & Documents", "3. Demandes d'Achat & Suivi", "4. Coordination"])
-    
     with tab_fin1:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -899,23 +887,19 @@ elif profil["type"] == "finance":
                                     str_app.rerun()
         else:
             str_app.info("Aucun dossier en attente pour la Finance.")
-
     with tab_fin2:
         afficher_module_cahiers_charges(nom_dept)
     with tab_fin3:
         afficher_module_expression_et_suivi(nom_dept)
     with tab_fin4:
         afficher_espace_coordination_et_journal(nom_dept)
-
     afficher_suivi_global()
 
-# 6. Direction Générale (Fondateur)
 elif profil["type"] == "fondateur":
     str_app.subheader("Pilotage Exécutif & Signature Stratégique")
     afficher_indicateurs_budgetaires_securises()
     
     tab_f1, tab_f2, tab_f3, tab_f4 = str_app.tabs(["1. Signatures Exécutives", "2. Cahiers des Charges & Documents", "3. Demandes d'Achat & Suivi", "4. Coordination"])
-    
     with tab_f1:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -965,12 +949,10 @@ elif profil["type"] == "fondateur":
                                     str_app.rerun()
         else:
             str_app.info("Aucun dossier en attente de signature exécutive.")
-            
     with tab_f2:
         afficher_module_cahiers_charges(nom_dept)
     with tab_f3:
         afficher_module_expression_et_suivi(nom_dept)
     with tab_f4:
         afficher_espace_coordination_et_journal(nom_dept)
-
     afficher_suivi_global()
