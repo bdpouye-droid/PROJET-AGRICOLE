@@ -93,7 +93,8 @@ def init_db():
             titre TEXT,
             contenu TEXT,
             date TEXT,
-            destinataires_avis TEXT
+            destinataires_avis TEXT,
+            fichier_attache TEXT
         )
     ''')
     
@@ -178,7 +179,7 @@ def ajouter_log(action, acteur, details):
     conn.commit()
     conn.close()
 
-# --- DICTIONNAIRE DES UTILISATEURS & RÔLES ---
+# --- DICTIONNAIRE DES 15 DÉPARTEMENTS ---
 UTILISATEURS = {
     "DEP1": {"nom": "Agriculture", "mdp": "DEP123", "type": "standard", "dept": "Agriculture"},
     "DEP2": {"nom": "Élevage & Halieutique", "mdp": "DEP123", "type": "standard", "dept": "Élevage & Halieutique"},
@@ -186,13 +187,15 @@ UTILISATEURS = {
     "DEP4": {"nom": "Ressources Hydriques", "mdp": "DEP123", "type": "standard", "dept": "Ressources Hydriques"},
     "DEP5": {"nom": "Énergie & Maintenance", "mdp": "DEP123", "type": "standard", "dept": "Énergie & Maintenance"},
     "DEP6": {"nom": "Recherche & Développement", "mdp": "DEP123", "type": "standard", "dept": "Recherche & Développement"},
-    "DEP7": {"nom": "Sécurité & HSE", "mdp": "DEP123", "type": "standard", "dept": "Sécurité & HSE"},
+    "DEP7": {"nom": "Sécurité & HSE", "mdp": "DEP123", "type": "hse", "dept": "Sécurité & HSE"},
     "DEP8": {"nom": "Ressources Humaines & RSE", "mdp": "DEP123", "type": "standard", "dept": "Ressources Humaines & RSE"},
     "DEP9": {"nom": "Commercial & Marketing", "mdp": "DEP123", "type": "standard", "dept": "Commercial & Marketing"},
     "DEP10": {"nom": "IT & Data", "mdp": "DEP123", "type": "standard", "dept": "IT & Data"},
     
-    "DEP11": {"nom": "Achats & Approvisionnements", "mdp": "DEP123", "type": "achats", "dept": "Achats & Approvisionnements"},
-    "DEP12": {"nom": "Finance & Comptabilité", "mdp": "DEP123", "type": "finance", "dept": "Finance & Comptabilité"},
+    "DEP11": {"nom": "Logistique (Temps plein)", "mdp": "DEP123", "type": "logistique", "dept": "Logistique"},
+    "DEP12": {"nom": "Achats & Approvisionnements", "mdp": "DEP123", "type": "achats", "dept": "Achats & Approvisionnements"},
+    "DEP13": {"nom": "Finance & Comptabilité", "mdp": "DEP123", "type": "finance", "dept": "Finance & Comptabilité"},
+    "DEP14": {"nom": "Juridique & Conformité", "mdp": "DEP123", "type": "standard", "dept": "Juridique & Conformité"},
     "fondateur": {"nom": "Direction Générale - Pilotage Stratégique", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
 }
 
@@ -292,7 +295,7 @@ if profil["type"] == "achats":
     cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
     nb_pending = cursor_notif.fetchone()[0]
     if nb_pending > 0:
-        str_app.warning(f"⚠️ Vous avez **{nb_pending}** demande(s) en attente de chiffrage et de sourcing.")
+        str_app.warning(f"⚠️ Vous avez **{nb_pending}** demande(s) d'achat en attente de chiffrage et de sourcing.")
 elif profil["type"] == "finance":
     cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
     nb_pending = cursor_notif.fetchone()[0]
@@ -303,7 +306,7 @@ elif profil["type"] == "fondateur":
     nb_pending = cursor_notif.fetchone()[0]
     if nb_pending > 0:
         str_app.warning(f"⚠️ Vous avez **{nb_pending}** dossier(s) en attente de signature exécutive.")
-elif profil["type"] == "standard":
+elif profil["type"] in ["standard", "hse", "logistique"]:
     cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE departement = ? AND statut LIKE '%Refusé%'", (nom_dept,))
     nb_refus = cursor_notif.fetchone()[0]
     if nb_refus > 0:
@@ -434,50 +437,69 @@ def afficher_espace_coordination_et_journal(nom_departement):
 
 
 # ==========================================
-# MODULE CAHIERS DES CHARGES (UNIVERSEL & PARTAGÉ)
+# MODULE CAHIERS DES CHARGES & IMPORT DE DOCUMENTS
 # ==========================================
 def afficher_module_cahiers_charges(nom_departement):
-    str_app.subheader("Cahiers des Charges & Documents Partagés (Espace Unifié)")
+    str_app.subheader("Cahiers des Charges & Documents Partagés")
+    str_app.markdown("Centralisez vos notes, spécifications et **importez/uploadez vos fichiers** pour les diffuser aux autres départements.")
+    
     liste_tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
 
     with str_app.form(f"form_cc_{nom_departement}", clear_on_submit=True):
         titre_doc = str_app.text_input("Intitulé du document / Fichier")
-        contenu_doc = str_app.text_area("Contenu détaillé ou description du fichier partagé")
+        contenu_doc = str_app.text_area("Description détaillée ou notes explicatives")
+        fich_doc = str_app.file_uploader("📥 Importer un document (PDF, Excel, Word, Image)", type=["pdf", "png", "jpg", "jpeg", "xlsx", "docx"])
         destinataires_avis = str_app.multiselect("Partager avec les départements :", liste_tous_depts)
         
-        if str_app.form_submit_button("Enregistrer et diffuser universellement"):
+        if str_app.form_submit_button("Enregistrer et diffuser le document"):
             if titre_doc and contenu_doc:
+                nom_fich_sauve = ""
+                if fich_doc is not None:
+                    nom_fich_sauve = f"doc_{datetime.now().strftime('%Y%m%d%H%M%S')}_{fich_doc.name}"
+                    chemin_complet = os.path.join(DOSSIER_UPLOADS, nom_fich_sauve)
+                    with open(chemin_complet, "wb") as f:
+                        f.write(fich_doc.getbuffer())
+
                 with str_app.spinner("Enregistrement..."):
                     conn = get_db_connection()
                     cursor = conn.cursor()
                     cursor.execute(
-                        "INSERT INTO cahiers_charges (departement, titre, contenu, date, destinataires_avis) VALUES (?, ?, ?, ?, ?)",
-                        (nom_departement, titre_doc, contenu_doc, datetime.now().strftime("%Y-%m-%d"), json.dumps(destinataires_avis))
+                        "INSERT INTO cahiers_charges (departement, titre, contenu, date, destinataires_avis, fichier_attache) VALUES (?, ?, ?, ?, ?, ?)",
+                        (nom_departement, titre_doc, contenu_doc, datetime.now().strftime("%Y-%m-%d"), json.dumps(destinataires_avis), nom_fich_sauve)
                     )
                     conn.commit()
                     conn.close()
-                    ajouter_log("Cahier des Charges", nom_departement, f"Création: {titre_doc}")
-                    str_app.success("Document enregistré et partagé avec succès !")
+                    ajouter_log("Cahier des Charges", nom_departement, f"Import/Création: {titre_doc}")
+                    str_app.success("Document importé et partagé avec succès !")
                     str_app.rerun()
+            else:
+                str_app.error("Veuillez renseigner un intitulé et une description.")
     
     str_app.markdown("### 📁 Mes documents partagés")
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, titre, contenu, date, destinataires_avis FROM cahiers_charges WHERE departement = ?", (nom_departement,))
+    cursor.execute("SELECT id, titre, contenu, date, destinataires_avis, fichier_attache FROM cahiers_charges WHERE departement = ?", (nom_departement,))
     mes_docs = cursor.fetchall()
     conn.close()
     
     if mes_docs:
         for doc in mes_docs:
-            doc_id, doc_titre, doc_contenu, doc_date, doc_dest_json = doc
+            doc_id, doc_titre, doc_contenu, doc_date, doc_dest_json, doc_fich = doc
             destinataires = json.loads(doc_dest_json) if doc_dest_json else []
             partages = ", ".join(destinataires) if destinataires else "Interne"
             
             with str_app.expander(f"Doc #{doc_id} : {doc_titre} (Partagé avec : {partages})"):
                 str_app.write(doc_contenu)
+                
+                if doc_fich:
+                    chemin_f = os.path.join(DOSSIER_UPLOADS, doc_fich)
+                    if os.path.exists(chemin_f):
+                        with open(chemin_f, "rb") as file_download:
+                            str_app.download_button("📥 Télécharger le fichier joint", data=file_download, file_name=doc_fich, key=f"dl_doc_att_{doc_id}")
+
                 pdf_io = generer_pdf(f"Cahier des Charges\n{doc_titre}", doc_contenu, f"Émetteur: {nom_departement}\nDate: {doc_date}")
                 colA, colB = str_app.columns([1,1])
-                colA.download_button("📥 Télécharger PDF", data=pdf_io, file_name=f"cc_{doc_id}.pdf", mime="application/pdf", key=f"pdf_{nom_departement}_{doc_id}")
+                colA.download_button("📥 Télécharger Fiche PDF", data=pdf_io, file_name=f"cc_{doc_id}.pdf", mime="application/pdf", key=f"pdf_{nom_departement}_{doc_id}")
                 if colB.button("🗑️ Supprimer", key=f"del_cc_{nom_departement}_{doc_id}"):
                     conn = get_db_connection()
                     cursor = conn.cursor()
@@ -489,28 +511,35 @@ def afficher_module_cahiers_charges(nom_departement):
     str_app.markdown("### 📥 Documents reçus des autres départements")
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis FROM cahiers_charges WHERE departement != ?", (nom_departement,))
+    cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis, fichier_attache FROM cahiers_charges WHERE departement != ?", (nom_departement,))
     autres_docs = cursor.fetchall()
     conn.close()
     
     for doc in autres_docs:
-        doc_id, d_nom, doc_titre, doc_contenu, doc_date, doc_dest_json = doc
+        doc_id, d_nom, doc_titre, doc_contenu, doc_date, doc_dest_json, doc_fich = doc
         destinataires = json.loads(doc_dest_json) if doc_dest_json else []
         if nom_departement in destinataires:
             with str_app.expander(f"📬 De [{d_nom}] : {doc_titre}"):
                 str_app.write(doc_contenu)
+                
+                if doc_fich:
+                    chemin_f = os.path.join(DOSSIER_UPLOADS, doc_fich)
+                    if os.path.exists(chemin_f):
+                        with open(chemin_f, "rb") as file_download:
+                            str_app.download_button("📥 Télécharger le fichier joint", data=file_download, file_name=doc_fich, key=f"dl_recu_att_{doc_id}")
+
                 pdf_recu = generer_pdf(f"{doc_titre}", doc_contenu, f"Émetteur: {d_nom}")
-                str_app.download_button("📥 Télécharger PDF", data=pdf_recu, file_name=f"recu_{doc_id}.pdf", mime="application/pdf", key=f"recu_{d_nom}_{doc_id}")
+                str_app.download_button("📥 Télécharger Fiche PDF", data=pdf_recu, file_name=f"recu_{doc_id}.pdf", mime="application/pdf", key=f"recu_{d_nom}_{doc_id}")
 
 
 # ==========================================
-# MODULE LOGISTIQUE & MULTI-STOCKS (96 HECTARES)
+# MODULE LOGISTIQUE & MULTI-STOCKS (96 HECTARES) - DÉDIÉ LOGISTIQUE
 # ==========================================
 def afficher_module_logistique_96ha(nom_departement):
     str_app.subheader("📦 Logistique Avancée & Gestion Multi-Stocks (96 Hectares)")
-    str_app.markdown("Pilotage global des flux de marchandises, des zones de stockage, de la chaîne du froid et de la flotte.")
+    str_app.markdown("Pilotage global des flux de marchandises, des zones de stockage, de la chaîne du froid et de la flotte (Attribué au département Logistique).")
 
-    tab_stock, tab_flotte, tab_haccp = str_app.tabs(["1. Cartographie Multi-Stocks & Seuils", "2. Flotte & Expéditions", "3. Traçabilité HACCP / GlobalG.AP"])
+    tab_stock, tab_flotte, tab_haccp = str_app.tabs(["1. Cartographie Multi-Stocks & Seuils", "2. Flotte & Expéditions", "3. Traçabilité Chaîne du Froid"])
 
     with tab_stock:
         str_app.markdown("### Gestion des stocks par zone (96 ha)")
@@ -569,33 +598,40 @@ def afficher_module_logistique_96ha(nom_departement):
     with tab_flotte:
         str_app.subheader("Suivi des Expéditions et de la Flotte de Camions")
         str_app.markdown("Pilotage des bons de livraison, camions frigorifiques et transport interne / externe sur les 96 hectares.")
-        str_app.info("Module logistique des expéditions actif : liaison avec les bons de commande et traçabilité des lots sortants.")
 
     with tab_haccp:
-        str_app.subheader("Traçabilité & Certifications (HACCP & GlobalG.AP)")
-        str_app.markdown("Registre des contrôles sanitaires, températures des chambres froides et traçabilité pour le marché national et l'export.")
-        str_app.success("Système de traçabilité des lots et de respect de la chaîne du froid opérationnel pour l'ensemble des productions agricoles, animales et halieutiques.")
+        str_app.subheader("Traçabilité Logistique & Chaîne du Froid")
+        str_app.markdown("Registre des températures et contrôles logistiques des flux sortants et entrants.")
 
 
 # ==========================================
-# MODULE EXPRESSION DE BESOINS & SUIVI
+# MODULE SÉCURITÉ & HSE (NORMES HACCP / GlobalG.AP)
+# ==========================================
+def afficher_module_hse(nom_departement):
+    str_app.subheader("🛡️ Sécurité, HSE & Conformité (HACCP / GlobalG.AP)")
+    str_app.markdown("Pilotage officiel des audits sanitaires, de la conformité GlobalG.AP et de la sécurité sur le site de 96 hectares.")
+    str_app.info("Module de contrôle sanitaire et d'audit actif pour garantir la conformité aux normes internationales.")
+
+
+# ==========================================
+# MODULE DEMANDE D'ACHAT & SUIVI
 # ==========================================
 def afficher_module_expression_et_suivi(nom_departement):
-    tab_besoin, tab_suivi = str_app.tabs(["1. Exprimer un Besoin", "2. Suivi de mes Demandes"])
+    tab_besoin, tab_suivi = str_app.tabs(["1. Nouvelle Expression de Besoin", "2. Suivi de mes Demandes"])
     
     with tab_besoin:
-        str_app.subheader("Nouvelle Expression de Besoin")
+        str_app.subheader("Émettre une Demande d'Achat")
         with str_app.form("form_expr_besoin", clear_on_submit=True):
-            titre_besoin = str_app.text_input("Intitulé de la demande")
-            desc_besoin = str_app.text_area("Spécifications techniques / Justificatif")
+            titre_besoin = str_app.text_input("Intitulé de la demande d'achat")
+            desc_besoin = str_app.text_area("Spécifications techniques / Justificatif du besoin")
             fournisseur_suggere = str_app.text_input("Fournisseur pressenti (optionnel)")
-            fich_devis = str_app.file_uploader("📥 Joindre un devis/justificatif (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
+            fich_devis = str_app.file_uploader("📥 Joindre un devis ou justificatif (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
             
             if str_app.form_submit_button("Transmettre aux Achats"):
                 if titre_besoin and desc_besoin:
                     nom_fichier_sauve = ""
                     if fich_devis is not None:
-                        nom_fichier_sauve = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{fich_devis.name}"
+                        nom_fichier_sauve = f"devis_{datetime.now().strftime('%Y%m%d%H%M%S')}_{fich_devis.name}"
                         chemin_complet = os.path.join(DOSSIER_UPLOADS, nom_fichier_sauve)
                         with open(chemin_complet, "wb") as f:
                             f.write(fich_devis.getbuffer())
@@ -613,13 +649,13 @@ def afficher_module_expression_et_suivi(nom_departement):
                     ))
                     conn.commit()
                     conn.close()
-                    ajouter_log("Demande", nom_departement, f"Création: {titre_besoin}")
-                    str_app.success("Besoin transmis avec succès !")
+                    ajouter_log("Demande d'achat", nom_departement, f"Création: {titre_besoin}")
+                    str_app.success("Demande d'achat transmise avec succès !")
                 else:
                     str_app.error("Veuillez remplir l'intitulé et les spécifications.")
 
     with tab_suivi:
-        str_app.subheader("Suivi et Gestion des Demandes")
+        str_app.subheader("Suivi de mes Demandes")
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, titre, cahier_charges, fournisseur, statut, motif_refus, fichier_devis FROM demandes WHERE departement = ?", (nom_departement,))
@@ -676,42 +712,12 @@ def afficher_module_expression_et_suivi(nom_departement):
 
 
 # ==========================================
-# MODULES SPÉCIALISÉS SECTORIELS (EN ATTENTE DE CODE)
-# ==========================================
-def afficher_modules_specialises_sectoriels(nom_departement):
-    str_app.markdown("---")
-    str_app.subheader("⚙️ Modules Techniques & Sectoriels Spécialisés")
-    
-    if "Agriculture" in nom_departement or "Hydriques" in nom_departement:
-        with str_app.expander("🌾 **Module Agriculture & Ressources Hydriques (Forages & Pivots)**"):
-            str_app.write("Suivi des forages, pilotage de l'irrigation par pivots et journal de terrain des sols et des cultures.")
-    elif "Élevage" in nom_departement:
-        with str_app.expander("🐄 **Module Élevage & Halieutique (Registre & Santé)**"):
-            str_app.write("Registre d'élevage (bovin, ovin, aviculture, pisciculture), suivi sanitaire et traçabilité de la chaîne du froid.")
-    elif "Énergie" in nom_departement:
-        with str_app.expander("⚡ **Module Énergie & Maintenance (GMAO Centrale Solaire & Biodigesteurs)**"):
-            str_app.write("Gestion de Maintenance Assistée par Ordinateur (GMAO) pour la centrale solaire, les biodigesteurs et l'usine.")
-    elif "Juridique" in nom_departement:
-        with str_app.expander("⚖️ **Module Juridique & Conformité (Coffre-fort Contrats)**"):
-            str_app.write("Coffre-fort numérique des contrats et alertes d'échéances (baux fonciers, assurances).")
-    elif "Ressources Humaines" in nom_departement:
-        with str_app.expander("👥 **Module RH & RSE (Emploi Local & Formations)**"):
-            str_app.write("Suivi de l'emploi local et plannings de formation.")
-    elif "Commercial" in nom_departement:
-        with str_app.expander("📈 **Module Commercial & Marketing (Prévisions & Ventes)**"):
-            str_app.write("Prévisions de ventes et carnet de commandes.")
-    elif "IT" in nom_departement:
-        with str_app.expander("💻 **Module IT & Data (Capteurs IoT & Passerelles API)**"):
-            str_app.write("Cartographie des capteurs IoT sur les 96 hectares et passerelles de connexion (API).")
-
-
-# ==========================================
 # TABLEAU DE SUIVI GLOBAL (POUR LES PÔLES DE CONTRÔLE)
 # ==========================================
 def afficher_suivi_global():
     if profil["type"] in ["achats", "finance", "fondateur"]:
         str_app.markdown("---")
-        with str_app.expander("📊 **Tableau de Suivi Global de TOUTES les Demandes**"):
+        with str_app.expander("📊 **Tableau de Suivi Global de TOUTES les Demandes d'Achat**"):
             conn = get_db_connection()
             df_global = pd.read_sql_query("SELECT id, departement, titre, montant, fournisseur, statut, date FROM demandes", conn)
             conn.close()
@@ -725,23 +731,46 @@ def afficher_suivi_global():
 # ROUTAGE DES INTERFACES SELON LE RÔLE
 # ==========================================
 
-# 1. Départements Standards (DEP1 à DEP10)
+# 1. Départements Standards (Agriculture, Élevage, etc.)
 if profil["type"] == "standard":
-    tab1, tab2, tab3 = str_app.tabs(["1. Cahiers des Charges & Documents", "2. Besoins & Suivi", "3. Logistique (96 ha)"])
+    tab1, tab2 = str_app.tabs(["1. Cahiers des Charges & Documents", "2. Demandes d'Achat & Suivi"])
     with tab1:
         afficher_module_cahiers_charges(nom_dept)
     with tab2:
         afficher_module_expression_et_suivi(nom_dept)
-    with tab3:
-        afficher_module_logistique_96ha(nom_dept)
         
-    afficher_modules_specialises_sectoriels(nom_dept)
     str_app.markdown("---")
     afficher_espace_coordination_et_journal(nom_dept)
 
-# 2. Département Achats (DEP11)
+# 2. Département Sécurité & HSE (Normes HACCP / GlobalG.AP)
+elif profil["type"] == "hse":
+    tab1, tab2, tab3 = str_app.tabs(["1. Cahiers des Charges & Documents", "2. Normes & Audits (HACCP)", "3. Demandes d'Achat & Suivi"])
+    with tab1:
+        afficher_module_cahiers_charges(nom_dept)
+    with tab2:
+        afficher_module_hse(nom_dept)
+    with tab3:
+        afficher_module_expression_et_suivi(nom_dept)
+        
+    str_app.markdown("---")
+    afficher_espace_coordination_et_journal(nom_dept)
+
+# 3. Département Logistique (Dédié à temps plein)
+elif profil["type"] == "logistique":
+    tab1, tab2, tab3 = str_app.tabs(["1. Logistique & Multi-Stocks (96 ha)", "2. Cahiers des Charges & Documents", "3. Demandes d'Achat & Suivi"])
+    with tab1:
+        afficher_module_logistique_96ha(nom_dept)
+    with tab2:
+        afficher_module_cahiers_charges(nom_dept)
+    with tab3:
+        afficher_module_expression_et_suivi(nom_dept)
+        
+    str_app.markdown("---")
+    afficher_espace_coordination_et_journal(nom_dept)
+
+# 4. Département Achats
 elif profil["type"] == "achats":
-    tab_ach1, tab_ach2, tab_ach3, tab_ach4 = str_app.tabs(["1. Chiffrage & Sourcing", "2. Cahiers des Charges", "3. Logistique (96 ha)", "4. Coordination"])
+    tab_ach1, tab_ach2, tab_ach3, tab_ach4 = str_app.tabs(["1. Chiffrage & Sourcing", "2. Cahiers des Charges & Documents", "3. Demandes d'Achat & Suivi", "4. Coordination"])
     
     with tab_ach1:
         str_app.subheader("File d'attente - Achats & Approvisionnements")
@@ -797,18 +826,18 @@ elif profil["type"] == "achats":
     with tab_ach2:
         afficher_module_cahiers_charges(nom_dept)
     with tab_ach3:
-        afficher_module_logistique_96ha(nom_dept)
+        afficher_module_expression_et_suivi(nom_dept)
     with tab_ach4:
         afficher_espace_coordination_et_journal(nom_dept)
 
     afficher_suivi_global()
 
-# 3. Département Finance & Comptabilité (DEP12)
+# 5. Département Finance & Comptabilité
 elif profil["type"] == "finance":
     str_app.subheader("Contrôle Budgétaire & Comptabilité")
     afficher_indicateurs_budgetaires_securises()
     
-    tab_fin1, tab_fin2, tab_fin3, tab_fin4 = str_app.tabs(["1. Contrôle Budgétaire", "2. Cahiers des Charges", "3. Logistique (96 ha)", "4. Coordination"])
+    tab_fin1, tab_fin2, tab_fin3, tab_fin4 = str_app.tabs(["1. Contrôle Budgétaire", "2. Cahiers des Charges & Documents", "3. Demandes d'Achat & Suivi", "4. Coordination"])
     
     with tab_fin1:
         conn = get_db_connection()
@@ -874,18 +903,18 @@ elif profil["type"] == "finance":
     with tab_fin2:
         afficher_module_cahiers_charges(nom_dept)
     with tab_fin3:
-        afficher_module_logistique_96ha(nom_dept)
+        afficher_module_expression_et_suivi(nom_dept)
     with tab_fin4:
         afficher_espace_coordination_et_journal(nom_dept)
 
     afficher_suivi_global()
 
-# 4. Direction Générale (Fondateur)
+# 6. Direction Générale (Fondateur)
 elif profil["type"] == "fondateur":
     str_app.subheader("Pilotage Exécutif & Signature Stratégique")
     afficher_indicateurs_budgetaires_securises()
     
-    tab_f1, tab_f2, tab_f3, tab_f4 = str_app.tabs(["1. Signatures Exécutives", "2. Cahiers des Charges", "3. Logistique (96 ha)", "4. Coordination"])
+    tab_f1, tab_f2, tab_f3, tab_f4 = str_app.tabs(["1. Signatures Exécutives", "2. Cahiers des Charges & Documents", "3. Demandes d'Achat & Suivi", "4. Coordination"])
     
     with tab_f1:
         conn = get_db_connection()
@@ -940,7 +969,7 @@ elif profil["type"] == "fondateur":
     with tab_f2:
         afficher_module_cahiers_charges(nom_dept)
     with tab_f3:
-        afficher_module_logistique_96ha(nom_dept)
+        afficher_module_expression_et_suivi(nom_dept)
     with tab_f4:
         afficher_espace_coordination_et_journal(nom_dept)
 
