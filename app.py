@@ -1,23 +1,85 @@
-if "modification" in d_statut.lower():
-                    with str_app.form(f"form_modif_{d_id}", clear_on_submit=True):
-                        nouv_titre = str_app.text_input("Modifier l'intitulé", value=d_titre)
-                        nouv_cc = str_app.text_area("Modifier les spécifications", value=d_cc)
-                        nouv_fourn = str_app.text_input("Modifier le fournisseur", value=d_fourn)
-                        if str_app.form_submit_button("Soumettre à nouveau la modification"):
-                            conn_m = get_db_connection()
-                            cur_m = conn_m.cursor()
-                            cur_m.execute('''
-                                UPDATE demandes 
-                                SET titre = ?, cahier_charges = ?, fournisseur = ?, statut = 'En attente Achats', etape_actuelle = 'achats', avis_achats = 'En attente', motif_refus = '' 
-                                WHERE id = ?
-                            ''', (nouv_titre, nouv_cc, nouv_fourn, d_id))
-                            conn_m.commit()
-                            conn_m.close()
-                            ajouter_log("Modification Demande", nom_departement, f"Mise à jour et renvoi de la demande #{d_id}")
-                            str_app.success("Demande modifiée et renvoyée aux Achats !")
-                            str_app.rerun()
-        else:
-            str_app.info("Aucune demande enregistrée pour le moment.")
+import os
+import sqlite3
+import pandas as pd
+import streamlit as str_app
+
+# Configuration de base de l'application
+DOSSIER_UPLOADS = "uploads"
+os.makedirs(DOSSIER_UPLOADS, exist_ok=True)
+
+def get_db_connection():
+    conn = sqlite3.connect("projet_agricole.db", timeout=10)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def get_valeur_globale(cle):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT valeur FROM parametres_globaux WHERE cle = ?", (cle,))
+    row = cursor.fetchone()
+    conn.close()
+    return float(row["valeur"]) if row else 0.0
+
+def set_valeur_globale(cle, valeur):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO parametres_globaux (cle, valeur) VALUES (?, ?)", (cle, str(valeur)))
+    conn.commit()
+    conn.close()
+
+def ajouter_log(action, acteur, details):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO logs_audit (date, acteur, action, details) VALUES (datetime('now', 'localtime'), ?, ?, ?)", (acteur, action, details))
+    conn.commit()
+    conn.close()
+
+# Simulation de profil et variables globales pour l'exemple
+nom_dept = "Direction"
+profil = {"type": "fondateur"}
+
+def afficher_indicateurs_budgetaires_securises():
+    str_app.sidebar.title("Pilotage du Projet (96 ha)")
+    budget = get_valeur_globale("budget_global")
+    solde = get_valeur_globale("solde_restant")
+    str_app.sidebar.metric("Budget Global", f"{budget:,.2f} €")
+    str_app.sidebar.metric("Trésorerie Disponible", f"{solde:,.2f} €")
+
+def afficher_espace_coordination_et_journal(nom_departement):
+    str_app.info(f"Connecté en tant que : {nom_departement}")
+
+
+# ==========================================
+# MODULE EXEMPLE / GESTION DES DEMANDES
+# ==========================================
+def afficher_module_expression_et_suivi(nom_departement):
+    str_app.subheader("📝 Suivi des demandes")
+    d_statut = "En attente Achats"
+    d_titre = "Achat de matériel"
+    d_cc = "Spécifications techniques..."
+    d_fourn = "Fournisseur A"
+    d_id = 1
+
+    if "modification" in d_statut.lower():
+        with str_app.form(f"form_modif_{d_id}", clear_on_submit=True):
+            nouv_titre = str_app.text_input("Modifier l'intitulé", value=d_titre)
+            nouv_cc = str_app.text_area("Modifier les spécifications", value=d_cc)
+            nouv_fourn = str_app.text_input("Modifier le fournisseur", value=d_fourn)
+            if str_app.form_submit_button("Soumettre à nouveau la modification"):
+                conn_m = get_db_connection()
+                cur_m = conn_m.cursor()
+                cur_m.execute('''
+                    UPDATE demandes 
+                    SET titre = ?, cahier_charges = ?, fournisseur = ?, statut = 'En attente Achats', etape_actuelle = 'achats', avis_achats = 'En attente', motif_refus = '' 
+                    WHERE id = ?
+                ''', (nouv_titre, nouv_cc, nouv_fourn, d_id))
+                conn_m.commit()
+                conn_m.close()
+                ajouter_log("Modification Demande", nom_departement, f"Mise à jour et renvoi de la demande #{d_id}")
+                str_app.success("Demande modifiée et renvoyée aux Achats !")
+                str_app.rerun()
+    else:
+        str_app.info("Aucune demande nécessitant une modification pour le moment.")
 
 
 # ==========================================
@@ -281,11 +343,5 @@ elif profil["type"] == "finance":
     afficher_module_finance(nom_dept)
 elif profil["type"] == "fondateur":
     afficher_module_fondateur(nom_dept)
-elif profil["type"] == "logistique":
-    afficher_module_logistique_96ha(nom_dept)
-elif profil["type"] == "hse":
-    afficher_module_hse(nom_dept)
 else:
-    afficher_module_cahiers_charges(nom_dept)
-    str_app.markdown("---")
     afficher_module_expression_et_suivi(nom_dept)
