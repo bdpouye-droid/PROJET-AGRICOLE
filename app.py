@@ -117,6 +117,16 @@ def init_db():
     ''')
     
     cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages_directs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            expediteur TEXT,
+            destinataire TEXT,
+            texte TEXT,
+            date TEXT
+        )
+    ''')
+    
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS journaux_bord (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             departement TEXT,
@@ -175,7 +185,7 @@ def ajouter_log(action, acteur, details):
     conn.commit()
     conn.close()
 
-# --- DICTIONNAIRE DES UTILISATEURS & RÔLES ---
+# --- DICTIONNAIRE DES UTILISATEURS & RÔLES (14 DÉPARTEMENTS + DIRECTION) ---
 UTILISATEURS = {
     "DEP1": {"nom": "Agriculture", "mdp": "DEP123", "type": "standard", "dept": "Agriculture"},
     "DEP2": {"nom": "Élevage & Halieutique", "mdp": "DEP123", "type": "standard", "dept": "Élevage & Halieutique"},
@@ -187,9 +197,10 @@ UTILISATEURS = {
     "DEP8": {"nom": "Ressources Humaines & RSE", "mdp": "DEP123", "type": "standard", "dept": "Ressources Humaines & RSE"},
     "DEP9": {"nom": "Commercial & Marketing", "mdp": "DEP123", "type": "standard", "dept": "Commercial & Marketing"},
     "DEP10": {"nom": "IT & Data", "mdp": "DEP123", "type": "standard", "dept": "IT & Data"},
+    "DEP11": {"nom": "Logistique", "mdp": "DEP123", "type": "standard", "dept": "Logistique"},
     
-    "DEP11": {"nom": "Achats & Approvisionnements", "mdp": "DEP123", "type": "achats", "dept": "Achats & Approvisionnements"},
-    "DEP12": {"nom": "Finance & Comptabilité", "mdp": "DEP123", "type": "finance", "dept": "Finance & Comptabilité"},
+    "DEP12": {"nom": "Achats & Approvisionnements", "mdp": "DEP123", "type": "achats", "dept": "Achats & Approvisionnements"},
+    "DEP13": {"nom": "Finance & Comptabilité", "mdp": "DEP123", "type": "finance", "dept": "Finance & Comptabilité"},
     "fondateur": {"nom": "Direction Générale - Pilotage Stratégique", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
 }
 
@@ -234,6 +245,7 @@ else:
                 cursor.execute("DELETE FROM demandes")
                 cursor.execute("DELETE FROM cahiers_charges")
                 cursor.execute("DELETE FROM messages_coordination")
+                cursor.execute("DELETE FROM messages_directs")
                 cursor.execute("DELETE FROM journaux_bord")
                 cursor.execute("DELETE FROM logs_audit")
                 conn.commit()
@@ -255,25 +267,6 @@ profil = UTILISATEURS[user_key]
 nom_dept = profil["dept"]
 
 str_app.title(f"Tableau de Bord - {profil['nom']}")
-
-# --- AFFICHAGE DES KPI VISUELS DÈS L'ACCUEIL ---
-conn_kpi = get_db_connection()
-cursor_kpi = conn_kpi.cursor()
-cursor_kpi.execute("SELECT COUNT(*) FROM demandes WHERE statut NOT LIKE 'Annulé%'")
-nb_demandes_actives = cursor_kpi.fetchone()[0]
-conn_kpi.close()
-
-budget_global_val = get_valeur_globale("budget_global")
-solde_restant_val = get_valeur_globale("solde_restant")
-pourcentage_budget = max(0.0, min(100.0, (solde_restant_val / budget_global_val) * 100)) if budget_global_val > 0 else 0
-
-col_kpi1, col_kpi2, col_kpi3 = str_app.columns(3)
-col_kpi1.metric("📌 Demandes en cours", f"{nb_demandes_actives}")
-col_kpi2.metric("💰 Solde / Budget Global", f"{solde_restant_val:,.0f} €", f"{pourcentage_budget:.1f}% restant")
-col_kpi3.metric("🏢 Départements Actifs", f"10 opérationnels")
-str_app.progress(pourcentage_budget / 100.0)
-
-str_app.markdown("---")
 
 # --- FONCTION UTILITAIRE POUR LES BADGES DE STATUT ---
 def formater_badge_statut(statut):
@@ -308,7 +301,13 @@ elif profil["type"] == "standard":
     nb_refus = cursor_notif.fetchone()[0]
     if nb_refus > 0:
         str_app.error(f"❌ Vous avez **{nb_refus}** demande(s) refusée(s) ou nécessitant une modification.")
+
+# Notification de messages directs reçus
+cursor_notif.execute("SELECT COUNT(*) FROM messages_directs WHERE destinataire = ?", (nom_dept,))
+nb_msg_recus = cursor_notif.fetchone()[0]
 conn_notif.close()
+if nb_msg_recus > 0:
+    str_app.info(f"💬 Vous avez reçu des messages dans votre boîte de messagerie interdépartementale.")
 
 str_app.markdown("---")
 
@@ -351,13 +350,74 @@ def generer_pdf(titre, texte_contenu, infos_complementaires=""):
 
 
 # ==========================================
+# MODULE MESSAGERIE DIRECTE INTERDÉPARTEMENTALE
+# ==========================================
+def afficher_module_messagerie_directe(nom_departement):
+    str_app.subheader("📬 Messagerie Interdépartementale Directe")
+    str_app.write("Envoyez et consultez des messages ciblés et sécurisés vers n'importe quel autre département du bureau d'études.")
+    
+    tous_les_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
+    
+    col_m1, col_m2 = str_app.columns([1, 1])
+    
+    with col_m1:
+        str_app.markdown("### ✉️ Envoyer un message direct")
+        with str_app.form(f"form_msg_direct_{nom_departement}", clear_on_submit=True):
+            destinataire_choisi = str_app.selectbox("Sélectionner le département destinataire", tous_les_depts)
+            texte_message = str_app.text_area("Contenu du message / Note technique")
+            submit_direct = str_app.form_submit_button("Envoyer le message")
+            
+            if submit_direct and texte_message:
+                with str_app.spinner("Envoi en cours..."):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO messages_directs (expediteur, destinataire, texte, date) VALUES (?, ?, ?, ?)",
+                        (nom_departement, destinataire_choisi, texte_message, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                    )
+                    conn.commit()
+                    conn.close()
+                    str_app.success(f"Message transmis avec succès à [{destinataire_choisi}] !")
+                    str_app.rerun()
+            elif submit_direct:
+                str_app.error("Veuillez saisir le contenu du message.")
+
+    with col_m2:
+        str_app.markdown("### 📥 Boîte de réception & Historique")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, expediteur, destinataire, texte, date FROM messages_directs WHERE destinataire = ? OR expediteur = ? ORDER BY id DESC", (nom_departement, nom_departement))
+        messages_tous = cursor.fetchall()
+        conn.close()
+        
+        if messages_tous:
+            for m in messages_tous:
+                m_id, m_exp, m_dest, m_texte, m_date = m
+                if m_dest == nom_departement:
+                    badge_sens = f"📬 Reçu de **{m_exp}**"
+                    couleur_fond = "#161b22"
+                else:
+                    badge_sens = f"📤 Envoyé à **{m_dest}**"
+                    couleur_fond = "#0d1117"
+                
+                str_app.markdown(f"""
+                <div style="background-color: {couleur_fond}; padding: 10px; border-radius: 6px; border: 1px solid #30363d; margin-bottom: 8px;">
+                    <small style="color: #8b949e;">{badge_sens} — {m_date}</small><br>
+                    <span style="color: #c9d1d9; font-size: 0.9rem;">{m_texte}</span>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            str_app.info("Aucun message direct pour le moment.")
+
+
+# ==========================================
 # MODULE COLLABORATIF : ESPACE TEAMS & JOURNAL
 # ==========================================
 def afficher_espace_coordination_et_journal(nom_departement):
-    with str_app.expander("💬 **Espace de Coordination Collaboratif (Fil Partagé)**"):
-        str_app.markdown("Canal de discussion et de notes transversales entre départements (style flux collaboratif).")
+    with str_app.expander("💬 **Espace de Coordination Global (Fil Partagé)**"):
+        str_app.markdown("Canal de discussion et de notes transversales ouvert à l'ensemble des départements.")
         with str_app.form(f"form_coord_{nom_departement}", clear_on_submit=True):
-            texte_msg = str_app.text_input("Publier une note ou un compte-rendu dans le fil")
+            texte_msg = str_app.text_input("Publier une note ou un compte-rendu dans le fil global")
             submit_msg = str_app.form_submit_button("Envoyer dans le fil")
             if submit_msg and texte_msg:
                 with str_app.spinner("Publication..."):
@@ -420,6 +480,126 @@ def afficher_espace_coordination_et_journal(nom_departement):
                 str_app.markdown(f"**[{entree[2]}] {entree[0]}**\n\n{entree[1]}\n\n---")
         else:
             str_app.info("Aucune entrée dans votre journal de bord.")
+
+
+# ==========================================
+# MODULES SPÉCIFIQUES DÉDIÉS AUX 14 DÉPARTEMENTS
+# ==========================================
+def afficher_module_specifique_metier(nom_departement):
+    str_app.subheader(f"⚙️ Centre d'Ingénierie & Études Métier — {nom_departement}")
+    
+    if nom_departement == "Agriculture":
+        str_app.markdown("#### Module d'Étude Agro-pédologique & Dimensionnement des Cultures")
+        str_app.info("Outils de cartographie des sols, analyses agronomiques et planification des rotations d'irrigation.")
+        with str_app.form("form_agro"):
+            culture = str_app.text_input("Type de culture / Spéculation")
+            surface = str_app.number_input("Surface prévisionnelle (Hectares)", min_value=0.0, step=10.0)
+            analyse_sol = str_app.text_area("Paramètres pédologiques et contraintes climatiques")
+            if str_app.form_submit_button("Enregistrer l'étude agronomique"):
+                str_app.success("Étude agronomique enregistrée dans le dossier technique.")
+
+    elif nom_departement == "Élevage & Halieutique":
+        str_app.markdown("#### Module de Planification Zootechnique & Halieutique")
+        str_app.info("Calcul des charges animales, rations nutritionnelles et modélisation des écosystèmes aquacoles.")
+        with str_app.form("form_elevage"):
+            filiere = str_app.selectbox("Filière", ["Bovins", "Petits Ruminants", "Aviculture", "Aquaculture / Halieutique"])
+            effectif = str_app.number_input("Effectif cible / Volume de production", min_value=1, step=10)
+            notes_zoo = str_app.text_area("Spécifications nutritionnelles et infrastructures d'accueil")
+            if str_app.form_submit_button("Enregistrer les spécifications zootechniques"):
+                str_app.success("Paramètres zootechniques validés.")
+
+    elif nom_departement == "Industrie & Transformation":
+        str_app.markdown("#### Module d'Ingénierie des Procédés & Layout Usine")
+        str_app.info("Schémas directeurs de production, dimensionnement des chaînes et modélisation de l'implantation (Layout).")
+        with str_app.form("form_indus"):
+            chaine = str_app.text_input("Intitulé de la chaîne de transformation")
+            capacite_h = str_app.number_input("Capacité nominale horaire (unités ou tonnes/h)", min_value=0.0, step=1.0)
+            specs_process = str_app.text_area("Bilan de masso-efficience et spécifications techniques du process")
+            if str_app.form_submit_button("Enregistrer l'étude de process"):
+                str_app.success("Données de process industriel enregistrées.")
+
+    elif nom_departement == "Ressources Hydriques":
+        str_app.markdown("#### Module d'Hydrologie & Ingénierie des Réseaux d'Eau")
+        str_app.info("Modélisation des bassins versants, calculs de débit et dimensionnement des réseaux d'adduction.")
+        with str_app.form("form_eau"):
+            ouvrage = str_app.text_input("Type d'ouvrage (Forage, Station de pompage, Barrage, Adduction)")
+            debit_est = str_app.number_input("Débit prévisionnel estimé (m³/h)", min_value=0.0, step=5.0)
+            notes_hyd = str_app.text_area("Paramètres hydrogéologiques et modélisation hydraulique")
+            if str_app.form_submit_button("Enregistrer les paramètres hydriques"):
+                str_app.success("Étude hydrologique enregistrée.")
+
+    elif nom_departement == "Énergie & Maintenance":
+        str_app.markdown("#### Module d'Étude Énergétique & Plan de Maintenance Préventive")
+        str_app.info("Calculs de charges électriques, dimensionnement des sources renouvelables et plans de maintenance.")
+        with str_app.form("form_energie"):
+            puissance_kwh = str_app.number_input("Charge électrique / Puissance requise (kWh)", min_value=0.0, step=50.0)
+            source_enr = str_app.selectbox("Source principale", ["Solaire PV", "Biomasse", "Réseau Interconnecté", "Hybride"])
+            plan_maint = str_app.text_area("Spécifications du plan de maintenance préventive premier/second niveau")
+            if str_app.form_submit_button("Valider le profil énergétique et maintenance"):
+                str_app.success("Paramètres énergétiques enregistrés.")
+
+    elif nom_departement == "Recherche & Développement":
+        str_app.markdown("#### Module d'Innovation, Prototypage & TRL")
+        str_app.info("Suivi des brevets, fiches de tests en laboratoire et analyse du niveau de maturité technologique (TRL).")
+        with str_app.form("form_rd"):
+            projet_innovation = str_app.text_input("Nom du prototype / Projet R&D")
+            trl_niveau = str_app.slider("Niveau de maturité (TRL 1 à 9)", 1, 9, 3)
+            fiches_labo = str_app.text_area("Résultats de laboratoire et protocoles de test")
+            if str_app.form_submit_button("Enregistrer la fiche R&D"):
+                str_app.success("Fiche R&D mise à jour avec succès.")
+
+    elif nom_departement == "Sécurité & HSE":
+        str_app.markdown("#### Module d'Étude des Risques Industriels (HAZOP / EIE)")
+        str_app.info("Analyse des dangers, modélisation des impacts environnementaux et sociaux, plans d'évacuation.")
+        with str_app.form("form_hse"):
+            zone_etude = str_app.text_input("Zone ou site concerné par l'analyse des risques")
+            niveau_criticite = str_app.selectbox("Criticité évaluée", ["Faible", "Modéré", "Élevé", "Critique"])
+            protocole_securite = str_app.text_area("Mesures de prévention et procédures d'atténuation HSE")
+            if str_app.form_submit_button("Valider l'étude d'impact et de sécurité"):
+                str_app.success("Étude HSE enregistrée et archivée.")
+
+    elif nom_departement == "Ressources Humaines & RSE":
+        str_app.markdown("#### Module GPEC, Plan de Charge & Impact RSE")
+        str_app.info("Identification des compétences requises pour les projets, formation technique et dialogue sociétal.")
+        with str_app.form("form_rh"):
+            intitule_poste = str_app.text_input("Profils et compétences techniques recherchés")
+            nb_ressources = str_app.number_input("Nombre d'ETP (Équivalents Temps Plein) prévisionnels", min_value=1, step=1)
+            notes_rse = str_app.text_area("Plan d'intégration locale et critères RSE associés")
+            if str_app.form_submit_button("Enregistrer les données RH & RSE"):
+                str_app.success("Données RH et RSE enregistrées.")
+
+    elif nom_departement == "Commercial & Marketing":
+        str_app.markdown("#### Module d'Étude de Marché & Structuration d'Offre")
+        str_app.info("Analyse de la demande, benchmark concurrentiel et structuration des propositions commerciales amont.")
+        with str_app.form("form_comm"):
+            marche_vise = str_app.text_input("Segment de marché ou secteur visé")
+            volume_potentiel = str_app.number_input("Volume de marché potentiel estimé (€)", min_value=0.0, step=10000.0)
+            argumentaire = str_app.text_area("Positionnement stratégique et argumentaire commercial")
+            if str_app.form_submit_button("Enregistrer l'étude commerciale"):
+                str_app.success("Étude commerciale enregistrée.")
+
+    elif nom_departement == "IT & Data":
+        str_app.markdown("#### Module d'Architecture des Systèmes & Gouvernance Données")
+        str_app.info("Spécifications des infrastructures réseaux, cloud, bases de données, BIM et sécurité des données.")
+        with str_app.form("form_it"):
+            architecture_systeme = str_app.text_input("Composant infrastructure / Logiciel / Base de données")
+            stack_techno = str_app.text_input("Technologies et protocoles utilisés (ex: SIG, Cloud, API)")
+            specs_securite = str_app.text_area("Politique de sécurité, gouvernance des données et intégration BIM")
+            if str_app.form_submit_button("Enregistrer l'architecture IT"):
+                str_app.success("Spécifications IT enregistrées.")
+
+    elif nom_departement == "Logistique":
+        str_app.markdown("#### Module d'Ingénierie de la Supply Chain & Sourcing Logistique")
+        str_app.info("Cartographie des flux d'approvisionnement amont, dimensionnement des zones de stockage et plans de transport.")
+        with str_app.form("form_logistique"):
+            flux_nom = str_app.text_input("Intitulé du corridor logistique / Chaîne d'approvisionnement")
+            volume_stockage = str_app.number_input("Capacité de stockage requise (m² ou tonnes)", min_value=0.0, step=50.0)
+            contraintes_transport = str_app.text_area("Spécifications de transport, chaîne du froid ou manutention lourde")
+            if str_app.form_submit_button("Enregistrer le plan logistique"):
+                str_app.success("Plan d'ingénierie logistique enregistré.")
+
+    else:
+        str_app.info("Espace de conception et d'ingénierie transverse.")
 
 
 # ==========================================
@@ -542,7 +722,7 @@ def afficher_module_expression_et_suivi(nom_departement):
         # Filtres et recherche intuitive
         col_f1, col_f2 = str_app.columns(2)
         recherche_texte = col_f1.text_input("🔍 Rechercher dans mes demandes", "")
-        filtre_statut = col_f2.selectbox(" Filtrer par statut", ["Tous", "En attente", "Validé", "Refusé/Modifié"])
+        filtre_statut = col_f2.selectbox("Filtrer par statut", ["Tous", "En attente", "Validé", "Refusé/Modifié"])
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -648,19 +828,23 @@ def afficher_suivi_global():
 budget_global = get_valeur_globale("budget_global")
 solde_restant = get_valeur_globale("solde_restant")
 
-# 1. Départements Standards (DEP1 à DEP10)
+# 1. Départements Standards (DEP1 à DEP11)
 if profil["type"] == "standard":
-    tab1, tab2 = str_app.tabs(["1. Cahiers des Charges", "2. Expressions de Besoins & Suivi"])
+    tab1, tab2, tab3, tab4 = str_app.tabs(["1. Études & Ingénierie Métier", "2. Cahiers des Charges", "3. Besoins & Suivi", "4. Messagerie & Coordination"])
     with tab1:
-        afficher_module_cahiers_charges(nom_dept)
+        afficher_module_specifique_metier(nom_dept)
     with tab2:
+        afficher_module_cahiers_charges(nom_dept)
+    with tab3:
         afficher_module_expression_et_suivi(nom_dept)
-    str_app.markdown("---")
-    afficher_espace_coordination_et_journal(nom_dept)
+    with tab4:
+        afficher_module_messagerie_directe(nom_dept)
+        str_app.markdown("---")
+        afficher_espace_coordination_et_journal(nom_dept)
 
-# 2. Département Achats (DEP11)
+# 2. Département Achats (DEP12)
 elif profil["type"] == "achats":
-    tab_ach1, tab_ach2, tab_ach3 = str_app.tabs(["1. Chiffrage & Sourcing", "2. Cahiers des Charges", "3. Coordination"])
+    tab_ach1, tab_ach2, tab_ach3, tab_ach4 = str_app.tabs(["1. Chiffrage & Sourcing", "2. Cahiers des Charges", "3. Messagerie Directe", "4. Coordination"])
     
     with tab_ach1:
         str_app.subheader("File d'attente - Achats & Approvisionnements")
@@ -716,18 +900,23 @@ elif profil["type"] == "achats":
     with tab_ach2:
         afficher_module_cahiers_charges(nom_dept)
     with tab_ach3:
+        afficher_module_messagerie_directe(nom_dept)
+    with tab_ach4:
         afficher_espace_coordination_et_journal(nom_dept)
 
     afficher_suivi_global()
 
-# 3. Département Finance & Comptabilité (DEP12)
+# 3. Département Finance & Comptabilité (DEP13)
 elif profil["type"] == "finance":
     str_app.subheader("Contrôle Budgétaire & Comptabilité")
-    col1, col2 = str_app.columns(2)
-    col1.metric("Budget Global", f"{budget_global:,.2f} €")
-    col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
     
-    tab_fin1, tab_fin2, tab_fin3 = str_app.tabs(["1. Contrôle Budgétaire", "2. Cahiers des Charges", "3. Coordination"])
+    # Section masquée par défaut pour la confidentialité esthétique du budget
+    with str_app.expander("🔒 Afficher les indicateurs budgétaires (Confidentiel)"):
+        col1, col2 = str_app.columns(2)
+        col1.metric("Budget Global", f"{budget_global:,.2f} €")
+        col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
+    
+    tab_fin1, tab_fin2, tab_fin3, tab_fin4 = str_app.tabs(["1. Contrôle Budgétaire", "2. Cahiers des Charges", "3. Messagerie Directe", "4. Coordination"])
     
     with tab_fin1:
         conn = get_db_connection()
@@ -761,7 +950,6 @@ elif profil["type"] == "finance":
                             conn = get_db_connection()
                             cursor = conn.cursor()
                             if "Valider" in action_fin:
-                                # Vérification du solde
                                 if solde_restant >= d_montant:
                                     nouveau_solde = solde_restant - d_montant
                                     set_valeur_globale("solde_restant", nouveau_solde)
@@ -791,6 +979,8 @@ elif profil["type"] == "finance":
     with tab_fin2:
         afficher_module_cahiers_charges(nom_dept)
     with tab_fin3:
+        afficher_module_messagerie_directe(nom_dept)
+    with tab_fin4:
         afficher_espace_coordination_et_journal(nom_dept)
 
     afficher_suivi_global()
@@ -798,59 +988,67 @@ elif profil["type"] == "finance":
 # 4. Direction Générale (Fondateur)
 elif profil["type"] == "fondateur":
     str_app.subheader("Pilotage Stratégique & Signature Exécutive")
-    col1, col2 = str_app.columns(2)
-    col1.metric("Budget Global", f"{budget_global:,.2f} €")
-    col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
     
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, fichier_devis FROM demandes WHERE etape_actuelle = 'fondateur'")
-    demandes_dg = cursor.fetchall()
-    conn.close()
+    # Section masquée par défaut pour la confidentialité esthétique du budget
+    with str_app.expander("🔒 Afficher les indicateurs budgétaires (Confidentiel)"):
+        col1, col2 = str_app.columns(2)
+        col1.metric("Budget Global", f"{budget_global:,.2f} €")
+        col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
     
-    if demandes_dg:
-        str_app.markdown("### ✍️ Dossiers en attente de signature finale")
-        for d in demandes_dg:
-            d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich = d
-            with str_app.expander(f"Dossier DG #{d_id} - {d_titre} | Montant : {d_montant:,.2f} € (Émetteur : {d_dept})"):
-                str_app.write(f"**Spécifications :** {d_cc}")
-                str_app.write(f"**Fournisseur :** {d_fourn}")
-                
-                if d_fich:
-                    chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
-                    if os.path.exists(chemin_f):
-                        with open(chemin_f, "rb") as file_download:
-                            str_app.download_button("📥 Consulter le devis joint", data=file_download, file_name=d_fich, key=f"dl_dg_{d_id}")
-                
-                with str_app.form(f"form_dg_{d_id}"):
-                    action_dg = str_app.radio("Décision de la Direction", ["Approuver et Signer", "Refuser le dossier"], key=f"a_dg_{d_id}")
-                    motif_dg = str_app.text_input("Motif en cas de refus")
+    tab_dg1, tab_dg2, tab_dg3 = str_app.tabs(["1. Signatures & Arbitrages", "2. Messagerie Directe", "3. Coordination"])
+    
+    with tab_dg1:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, fichier_devis FROM demandes WHERE etape_actuelle = 'fondateur'")
+        demandes_dg = cursor.fetchall()
+        conn.close()
+        
+        if demandes_dg:
+            str_app.markdown("### ✍️ Dossiers en attente de signature finale")
+            for d in demandes_dg:
+                d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich = d
+                with str_app.expander(f"Dossier DG #{d_id} - {d_titre} | Montant : {d_montant:,.2f} € (Émetteur : {d_dept})"):
+                    str_app.write(f"**Spécifications :** {d_cc}")
+                    str_app.write(f"**Fournisseur :** {d_fourn}")
                     
-                    if str_app.form_submit_button("Valider la décision de la Direction"):
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        if "Approuver" in action_dg:
-                            cursor.execute("UPDATE demandes SET statut = 'Approuvé et Signé', etape_actuelle = 'cloture' WHERE id = ?", (d_id,))
-                            conn.commit()
-                            conn.close()
-                            str_app.success("Dossier approuvé et signé avec succès !")
-                            str_app.rerun()
-                        else:
-                            if not motif_dg:
-                                str_app.error("Veuillez saisir un motif de refus.")
-                                conn.close()
-                            else:
-                                # Restitution du budget si refusé à la dernière étape
-                                nouveau_solde = solde_restant + d_montant
-                                set_valeur_globale("solde_restant", nouveau_solde)
-                                cursor.execute("UPDATE demandes SET statut = 'Refusé par la Direction', etape_actuelle = 'bloque', motif_refus = ? WHERE id = ?", (motif_dg, d_id))
+                    if d_fich:
+                        chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
+                        if os.path.exists(chemin_f):
+                            with open(chemin_f, "rb") as file_download:
+                                str_app.download_button("📥 Consulter le devis joint", data=file_download, file_name=d_fich, key=f"dl_dg_{d_id}")
+                    
+                    with str_app.form(f"form_dg_{d_id}"):
+                        action_dg = str_app.radio("Décision de la Direction", ["Approuver et Signer", "Refuser le dossier"], key=f"a_dg_{d_id}")
+                        motif_dg = str_app.text_input("Motif en cas de refus")
+                        
+                        if str_app.form_submit_button("Valider la décision de la Direction"):
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            if "Approuver" in action_dg:
+                                cursor.execute("UPDATE demandes SET statut = 'Approuvé et Signé', etape_actuelle = 'cloture' WHERE id = ?", (d_id,))
                                 conn.commit()
                                 conn.close()
-                                str_app.success("Refus enregistré et budget restitué.")
+                                str_app.success("Dossier approuvé et signé avec succès !")
                                 str_app.rerun()
-    else:
-        str_app.info("Aucun dossier en attente de signature exécutive.")
+                            else:
+                                if not motif_dg:
+                                    str_app.error("Veuillez saisir un motif de refus.")
+                                    conn.close()
+                                else:
+                                    nouveau_solde = solde_restant + d_montant
+                                    set_valeur_globale("solde_restant", nouveau_solde)
+                                    cursor.execute("UPDATE demandes SET statut = 'Refusé par la Direction', etape_actuelle = 'bloque', motif_refus = ? WHERE id = ?", (motif_dg, d_id))
+                                    conn.commit()
+                                    conn.close()
+                                    str_app.success("Refus enregistré et budget restitué.")
+                                    str_app.rerun()
+        else:
+            str_app.info("Aucun dossier en attente de signature exécutive.")
 
-    afficher_suivi_global()
-    str_app.markdown("---")
-    afficher_espace_coordination_et_journal(nom_dept)
+        afficher_suivi_global()
+
+    with tab_dg2:
+        afficher_module_messagerie_directe(nom_dept)
+    with tab_dg3:
+        afficher_espace_coordination_et_journal(nom_dept)
