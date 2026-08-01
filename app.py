@@ -25,7 +25,7 @@ if not os.path.exists(DOSSIER_ETUDES):
 
 CHEMIN_LOGO = "logo.png"
 
-# --- STYLE CSS DESIGN & CORPORATE (SaaS Look + Badges & Textareas) ---
+# --- STYLE CSS DESIGN & CORPORATE ---
 str_app.markdown("""
     <style>
     .stApp {
@@ -166,6 +166,16 @@ def init_db():
     ''')
     
     cursor.execute('''
+        CREATE TABLE IF NOT EXISTS structuration_cadrage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            departement TEXT,
+            titre_hypothese TEXT,
+            contenu_hypothese TEXT,
+            date TEXT
+        )
+    ''')
+    
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS logs_audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT,
@@ -277,6 +287,7 @@ else:
                 cursor.execute("DELETE FROM messages_coordination")
                 cursor.execute("DELETE FROM messages_directs")
                 cursor.execute("DELETE FROM journaux_bord")
+                cursor.execute("DELETE FROM structuration_cadrage")
                 cursor.execute("DELETE FROM logs_audit")
                 conn.commit()
                 conn.close()
@@ -308,65 +319,99 @@ def formater_badge_statut(statut):
     else:
         return f'<span class="badge-orange">🟠 {statut}</span>'
 
-# --- SYSTÈME DE CLOCHE DE NOTIFICATION GLOBALE ---
-def compter_notifications_actives(dept_nom, type_profil):
-    conn = conn_notif = get_db_connection()
+
+# ==========================================
+# GESTION DE LA NAVIGATION PAR LES NOTIFICATIONS CLIQUABLES
+# ==========================================
+if 'nav_cible' not in str_app.session_state:
+    str_app.session_state.nav_cible = None
+
+
+# ==========================================
+# SYSTÈME DE CLOCHE DE NOTIFICATION INTERACTIVE ET CLIQUABLE
+# ==========================================
+def recuperer_elements_notifications(dept_nom, type_profil):
+    conn = get_db_connection()
     cursor = conn.cursor()
-    total_notifs = 0
+    liste_notifs = []
     
     # 1. Messages directs reçus
-    cursor.execute("SELECT COUNT(*) FROM messages_directs WHERE destinataire = ?", (dept_nom,))
-    res_msg = cursor.fetchone()
-    if res_msg:
-        total_notifs += res_msg[0]
+    cursor.execute("SELECT id, expediteur, texte, date FROM messages_directs WHERE destinataire = ? ORDER BY id DESC", (dept_nom,))
+    for m in cursor.fetchall():
+        liste_notifs.append({
+            "type": "message",
+            "titre": f"Message direct de {m[1]}",
+            "desc": m[2][:50] + "...",
+            "action_cle": f"msg_{m[0]}"
+        })
         
     # 2. Études partagées reçues
-    cursor.execute("SELECT destinataires_partage FROM etudes_metier WHERE departement != ?", (dept_nom,))
-    toutes_etudes = cursor.fetchall()
-    for e in toutes_etudes:
-        dest_json = e[0]
+    cursor.execute("SELECT id, departement, titre, destinataires_partage, date FROM etudes_metier WHERE departement != ?", (dept_nom,))
+    for e in cursor.fetchall():
+        dest_json = e[3]
         if dest_json:
             liste_dest = json.loads(dest_json)
             if dept_nom in liste_dest:
-                total_notifs += 1
+                liste_notifs.append({
+                    "type": "etude",
+                    "titre": f"Étude reçue : {e[2]}",
+                    "desc": f"Émise par {e[1]}",
+                    "action_cle": f"etude_{e[0]}"
+                })
 
     # 3. Rôles spécifiques (Achats, Finance, Fondateur)
     if type_profil == "achats":
-        cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
-        res_ach = cursor.fetchone()
-        if res_ach: total_notifs += res_ach[0]
+        cursor.execute("SELECT id, departement, titre FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
+        for d in cursor.fetchall():
+            liste_notifs.append({
+                "type": "demande_achats",
+                "titre": f"Demande d'achat : {d[2]}",
+                "desc": f"Émise par {d[1]}",
+                "action_cle": f"demande_{d[0]}"
+            })
     elif type_profil == "finance":
-        cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
-        res_fin = cursor.fetchone()
-        if res_fin: total_notifs += res_fin[0]
+        cursor.execute("SELECT id, departement, titre FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
+        for d in cursor.fetchall():
+            liste_notifs.append({
+                "type": "demande_finance",
+                "titre": f"Dossier financier : {d[2]}",
+                "desc": f"Émis par {d[1]}",
+                "action_cle": f"demande_{d[0]}"
+            })
     elif type_profil == "fondateur":
-        cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'fondateur'")
-        res_dg = cursor.fetchone()
-        if res_dg: total_notifs += res_dg[0]
-        
+        cursor.execute("SELECT id, departement, titre FROM demandes WHERE etape_actuelle = 'fondateur'")
+        for d in cursor.fetchall():
+            liste_notifs.append({
+                "type": "demande_dg",
+                "titre": f"Signature exécutive : {d[2]}",
+                "desc": f"Émis par {d[1]}",
+                "action_cle": f"demande_{d[0]}"
+            })
+            
     conn.close()
-    return total_notifs
+    return liste_notifs
 
-nb_notifs = compter_notifications_actives(nom_dept, profil["type"])
+items_notifs = recuperer_elements_notifications(nom_dept, profil["type"])
+nb_notifs = len(items_notifs)
 
-# Affichage de la cloche dans la barre latérale
-if nb_notifs > 0:
-    str_app.sidebar.markdown(f"""
-    <div style="background-color: #161b22; padding: 10px; border-radius: 8px; border: 1px solid #f85149; text-align: center; margin-bottom: 15px;">
-        <span style="font-size: 1.2rem;">🔔</span> <b style="color: #f85149;">Centre de Notifications</b><br>
-        <span class="badge-notification">{nb_notifs} élément(s) en attente</span>
-    </div>
-    """, unsafe_allow_html=True)
-else:
-    str_app.sidebar.markdown(f"""
-    <div style="background-color: #161b22; padding: 10px; border-radius: 8px; border: 1px solid #30363d; text-align: center; margin-bottom: 15px;">
-        <span style="font-size: 1.2rem;">🔔</span> <span style="color: #8b949e; font-size: 0.9rem;">Aucune nouvelle notification</span>
-    </div>
-    """, unsafe_allow_html=True)
+# Affichage de la cloche interactive dans la barre latérale
+with str_app.sidebar.expander(f"🔔 Centre de Notifications ({nb_notifs})", expanded=(nb_notifs > 0)):
+    if nb_notifs > 0:
+        for idx, notif in enumerate(items_notifs):
+            str_app.markdown(f"**{notif['titre']}**<br><small style='color: #8b949e;'>{notif['desc']}</small>", unsafe_allow_html=True)
+            if str_app.button(f"🔍 Ouvrir l'élément", key=f"btn_notif_{idx}_{notif['action_cle']}"):
+                str_app.session_state.nav_cible = notif['action_cle']
+                str_app.rerun()
+            str_app.markdown("---")
+    else:
+        str_app.info("Aucune notification en attente.")
 
-str_app.markdown("---")
+str_app.sidebar.markdown("---")
 
-# --- FONCTION PDF ---
+
+# ==========================================
+# FONCTION PDF
+# ==========================================
 def generer_pdf(titre, texte_contenu, infos_complementaires=""):
     pdf = FPDF()
     pdf.add_page()
@@ -405,37 +450,38 @@ def generer_pdf(titre, texte_contenu, infos_complementaires=""):
 
 
 # ==========================================
-# MODULE MESSAGERIE DIRECTE INTERDÉPARTEMENTALE
+# MODULE MESSAGERIE DIRECTE MULTIDESTINATAIRES
 # ==========================================
 def afficher_module_messagerie_directe(nom_departement):
-    str_app.subheader("📬 Messagerie Interdépartementale Directe")
-    str_app.write("Envoyez et consultez des messages ciblés et sécurisés vers n'importe quel autre département du bureau d'études.")
+    str_app.subheader("📬 Messagerie Interdépartementale Directe (Multi-destinataires)")
+    str_app.write("Envoyez et consultez des messages ciblés et sécurisés vers un ou plusieurs départements en même temps.")
     
     tous_les_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
     
     col_m1, col_m2 = str_app.columns([1, 1])
     
     with col_m1:
-        str_app.markdown("### ✉️ Envoyer un message direct")
+        str_app.markdown("### ✉️ Envoyer un message groupé")
         with str_app.form(f"form_msg_direct_{nom_departement}", clear_on_submit=True):
-            destinataire_choisi = str_app.selectbox("Sélectionner le département destinataire", tous_les_depts)
+            destinataires_choisis = str_app.multiselect("Sélectionner les départements destinataires", tous_les_depts)
             texte_message = str_app.text_area("Contenu du message / Note technique")
-            submit_direct = str_app.form_submit_button("Envoyer le message")
+            submit_direct = str_app.form_submit_button("Diffuser le message")
             
-            if submit_direct and texte_message:
-                with str_app.spinner("Envoi en cours..."):
+            if submit_direct and destinataires_choisis and texte_message:
+                with str_app.spinner("Diffusion en cours..."):
                     conn = get_db_connection()
                     cursor = conn.cursor()
-                    cursor.execute(
-                        "INSERT INTO messages_directs (expediteur, destinataire, texte, date) VALUES (?, ?, ?, ?)",
-                        (nom_departement, destinataire_choisi, texte_message, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                    )
+                    for dest in destinataires_choisis:
+                        cursor.execute(
+                            "INSERT INTO messages_directs (expediteur, destinataire, texte, date) VALUES (?, ?, ?, ?)",
+                            (nom_departement, dest, texte_message, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                        )
                     conn.commit()
                     conn.close()
-                    str_app.success(f"Message transmis avec succès à [{destinataire_choisi}] !")
+                    str_app.success(f"Message transmis avec succès à {len(destinataires_choisis)} département(s) !")
                     str_app.rerun()
             elif submit_direct:
-                str_app.error("Veuillez saisir le contenu du message.")
+                str_app.error("Veuillez sélectionner au moins un destinataire et rédiger un message.")
 
     with col_m2:
         str_app.markdown("### 📥 Boîte de réception & Historique")
@@ -448,19 +494,26 @@ def afficher_module_messagerie_directe(nom_departement):
         if messages_tous:
             for m in messages_tous:
                 m_id, m_exp, m_dest, m_texte, m_date = m
+                is_target = (str_app.session_state.nav_cible == f"msg_{m_id}")
+                
                 if m_dest == nom_departement:
                     badge_sens = f"📬 Reçu de **{m_exp}**"
-                    couleur_fond = "#161b22"
+                    couleur_fond = "#1f2937" if is_target else "#161b22"
                 else:
                     badge_sens = f"📤 Envoyé à **{m_dest}**"
                     couleur_fond = "#0d1117"
                 
                 str_app.markdown(f"""
-                <div style="background-color: {couleur_fond}; padding: 10px; border-radius: 6px; border: 1px solid #30363d; margin-bottom: 8px;">
+                <div style="background-color: {couleur_fond}; padding: 10px; border-radius: 6px; border: 1px solid {'#1f6feb' if is_target else '#30363d'}; margin-bottom: 8px;">
                     <small style="color: #8b949e;">{badge_sens} — {m_date}</small><br>
                     <span style="color: #c9d1d9; font-size: 0.9rem; white-space: pre-wrap;">{m_texte}</span>
                 </div>
                 """, unsafe_allow_html=True)
+                
+                if is_target:
+                    if str_app.button("Effacer la surbrillance", key=f"clear_msg_{m_id}"):
+                        str_app.session_state.nav_cible = None
+                        str_app.rerun()
         else:
             str_app.info("Aucun message direct pour le moment.")
 
@@ -538,8 +591,55 @@ def afficher_espace_coordination_et_journal(nom_departement):
 
 
 # ==========================================
+# MODULE DE STRUCTURATION SPÉCIFIQUE (CADRAGE DES HYPOTHÈSES)
+# ==========================================
+def afficher_module_structuration(nom_departement):
+    str_app.subheader(f"📐 Phase de Structuration & Cadrage Initial — {nom_departement}")
+    str_app.write("Formalisez ici les hypothèses fondatrices, les contraintes amont et les standards de conception de votre département pour le projet.")
+    
+    with str_app.form(f"form_struct_{nom_departement}", clear_on_submit=True):
+        titre_hyp = str_app.text_input("Intitulé de l'hypothèse ou paramètre structurant")
+        contenu_hyp = str_app.text_area("Description détaillée et justification technique")
+        submit_struct = str_app.form_submit_button("Enregistrer l'élément de structuration")
+        
+        if submit_struct and titre_hyp and contenu_hyp:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO structuration_cadrage (departement, titre_hypothese, contenu_hypothese, date) VALUES (?, ?, ?, ?)",
+                (nom_departement, titre_hyp, contenu_hyp, datetime.now().strftime("%Y-%m-%d"))
+            )
+            conn.commit()
+            conn.close()
+            ajouter_log("Structuration", nom_departement, fHypothèse enregistrée: {titre_hyp})
+            str_app.success("Hypothèse de structuration enregistrée avec succès !")
+            str_app.rerun()
+        elif submit_struct:
+            str_app.error("Veuillez remplir tous les champs.")
+
+    str_app.markdown("### 📋 Hypothèses et Standards enregistrés")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, titre_hypothese, contenu_hypothese, date FROM structuration_cadrage WHERE departement = ?", (nom_departement,))
+    liste_hyp = cursor.fetchall()
+    conn.close()
+    
+    if liste_hyp:
+        for h in liste_hyp:
+            h_id, h_titre, h_desc, h_date = h
+            str_app.markdown(f"""
+            <div style="background-color: #161b22; padding: 12px; border-radius: 6px; border: 1px solid #30363d; margin-bottom: 10px;">
+                <small style="color: #8b949e;"><b>[{h_date}] Structuration</b></small><br>
+                <b style="color: #58a6ff;">{h_titre}</b><br>
+                <span style="color: #c9d1d9; font-size: 0.9rem; white-space: pre-wrap;">{h_desc}</span>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        str_app.info("Aucune hypothèse structurante enregistrée pour le moment.")
+
+
+# ==========================================
 # MODULES SPÉCIFIQUES DÉDIÉS AUX 14 DÉPARTEMENTS
-# (AVEC LOGISTIQUE INTÉGRÉE & COMMENTAIRES EXTENSIBLES)
 # ==========================================
 def afficher_module_specifique_metier(nom_departement):
     str_app.subheader(f"⚙️ Centre d'Ingénierie & Études Métier — {nom_departement}")
@@ -553,7 +653,6 @@ def afficher_module_specifique_metier(nom_departement):
         with str_app.form(f"form_etude_{nom_departement}", clear_on_submit=True):
             titre_etude = str_app.text_input("Intitulé de l'étude / Projet technique")
             
-            # Saisie spécifique selon le département
             champs_specifiques = {}
             if nom_departement == "Agriculture":
                 champs_specifiques["culture"] = str_app.text_input("Type de culture / Spéculation")
@@ -651,8 +750,15 @@ def afficher_module_specifique_metier(nom_departement):
             for e in etudes_recues:
                 e_id, e_dept, e_titre, e_json, e_fich, e_dest_json, e_date = e
                 data_dict = json.loads(e_json) if e_json else {}
+                is_target_etude = (str_app.session_state.nav_cible == f"etude_{e_id}")
                 
-                with str_app.expander(f"📁 [{e_dept}] {e_titre} (Reçue le {e_date})"):
+                with str_app.expander(f"📁 [{e_dept}] {e_titre} (Reçue le {e_date})", expanded=is_target_etude):
+                    if is_target_etude:
+                        str_app.info("🎯 Élément ciblé par votre notification.")
+                        if str_app.button("Effacer la surbrillance", key=f"clear_etude_{e_id}"):
+                            str_app.session_state.nav_cible = None
+                            str_app.rerun()
+
                     for k, v in data_dict.items():
                         str_app.write(f"**{k.capitalize()} :** {v}")
                     
@@ -665,7 +771,6 @@ def afficher_module_specifique_metier(nom_departement):
                     str_app.markdown("---")
                     str_app.markdown("#### 💬 Avis techniques et commentaires")
                     
-                    # Récupération des commentaires pour cette étude
                     conn_c = get_db_connection()
                     cursor_c = conn_c.cursor()
                     cursor_c.execute("SELECT auteur, commentaire, date FROM commentaires_etudes WHERE etude_id = ? ORDER BY id ASC", (e_id,))
@@ -684,7 +789,6 @@ def afficher_module_specifique_metier(nom_departement):
                     else:
                         str_app.write("*Aucun commentaire technique pour l'instant.*")
                     
-                    # Formulaire de commentaire souple et extensible
                     with str_app.form(f"form_comm_{e_id}"):
                         nouveau_commentaire = str_app.text_area("Laisser une remarque ou un avis technique (saisie multiligne libre)", key=f"txt_comm_{e_id}")
                         submit_comm = str_app.form_submit_button("Publier l'avis technique")
@@ -780,7 +884,7 @@ def afficher_module_cahiers_charges(nom_departement):
 
 
 # ==========================================
-# MODULE EXPRESSION DE BESOINS & SUIVI (AVEC FILTRES ET RECHERCHE)
+# MODULE EXPRESSION DE BESOINS & SUIVI
 # ==========================================
 def afficher_module_expression_et_suivi(nom_departement):
     tab_besoin, tab_suivi = str_app.tabs(["1. Exprimer un Besoin", "2. Suivi de mes Demandes"])
@@ -850,8 +954,15 @@ def afficher_module_expression_et_suivi(nom_departement):
             for d in demandes_filtrees:
                 d_id, d_titre, d_cc, d_fourn, d_statut, d_motif, d_fich = d
                 badge_html = formater_badge_statut(d_statut)
+                is_target_demande = (str_app.session_state.nav_cible == f"demande_{d_id}")
                 
-                with str_app.expander(f"Demande #{d_id} : {d_titre} — {badge_html}", expanded=False):
+                with str_app.expander(f"Demande #{d_id} : {d_titre} — {badge_html}", expanded=is_target_demande):
+                    if is_target_demande:
+                        str_app.info("🎯 Élément ciblé par votre notification.")
+                        if str_app.button("Effacer la surbrillance", key=f"clear_dem_{d_id}"):
+                            str_app.session_state.nav_cible = None
+                            str_app.rerun()
+
                     str_app.write(f"**Spécifications :** {d_cc}")
                     str_app.write(f"**Fournisseur :** {d_fourn}")
                     
@@ -898,7 +1009,7 @@ def afficher_module_expression_et_suivi(nom_departement):
 
 
 # ==========================================
-# TABLEAU DE SUIVI GLOBAL (AVEC FILTRES)
+# TABLEAU DE SUIVI GLOBAL
 # ==========================================
 def afficher_suivi_global():
     if profil["type"] in ["achats", "finance", "fondateur"]:
@@ -932,21 +1043,35 @@ solde_restant = get_valeur_globale("solde_restant")
 
 # 1. Départements Standards (DEP1 à DEP11)
 if profil["type"] == "standard":
-    tab1, tab2, tab3, tab4 = str_app.tabs(["1. Études & Ingénierie Métier", "2. Cahiers des Charges", "3. Besoins & Suivi", "4. Messagerie & Coordination"])
+    tab1, tab2, tab3, tab4, tab5 = str_app.tabs([
+        "1. Études & Ingénierie Métier", 
+        "2. Structuration & Cadrage", 
+        "3. Cahiers des Charges", 
+        "4. Besoins & Suivi", 
+        "5. Messagerie & Coordination"
+    ])
     with tab1:
         afficher_module_specifique_metier(nom_dept)
     with tab2:
-        afficher_module_cahiers_charges(nom_dept)
+        afficher_module_structuration(nom_dept)
     with tab3:
-        afficher_module_expression_et_suivi(nom_dept)
+        afficher_module_cahiers_charges(nom_dept)
     with tab4:
+        afficher_module_expression_et_suivi(nom_dept)
+    with tab5:
         afficher_module_messagerie_directe(nom_dept)
         str_app.markdown("---")
         afficher_espace_coordination_et_journal(nom_dept)
 
 # 2. Département Achats (DEP12)
 elif profil["type"] == "achats":
-    tab_ach1, tab_ach2, tab_ach3, tab_ach4 = str_app.tabs(["1. Chiffrage & Sourcing", "2. Cahiers des Charges", "3. Messagerie Directe", "4. Coordination"])
+    tab_ach1, tab_ach2, tab_ach3, tab_ach4, tab_ach5 = str_app.tabs([
+        "1. Chiffrage & Sourcing", 
+        "2. Structuration & Cadrage", 
+        "3. Cahiers des Charges", 
+        "4. Messagerie Directe", 
+        "5. Coordination"
+    ])
     
     with tab_ach1:
         str_app.subheader("File d'attente - Achats & Approvisionnements")
@@ -959,7 +1084,15 @@ elif profil["type"] == "achats":
         if demandes_achats:
             for d in demandes_achats:
                 d_id, d_dept, d_titre, d_cc, d_fourn, d_fich = d
-                with str_app.expander(f"Besoin #{d_id} - {d_titre} (Émetteur : {d_dept})"):
+                is_target_ach = (str_app.session_state.nav_cible == f"demande_{d_id}")
+                
+                with str_app.expander(f"Besoin #{d_id} - {d_titre} (Émetteur : {d_dept})", expanded=is_target_ach):
+                    if is_target_ach:
+                        str_app.info("🎯 Élément ciblé par votre notification.")
+                        if str_app.button("Effacer la surbrillance", key=f"clear_ach_{d_id}"):
+                            str_app.session_state.nav_cible = None
+                            str_app.rerun()
+
                     str_app.write(f"**Spécifications :** {d_cc}")
                     str_app.info(f"💡 **Fournisseur suggéré :** {d_fourn}")
                     
@@ -1000,10 +1133,12 @@ elif profil["type"] == "achats":
             str_app.info("Aucune demande en attente pour les Achats.")
             
     with tab_ach2:
-        afficher_module_cahiers_charges(nom_dept)
+        afficher_module_structuration(nom_dept)
     with tab_ach3:
-        afficher_module_messagerie_directe(nom_dept)
+        afficher_module_cahiers_charges(nom_dept)
     with tab_ach4:
+        afficher_module_messagerie_directe(nom_dept)
+    with tab_ach5:
         afficher_espace_coordination_et_journal(nom_dept)
 
     afficher_suivi_global()
@@ -1017,7 +1152,13 @@ elif profil["type"] == "finance":
         col1.metric("Budget Global", f"{budget_global:,.2f} €")
         col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
     
-    tab_fin1, tab_fin2, tab_fin3, tab_fin4 = str_app.tabs(["1. Contrôle Budgétaire", "2. Cahiers des Charges", "3. Messagerie Directe", "4. Coordination"])
+    tab_fin1, tab_fin2, tab_fin3, tab_fin4, tab_fin5 = str_app.tabs([
+        "1. Contrôle Budgétaire", 
+        "2. Structuration & Cadrage", 
+        "3. Cahiers des Charges", 
+        "4. Messagerie Directe", 
+        "5. Coordination"
+    ])
     
     with tab_fin1:
         conn = get_db_connection()
@@ -1029,7 +1170,15 @@ elif profil["type"] == "finance":
         if demandes_finance:
             for d in demandes_finance:
                 d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich = d
-                with str_app.expander(f"Dossier #{d_id} - {d_titre} | Montant : {d_montant:,.2f} € (Émetteur : {d_dept})"):
+                is_target_fin = (str_app.session_state.nav_cible == f"demande_{d_id}")
+                
+                with str_app.expander(f"Dossier #{d_id} - {d_titre} | Montant : {d_montant:,.2f} € (Émetteur : {d_dept})", expanded=is_target_fin):
+                    if is_target_fin:
+                        str_app.info("🎯 Élément ciblé par votre notification.")
+                        if str_app.button("Effacer la surbrillance", key=f"clear_fin_{d_id}"):
+                            str_app.session_state.nav_cible = None
+                            str_app.rerun()
+
                     str_app.write(f"**Spécifications :** {d_cc}")
                     str_app.write(f"**Fournisseur validé :** {d_fourn}")
                     
@@ -1078,10 +1227,12 @@ elif profil["type"] == "finance":
             str_app.info("Aucun dossier en attente de contrôle budgétaire.")
 
     with tab_fin2:
-        afficher_module_cahiers_charges(nom_dept)
+        afficher_module_structuration(nom_dept)
     with tab_fin3:
-        afficher_module_messagerie_directe(nom_dept)
+        afficher_module_cahiers_charges(nom_dept)
     with tab_fin4:
+        afficher_module_messagerie_directe(nom_dept)
+    with tab_fin5:
         afficher_espace_coordination_et_journal(nom_dept)
 
     afficher_suivi_global()
@@ -1095,7 +1246,12 @@ elif profil["type"] == "fondateur":
         col1.metric("Budget Global", f"{budget_global:,.2f} €")
         col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
     
-    tab_dg1, tab_dg2, tab_dg3 = str_app.tabs(["1. Signatures & Arbitrages", "2. Messagerie Directe", "3. Coordination"])
+    tab_dg1, tab_dg2, tab_dg3, tab_dg4 = str_app.tabs([
+        "1. Signatures & Arbitrages", 
+        "2. Structuration & Cadrage", 
+        "3. Messagerie Directe", 
+        "4. Coordination"
+    ])
     
     with tab_dg1:
         conn = get_db_connection()
@@ -1108,7 +1264,15 @@ elif profil["type"] == "fondateur":
             str_app.markdown("### ✍️ Dossiers en attente de signature finale")
             for d in demandes_dg:
                 d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich = d
-                with str_app.expander(f"Dossier DG #{d_id} - {d_titre} | Montant : {d_montant:,.2f} € (Émetteur : {d_dept})"):
+                is_target_dg = (str_app.session_state.nav_cible == f"demande_{d_id}")
+                
+                with str_app.expander(f"Dossier DG #{d_id} - {d_titre} | Montant : {d_montant:,.2f} € (Émetteur : {d_dept})", expanded=is_target_dg):
+                    if is_target_dg:
+                        str_app.info("🎯 Élément ciblé par votre notification.")
+                        if str_app.button("Effacer la surbrillance", key=f"clear_dg_{d_id}"):
+                            str_app.session_state.nav_cible = None
+                            str_app.rerun()
+
                     str_app.write(f"**Spécifications :** {d_cc}")
                     str_app.write(f"**Fournisseur :** {d_fourn}")
                     
@@ -1149,6 +1313,8 @@ elif profil["type"] == "fondateur":
         afficher_suivi_global()
 
     with tab_dg2:
-        afficher_module_messagerie_directe(nom_dept)
+        afficher_module_structuration(nom_dept)
     with tab_dg3:
+        afficher_module_messagerie_directe(nom_dept)
+    with tab_dg4:
         afficher_espace_coordination_et_journal(nom_dept)
