@@ -611,7 +611,7 @@ def afficher_module_structuration(nom_departement):
             )
             conn.commit()
             conn.close()
-            ajouter_log("Structuration", nom_departement, fHypothèse enregistrée: {titre_hyp})
+            ajouter_log("Structuration", nom_departement, f"Hypothèse enregistrée: {titre_hyp}")
             str_app.success("Hypothèse de structuration enregistrée avec succès !")
             str_app.rerun()
         elif submit_struct:
