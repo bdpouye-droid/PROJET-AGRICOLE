@@ -2,3 +2,4 @@ streamlit
 pandas
 streamlit-autorefresh
 fpdf2
+plotly
