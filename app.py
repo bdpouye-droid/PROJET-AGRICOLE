@@ -17,8 +17,11 @@ str_app.set_page_config(
 
 # --- DOSSIERS POUR LES FICHIERS ET LE LOGO ---
 DOSSIER_UPLOADS = "uploads_devis"
+DOSSIER_ETUDES = "uploads_etudes"
 if not os.path.exists(DOSSIER_UPLOADS):
     os.makedirs(DOSSIER_UPLOADS)
+if not os.path.exists(DOSSIER_ETUDES):
+    os.makedirs(DOSSIER_ETUDES)
 
 CHEMIN_LOGO = "logo.png"
 
@@ -50,7 +53,6 @@ str_app.markdown("""
         font-size: 1.6rem;
         font-weight: 700;
     }
-    /* Styles pour les badges de statut visuels */
     .badge-vert {
         background-color: #238636; color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.85rem; font-weight: 600;
     }
@@ -93,6 +95,18 @@ def init_db():
             motif_refus TEXT,
             date TEXT,
             fichier_devis TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS etudes_metier (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            departement TEXT,
+            titre TEXT,
+            donnees_json TEXT,
+            fichier_etude TEXT,
+            destinataires_partage TEXT,
+            date TEXT
         )
     ''')
     
@@ -243,6 +257,7 @@ else:
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM demandes")
+                cursor.execute("DELETE FROM etudes_metier")
                 cursor.execute("DELETE FROM cahiers_charges")
                 cursor.execute("DELETE FROM messages_coordination")
                 cursor.execute("DELETE FROM messages_directs")
@@ -302,7 +317,6 @@ elif profil["type"] == "standard":
     if nb_refus > 0:
         str_app.error(f"❌ Vous avez **{nb_refus}** demande(s) refusée(s) ou nécessitant une modification.")
 
-# Notification de messages directs reçus
 cursor_notif.execute("SELECT COUNT(*) FROM messages_directs WHERE destinataire = ?", (nom_dept,))
 nb_msg_recus = cursor_notif.fetchone()[0]
 conn_notif.close()
@@ -484,122 +498,130 @@ def afficher_espace_coordination_et_journal(nom_departement):
 
 # ==========================================
 # MODULES SPÉCIFIQUES DÉDIÉS AUX 14 DÉPARTEMENTS
+# AVEC IMPORT DE FICHIERS ET PARTAGE CIBLÉ INTERDÉPARTEMENTAL
 # ==========================================
 def afficher_module_specifique_metier(nom_departement):
     str_app.subheader(f"⚙️ Centre d'Ingénierie & Études Métier — {nom_departement}")
+    str_app.write("Créez vos études amont, importez vos fichiers techniques (SIG, plans, PDF, Excel) et partagez-les avec les départements concernés.")
     
-    if nom_departement == "Agriculture":
-        str_app.markdown("#### Module d'Étude Agro-pédologique & Dimensionnement des Cultures")
-        str_app.info("Outils de cartographie des sols, analyses agronomiques et planification des rotations d'irrigation.")
-        with str_app.form("form_agro"):
-            culture = str_app.text_input("Type de culture / Spéculation")
-            surface = str_app.number_input("Surface prévisionnelle (Hectares)", min_value=0.0, step=10.0)
-            analyse_sol = str_app.text_area("Paramètres pédologiques et contraintes climatiques")
-            if str_app.form_submit_button("Enregistrer l'étude agronomique"):
-                str_app.success("Étude agronomique enregistrée dans le dossier technique.")
+    tous_les_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
+    
+    tab_creer, tab_consulter = str_app.tabs(["1. Nouvelle Étude & Partage", "2. Études & Fichiers Partagés Reçus"])
+    
+    with tab_creer:
+        with str_app.form(f"form_etude_{nom_departement}", clear_on_submit=True):
+            titre_etude = str_app.text_input("Intitulé de l'étude / Projet technique")
+            
+            # Saisie spécifique selon le département
+            champs_specifiques = {}
+            if nom_departement == "Agriculture":
+                champs_specifiques["culture"] = str_app.text_input("Type de culture / Spéculation")
+                champs_specifiques["surface"] = str_app.number_input("Surface prévisionnelle", min_value=0.0, step=10.0)
+                champs_specifiques["details"] = str_app.text_area("Paramètres pédologiques et contraintes climatiques")
+            elif nom_departement == "Élevage & Halieutique":
+                champs_specifiques["filiere"] = str_app.selectbox("Filière", ["Bovins", "Petits Ruminants", "Aviculture", "Aquaculture / Halieutique"])
+                champs_specifiques["effectif"] = str_app.number_input("Effectif cible / Volume", min_value=1, step=10)
+                champs_specifiques["details"] = str_app.text_area("Spécifications nutritionnelles et infrastructures")
+            elif nom_departement == "Industrie & Transformation":
+                champs_specifiques["chaine"] = str_app.text_input("Intitulé de la chaîne de transformation")
+                champs_specifiques["capacite"] = str_app.number_input("Capacité nominale horaire", min_value=0.0, step=1.0)
+                champs_specifiques["details"] = str_app.text_area("Bilan de masso-efficience et layout process")
+            elif nom_departement == "Ressources Hydriques":
+                champs_specifiques["ouvrage"] = str_app.text_input("Type d'ouvrage (Forage, Station, Barrage)")
+                champs_specifiques["debit"] = str_app.number_input("Débit prévisionnel (m³/h)", min_value=0.0, step=5.0)
+                champs_specifiques["details"] = str_app.text_area("Paramètres hydrogéologiques")
+            elif nom_departement == "Énergie & Maintenance":
+                champs_specifiques["puissance"] = str_app.number_input("Charge électrique / Puissance requise (kWh)", min_value=0.0, step=50.0)
+                champs_specifiques["source"] = str_app.selectbox("Source principale", ["Solaire PV", "Biomasse", "Réseau", "Hybride"])
+                champs_specifiques["details"] = str_app.text_area("Plan de maintenance préventive")
+            elif nom_departement == "Recherche & Développement":
+                champs_specifiques["projet"] = str_app.text_input("Nom du prototype / Projet R&D")
+                champs_specifiques["trl"] = str_app.slider("Niveau de maturité (TRL 1 à 9)", 1, 9, 3)
+                champs_specifiques["details"] = str_app.text_area("Résultats de laboratoire et protocoles")
+            elif nom_departement == "Sécurité & HSE":
+                champs_specifiques["zone"] = str_app.text_input("Zone concernée par l'analyse des risques")
+                champs_specifiques["criticite"] = str_app.selectbox("Criticité", ["Faible", "Modéré", "Élevé", "Critique"])
+                champs_specifiques["details"] = str_app.text_area("Mesures de prévention et procédures HSE")
+            elif nom_departement == "Ressources Humaines & RSE":
+                champs_specifiques["poste"] = str_app.text_input("Profils et compétences recherchés")
+                champs_specifiques["etp"] = str_app.number_input("Nombre d'ETP prévisionnels", min_value=1, step=1)
+                champs_specifiques["details"] = str_app.text_area("Plan d'intégration locale et critères RSE")
+            elif nom_departement == "Commercial & Marketing":
+                champs_specifiques["marche"] = str_app.text_input("Segment de marché ou secteur visé")
+                champs_specifiques["volume"] = str_app.number_input("Volume potentiel estimé (€)", min_value=0.0, step=10000.0)
+                champs_specifiques["details"] = str_app.text_area("Positionnement stratégique et offre")
+            elif nom_departement == "IT & Data":
+                champs_specifiques["archi"] = str_app.text_input("Composant infrastructure / Logiciel")
+                champs_specifiques["stack"] = str_app.text_input("Technologies (ex: SIG, Cloud, API)")
+                champs_specifiques["details"] = str_app.text_area("Politique de sécurité et gouvernance BIM")
+            elif nom_departement == "Logistique":
+                champs_specifiques["corridor"] = str_app.text_input("Intitulé du corridor logistique / Chaîne")
+                champs_specifiques["stockage"] = str_app.number_input("Capacité de stockage requise", min_value=0.0, step=50.0)
+                champs_specifiques["details"] = str_app.text_area("Spécifications transport et manutention lourde")
+            else:
+                champs_specifiques["details"] = str_app.text_area("Spécifications et notes d'ingénierie")
 
-    elif nom_departement == "Élevage & Halieutique":
-        str_app.markdown("#### Module de Planification Zootechnique & Halieutique")
-        str_app.info("Calcul des charges animales, rations nutritionnelles et modélisation des écosystèmes aquacoles.")
-        with str_app.form("form_elevage"):
-            filiere = str_app.selectbox("Filière", ["Bovins", "Petits Ruminants", "Aviculture", "Aquaculture / Halieutique"])
-            effectif = str_app.number_input("Effectif cible / Volume de production", min_value=1, step=10)
-            notes_zoo = str_app.text_area("Spécifications nutritionnelles et infrastructures d'accueil")
-            if str_app.form_submit_button("Enregistrer les spécifications zootechniques"):
-                str_app.success("Paramètres zootechniques validés.")
+            fich_etude = str_app.file_uploader("📥 Importer un fichier technique (SIG, CAO, PDF, Excel, Image)", type=["pdf", "png", "jpg", "jpeg", "xlsx", "xls", "csv", "dwg"])
+            destinataires_partage = str_app.multiselect("🤝 Partager cette étude avec d'autres départements :", tous_les_depts)
+            
+            submit_etude = str_app.form_submit_button("Enregistrer et diffuser l'étude")
+            
+            if submit_etude and titre_etude:
+                nom_fich_sauve = ""
+                if fich_etude is not None:
+                    nom_fich_sauve = f"etude_{datetime.now().strftime('%Y%m%d%H%M%S')}_{fich_etude.name}"
+                    chemin_complet = os.path.join(DOSSIER_ETUDES, nom_fich_sauve)
+                    with open(chemin_complet, "wb") as f:
+                        f.write(fich_etude.getbuffer())
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO etudes_metier (departement, titre, donnees_json, fichier_etude, destinataires_partage, date)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    nom_departement, titre_etude, json.dumps(champs_specifiques), nom_fich_sauve,
+                    json.dumps(destinataires_partage), datetime.now().strftime("%Y-%m-%d %H:%M")
+                ))
+                conn.commit()
+                conn.close()
+                ajouter_log("Étude Métier", nom_departement, f"Création et partage: {titre_etude}")
+                str_app.success("Étude enregistrée et partagée avec succès !")
+                str_app.rerun()
+            elif submit_etude:
+                str_app.error("Veuillez renseigner au moins l'intitulé de l'étude.")
 
-    elif nom_departement == "Industrie & Transformation":
-        str_app.markdown("#### Module d'Ingénierie des Procédés & Layout Usine")
-        str_app.info("Schémas directeurs de production, dimensionnement des chaînes et modélisation de l'implantation (Layout).")
-        with str_app.form("form_indus"):
-            chaine = str_app.text_input("Intitulé de la chaîne de transformation")
-            capacite_h = str_app.number_input("Capacité nominale horaire (unités ou tonnes/h)", min_value=0.0, step=1.0)
-            specs_process = str_app.text_area("Bilan de masso-efficience et spécifications techniques du process")
-            if str_app.form_submit_button("Enregistrer l'étude de process"):
-                str_app.success("Données de process industriel enregistrées.")
+    with tab_consulter:
+        str_app.markdown("### 📥 Études partagées par les autres départements")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date FROM etudes_metier WHERE departement != ?", (nom_departement,))
+        toutes_etudes = cursor.fetchall()
+        conn.close()
+        
+        etudes_recues = []
+        for e in toutes_etudes:
+            e_id, e_dept, e_titre, e_json, e_fich, e_dest_json, e_date = e
+            destinataires = json.loads(e_dest_json) if e_dest_json else []
+            if nom_departement in destinataires:
+                etudes_recues.append(e)
 
-    elif nom_departement == "Ressources Hydriques":
-        str_app.markdown("#### Module d'Hydrologie & Ingénierie des Réseaux d'Eau")
-        str_app.info("Modélisation des bassins versants, calculs de débit et dimensionnement des réseaux d'adduction.")
-        with str_app.form("form_eau"):
-            ouvrage = str_app.text_input("Type d'ouvrage (Forage, Station de pompage, Barrage, Adduction)")
-            debit_est = str_app.number_input("Débit prévisionnel estimé (m³/h)", min_value=0.0, step=5.0)
-            notes_hyd = str_app.text_area("Paramètres hydrogéologiques et modélisation hydraulique")
-            if str_app.form_submit_button("Enregistrer les paramètres hydriques"):
-                str_app.success("Étude hydrologique enregistrée.")
-
-    elif nom_departement == "Énergie & Maintenance":
-        str_app.markdown("#### Module d'Étude Énergétique & Plan de Maintenance Préventive")
-        str_app.info("Calculs de charges électriques, dimensionnement des sources renouvelables et plans de maintenance.")
-        with str_app.form("form_energie"):
-            puissance_kwh = str_app.number_input("Charge électrique / Puissance requise (kWh)", min_value=0.0, step=50.0)
-            source_enr = str_app.selectbox("Source principale", ["Solaire PV", "Biomasse", "Réseau Interconnecté", "Hybride"])
-            plan_maint = str_app.text_area("Spécifications du plan de maintenance préventive premier/second niveau")
-            if str_app.form_submit_button("Valider le profil énergétique et maintenance"):
-                str_app.success("Paramètres énergétiques enregistrés.")
-
-    elif nom_departement == "Recherche & Développement":
-        str_app.markdown("#### Module d'Innovation, Prototypage & TRL")
-        str_app.info("Suivi des brevets, fiches de tests en laboratoire et analyse du niveau de maturité technologique (TRL).")
-        with str_app.form("form_rd"):
-            projet_innovation = str_app.text_input("Nom du prototype / Projet R&D")
-            trl_niveau = str_app.slider("Niveau de maturité (TRL 1 à 9)", 1, 9, 3)
-            fiches_labo = str_app.text_area("Résultats de laboratoire et protocoles de test")
-            if str_app.form_submit_button("Enregistrer la fiche R&D"):
-                str_app.success("Fiche R&D mise à jour avec succès.")
-
-    elif nom_departement == "Sécurité & HSE":
-        str_app.markdown("#### Module d'Étude des Risques Industriels (HAZOP / EIE)")
-        str_app.info("Analyse des dangers, modélisation des impacts environnementaux et sociaux, plans d'évacuation.")
-        with str_app.form("form_hse"):
-            zone_etude = str_app.text_input("Zone ou site concerné par l'analyse des risques")
-            niveau_criticite = str_app.selectbox("Criticité évaluée", ["Faible", "Modéré", "Élevé", "Critique"])
-            protocole_securite = str_app.text_area("Mesures de prévention et procédures d'atténuation HSE")
-            if str_app.form_submit_button("Valider l'étude d'impact et de sécurité"):
-                str_app.success("Étude HSE enregistrée et archivée.")
-
-    elif nom_departement == "Ressources Humaines & RSE":
-        str_app.markdown("#### Module GPEC, Plan de Charge & Impact RSE")
-        str_app.info("Identification des compétences requises pour les projets, formation technique et dialogue sociétal.")
-        with str_app.form("form_rh"):
-            intitule_poste = str_app.text_input("Profils et compétences techniques recherchés")
-            nb_ressources = str_app.number_input("Nombre d'ETP (Équivalents Temps Plein) prévisionnels", min_value=1, step=1)
-            notes_rse = str_app.text_area("Plan d'intégration locale et critères RSE associés")
-            if str_app.form_submit_button("Enregistrer les données RH & RSE"):
-                str_app.success("Données RH et RSE enregistrées.")
-
-    elif nom_departement == "Commercial & Marketing":
-        str_app.markdown("#### Module d'Étude de Marché & Structuration d'Offre")
-        str_app.info("Analyse de la demande, benchmark concurrentiel et structuration des propositions commerciales amont.")
-        with str_app.form("form_comm"):
-            marche_vise = str_app.text_input("Segment de marché ou secteur visé")
-            volume_potentiel = str_app.number_input("Volume de marché potentiel estimé (€)", min_value=0.0, step=10000.0)
-            argumentaire = str_app.text_area("Positionnement stratégique et argumentaire commercial")
-            if str_app.form_submit_button("Enregistrer l'étude commerciale"):
-                str_app.success("Étude commerciale enregistrée.")
-
-    elif nom_departement == "IT & Data":
-        str_app.markdown("#### Module d'Architecture des Systèmes & Gouvernance Données")
-        str_app.info("Spécifications des infrastructures réseaux, cloud, bases de données, BIM et sécurité des données.")
-        with str_app.form("form_it"):
-            architecture_systeme = str_app.text_input("Composant infrastructure / Logiciel / Base de données")
-            stack_techno = str_app.text_input("Technologies et protocoles utilisés (ex: SIG, Cloud, API)")
-            specs_securite = str_app.text_area("Politique de sécurité, gouvernance des données et intégration BIM")
-            if str_app.form_submit_button("Enregistrer l'architecture IT"):
-                str_app.success("Spécifications IT enregistrées.")
-
-    elif nom_departement == "Logistique":
-        str_app.markdown("#### Module d'Ingénierie de la Supply Chain & Sourcing Logistique")
-        str_app.info("Cartographie des flux d'approvisionnement amont, dimensionnement des zones de stockage et plans de transport.")
-        with str_app.form("form_logistique"):
-            flux_nom = str_app.text_input("Intitulé du corridor logistique / Chaîne d'approvisionnement")
-            volume_stockage = str_app.number_input("Capacité de stockage requise (m² ou tonnes)", min_value=0.0, step=50.0)
-            contraintes_transport = str_app.text_area("Spécifications de transport, chaîne du froid ou manutention lourde")
-            if str_app.form_submit_button("Enregistrer le plan logistique"):
-                str_app.success("Plan d'ingénierie logistique enregistré.")
-
-    else:
-        str_app.info("Espace de conception et d'ingénierie transverse.")
+        if etudes_recues:
+            for e in etudes_recues:
+                e_id, e_dept, e_titre, e_json, e_fich, e_dest_json, e_date = e
+                data_dict = json.loads(e_json) if e_json else {}
+                
+                with str_app.expander(f"📁 [{e_dept}] {e_titre} (Reçue le {e_date})"):
+                    for k, v in data_dict.items():
+                        str_app.write(f"**{k.capitalize()} :** {v}")
+                    
+                    if e_fich:
+                        chemin_f = os.path.join(DOSSIER_ETUDES, e_fich)
+                        if os.path.exists(chemin_f):
+                            with open(chemin_f, "rb") as file_download:
+                                str_app.download_button("📥 Télécharger le fichier technique joint", data=file_download, file_name=e_fich, key=f"dl_etude_{e_id}")
+        else:
+            str_app.info("Aucune étude partagée avec vous pour le moment.")
 
 
 # ==========================================
@@ -719,7 +741,6 @@ def afficher_module_expression_et_suivi(nom_departement):
     with tab_suivi:
         str_app.subheader("Suivi et Gestion de mes Demandes")
         
-        # Filtres et recherche intuitive
         col_f1, col_f2 = str_app.columns(2)
         recherche_texte = col_f1.text_input("🔍 Rechercher dans mes demandes", "")
         filtre_statut = col_f2.selectbox("Filtrer par statut", ["Tous", "En attente", "Validé", "Refusé/Modifié"])
@@ -730,7 +751,6 @@ def afficher_module_expression_et_suivi(nom_departement):
         mes_demandes = cursor.fetchall()
         conn.close()
         
-        # Application des filtres
         demandes_filtrees = []
         for d in mes_demandes:
             d_id, d_titre, d_cc, d_fourn, d_statut, d_motif, d_fich = d
@@ -910,7 +930,6 @@ elif profil["type"] == "achats":
 elif profil["type"] == "finance":
     str_app.subheader("Contrôle Budgétaire & Comptabilité")
     
-    # Section masquée par défaut pour la confidentialité esthétique du budget
     with str_app.expander("🔒 Afficher les indicateurs budgétaires (Confidentiel)"):
         col1, col2 = str_app.columns(2)
         col1.metric("Budget Global", f"{budget_global:,.2f} €")
@@ -989,7 +1008,6 @@ elif profil["type"] == "finance":
 elif profil["type"] == "fondateur":
     str_app.subheader("Pilotage Stratégique & Signature Exécutive")
     
-    # Section masquée par défaut pour la confidentialité esthétique du budget
     with str_app.expander("🔒 Afficher les indicateurs budgétaires (Confidentiel)"):
         col1, col2 = str_app.columns(2)
         col1.metric("Budget Global", f"{budget_global:,.2f} €")
