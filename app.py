@@ -25,7 +25,7 @@ if not os.path.exists(DOSSIER_ETUDES):
 
 CHEMIN_LOGO = "logo.png"
 
-# --- STYLE CSS DESIGN & CORPORATE (SaaS Look + Badges) ---
+# --- STYLE CSS DESIGN & CORPORATE (SaaS Look + Badges & Textareas) ---
 str_app.markdown("""
     <style>
     .stApp {
@@ -48,6 +48,7 @@ str_app.markdown("""
         border: 1px solid #30363d;
         background-color: #161b22;
         color: #c9d1d9;
+        white-space: pre-wrap;
     }
     div[data-testid="stMetricValue"] {
         font-size: 1.6rem;
@@ -61,6 +62,9 @@ str_app.markdown("""
     }
     .badge-rouge {
         background-color: #da3633; color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.85rem; font-weight: 600;
+    }
+    .badge-notification {
+        background-color: #f85149; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: bold;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -106,6 +110,16 @@ def init_db():
             donnees_json TEXT,
             fichier_etude TEXT,
             destinataires_partage TEXT,
+            date TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS commentaires_etudes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            etude_id INTEGER,
+            auteur TEXT,
+            commentaire TEXT,
             date TEXT
         )
     ''')
@@ -258,6 +272,7 @@ else:
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM demandes")
                 cursor.execute("DELETE FROM etudes_metier")
+                cursor.execute("DELETE FROM commentaires_etudes")
                 cursor.execute("DELETE FROM cahiers_charges")
                 cursor.execute("DELETE FROM messages_coordination")
                 cursor.execute("DELETE FROM messages_directs")
@@ -293,35 +308,61 @@ def formater_badge_statut(statut):
     else:
         return f'<span class="badge-orange">🟠 {statut}</span>'
 
-# --- NOTIFICATIONS ---
-conn_notif = get_db_connection()
-cursor_notif = conn_notif.cursor()
-if profil["type"] == "achats":
-    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
-    nb_pending = cursor_notif.fetchone()[0]
-    if nb_pending > 0:
-        str_app.warning(f"⚠️ Vous avez **{nb_pending}** demande(s) en attente de chiffrage et de sourcing.")
-elif profil["type"] == "finance":
-    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
-    nb_pending = cursor_notif.fetchone()[0]
-    if nb_pending > 0:
-        str_app.warning(f"⚠️ Vous avez **{nb_pending}** dossier(s) en attente de contrôle budgétaire.")
-elif profil["type"] == "fondateur":
-    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'fondateur'")
-    nb_pending = cursor_notif.fetchone()[0]
-    if nb_pending > 0:
-        str_app.warning(f"⚠️ Vous avez **{nb_pending}** dossier(s) en attente de signature exécutive.")
-elif profil["type"] == "standard":
-    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE departement = ? AND statut LIKE '%Refusé%'", (nom_dept,))
-    nb_refus = cursor_notif.fetchone()[0]
-    if nb_refus > 0:
-        str_app.error(f"❌ Vous avez **{nb_refus}** demande(s) refusée(s) ou nécessitant une modification.")
+# --- SYSTÈME DE CLOCHE DE NOTIFICATION GLOBALE ---
+def compter_notifications_actives(dept_nom, type_profil):
+    conn = conn_notif = get_db_connection()
+    cursor = conn.cursor()
+    total_notifs = 0
+    
+    # 1. Messages directs reçus
+    cursor.execute("SELECT COUNT(*) FROM messages_directs WHERE destinataire = ?", (dept_nom,))
+    res_msg = cursor.fetchone()
+    if res_msg:
+        total_notifs += res_msg[0]
+        
+    # 2. Études partagées reçues
+    cursor.execute("SELECT destinataires_partage FROM etudes_metier WHERE departement != ?", (dept_nom,))
+    toutes_etudes = cursor.fetchall()
+    for e in toutes_etudes:
+        dest_json = e[0]
+        if dest_json:
+            liste_dest = json.loads(dest_json)
+            if dept_nom in liste_dest:
+                total_notifs += 1
 
-cursor_notif.execute("SELECT COUNT(*) FROM messages_directs WHERE destinataire = ?", (nom_dept,))
-nb_msg_recus = cursor_notif.fetchone()[0]
-conn_notif.close()
-if nb_msg_recus > 0:
-    str_app.info(f"💬 Vous avez reçu des messages dans votre boîte de messagerie interdépartementale.")
+    # 3. Rôles spécifiques (Achats, Finance, Fondateur)
+    if type_profil == "achats":
+        cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
+        res_ach = cursor.fetchone()
+        if res_ach: total_notifs += res_ach[0]
+    elif type_profil == "finance":
+        cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
+        res_fin = cursor.fetchone()
+        if res_fin: total_notifs += res_fin[0]
+    elif type_profil == "fondateur":
+        cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'fondateur'")
+        res_dg = cursor.fetchone()
+        if res_dg: total_notifs += res_dg[0]
+        
+    conn.close()
+    return total_notifs
+
+nb_notifs = compter_notifications_actives(nom_dept, profil["type"])
+
+# Affichage de la cloche dans la barre latérale
+if nb_notifs > 0:
+    str_app.sidebar.markdown(f"""
+    <div style="background-color: #161b22; padding: 10px; border-radius: 8px; border: 1px solid #f85149; text-align: center; margin-bottom: 15px;">
+        <span style="font-size: 1.2rem;">🔔</span> <b style="color: #f85149;">Centre de Notifications</b><br>
+        <span class="badge-notification">{nb_notifs} élément(s) en attente</span>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    str_app.sidebar.markdown(f"""
+    <div style="background-color: #161b22; padding: 10px; border-radius: 8px; border: 1px solid #30363d; text-align: center; margin-bottom: 15px;">
+        <span style="font-size: 1.2rem;">🔔</span> <span style="color: #8b949e; font-size: 0.9rem;">Aucune nouvelle notification</span>
+    </div>
+    """, unsafe_allow_html=True)
 
 str_app.markdown("---")
 
@@ -417,7 +458,7 @@ def afficher_module_messagerie_directe(nom_departement):
                 str_app.markdown(f"""
                 <div style="background-color: {couleur_fond}; padding: 10px; border-radius: 6px; border: 1px solid #30363d; margin-bottom: 8px;">
                     <small style="color: #8b949e;">{badge_sens} — {m_date}</small><br>
-                    <span style="color: #c9d1d9; font-size: 0.9rem;">{m_texte}</span>
+                    <span style="color: #c9d1d9; font-size: 0.9rem; white-space: pre-wrap;">{m_texte}</span>
                 </div>
                 """, unsafe_allow_html=True)
         else:
@@ -457,7 +498,7 @@ def afficher_espace_coordination_et_journal(nom_departement):
                 str_app.markdown(f"""
                 <div style="background-color: #161b22; padding: 12px; border-radius: 6px; border-left: 3px solid #1f6feb; margin-bottom: 10px;">
                     <small style="color: #8b949e;"><b>{m[0]}</b> — {m[2]}</small><br>
-                    <span style="color: #c9d1d9; font-size: 0.95rem;">{m[1]}</span>
+                    <span style="color: #c9d1d9; font-size: 0.95rem; white-space: pre-wrap;">{m[1]}</span>
                 </div>
                 """, unsafe_allow_html=True)
         else:
@@ -498,11 +539,11 @@ def afficher_espace_coordination_et_journal(nom_departement):
 
 # ==========================================
 # MODULES SPÉCIFIQUES DÉDIÉS AUX 14 DÉPARTEMENTS
-# AVEC IMPORT DE FICHIERS ET PARTAGE CIBLÉ INTERDÉPARTEMENTAL
+# (AVEC LOGISTIQUE INTÉGRÉE & COMMENTAIRES EXTENSIBLES)
 # ==========================================
 def afficher_module_specifique_metier(nom_departement):
     str_app.subheader(f"⚙️ Centre d'Ingénierie & Études Métier — {nom_departement}")
-    str_app.write("Créez vos études amont, importez vos fichiers techniques (SIG, plans, PDF, Excel) et partagez-les avec les départements concernés.")
+    str_app.write("Créez vos études amont, importez vos fichiers techniques et partagez-les avec les départements concernés.")
     
     tous_les_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
     
@@ -555,9 +596,9 @@ def afficher_module_specifique_metier(nom_departement):
                 champs_specifiques["stack"] = str_app.text_input("Technologies (ex: SIG, Cloud, API)")
                 champs_specifiques["details"] = str_app.text_area("Politique de sécurité et gouvernance BIM")
             elif nom_departement == "Logistique":
-                champs_specifiques["corridor"] = str_app.text_input("Intitulé du corridor logistique / Chaîne")
-                champs_specifiques["stockage"] = str_app.number_input("Capacité de stockage requise", min_value=0.0, step=50.0)
-                champs_specifiques["details"] = str_app.text_area("Spécifications transport et manutention lourde")
+                champs_specifiques["article"] = str_app.text_input("Référence article / Intitulé du stock ou matériel")
+                champs_specifiques["stock_actuel"] = str_app.number_input("Capacité / Stock initial disponible", min_value=0.0, step=10.0)
+                champs_specifiques["details"] = str_app.text_area("Spécifications d'entreposage, flux de manutention et gestion des stocks")
             else:
                 champs_specifiques["details"] = str_app.text_area("Spécifications et notes d'ingénierie")
 
@@ -620,6 +661,47 @@ def afficher_module_specifique_metier(nom_departement):
                         if os.path.exists(chemin_f):
                             with open(chemin_f, "rb") as file_download:
                                 str_app.download_button("📥 Télécharger le fichier technique joint", data=file_download, file_name=e_fich, key=f"dl_etude_{e_id}")
+                    
+                    str_app.markdown("---")
+                    str_app.markdown("#### 💬 Avis techniques et commentaires")
+                    
+                    # Récupération des commentaires pour cette étude
+                    conn_c = get_db_connection()
+                    cursor_c = conn_c.cursor()
+                    cursor_c.execute("SELECT auteur, commentaire, date FROM commentaires_etudes WHERE etude_id = ? ORDER BY id ASC", (e_id,))
+                    commentaires_liste = cursor_c.fetchall()
+                    conn_c.close()
+                    
+                    if commentaires_liste:
+                        for comm in commentaires_liste:
+                            c_auteur, c_texte, c_date = comm
+                            str_app.markdown(f"""
+                            <div style="background-color: #161b22; padding: 10px; border-radius: 6px; border: 1px solid #30363d; margin-bottom: 6px;">
+                                <small style="color: #8b949e;"><b>{c_auteur}</b> — {c_date}</small><br>
+                                <span style="color: #c9d1d9; font-size: 0.9rem; white-space: pre-wrap;">{c_texte}</span>
+                            </div>
+                            """, unsafe_allow_html=True)
+                    else:
+                        str_app.write("*Aucun commentaire technique pour l'instant.*")
+                    
+                    # Formulaire de commentaire souple et extensible
+                    with str_app.form(f"form_comm_{e_id}"):
+                        nouveau_commentaire = str_app.text_area("Laisser une remarque ou un avis technique (saisie multiligne libre)", key=f"txt_comm_{e_id}")
+                        submit_comm = str_app.form_submit_button("Publier l'avis technique")
+                        
+                        if submit_comm and nouveau_commentaire:
+                            conn_ic = get_db_connection()
+                            cursor_ic = conn_ic.cursor()
+                            cursor_ic.execute(
+                                "INSERT INTO commentaires_etudes (etude_id, auteur, commentaire, date) VALUES (?, ?, ?, ?)",
+                                (e_id, nom_departement, nouveau_commentaire, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                            )
+                            conn_ic.commit()
+                            conn_ic.close()
+                            str_app.success("Commentaire publié avec succès !")
+                            str_app.rerun()
+                        elif submit_comm:
+                            str_app.error("Le commentaire ne peut pas être vide.")
         else:
             str_app.info("Aucune étude partagée avec vous pour le moment.")
 
