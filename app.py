@@ -3,7 +3,7 @@ import json
 import os
 from datetime import datetime
 
-# Configuration de la page
+# 1. Configuration de la page (DOIT TOUJOURS ÊTRE EN PREMIER)
 st.set_page_config(
     page_title="Plateforme de Pilotage - Projet Agricole (86 ha)",
     page_layout="wide",
@@ -43,6 +43,7 @@ tous_les_depts = [
     "Recherche & Développement"
 ]
 
+# Titre principal
 st.title("🌱 Plateforme Collaborative - Projet Agricole (86 ha)")
 st.markdown("Outil centralisé de coordination technique, de dimensionnement et de partage documentaire entre départements.")
 
@@ -72,8 +73,7 @@ if menu == "Tableau de bord":
         st.info("Aucune étude enregistrée pour le moment. Utilisez l'onglet 'Nouvelle Étude / Fichier' pour en ajouter.")
     else:
         for idx, etude in enumerate(reversed(db["etudes"])):
-            with st.expander(f"📌 [{etude['departement'
-]}] {etude['titre']} (Créé le {etude['date']})"):
+            with st.expander(f"📌 [{etude['departement']}] {etude['titre']} (Créé le {etude['date']})"):
                 st.write(f"**Auteur / Service :** {etude['departement']}")
                 st.write(f"**Destinataires partagés :** {', '.join(etude.get('destinataires', [])) if etude.get('destinataires') else 'Aucun'}")
                 
@@ -156,7 +156,6 @@ elif menu == "Module Agro-pédologie":
     st.header("🧪 Module Spécifique : Agro-pédologie & Sols (86 ha)")
     st.markdown("Importation de fichiers d'analyse de sols et centralisation des données agronomiques.")
     
-    # Affichage des études filtrées sur l'agriculture
     etudes_agro = [e for e in db["etudes"] if e["departement"] == "Agriculture & Agro-pédologie"]
     
     if not etudes_agro:
