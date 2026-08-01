@@ -1,227 +1,679 @@
-import streamlit as st
+import streamlit as str_app
 import pandas as pd
 from datetime import datetime
+from streamlit_autorefresh import st_autorefresh
+from io import BytesIO
+from fpdf import FPDF
+import sqlite3
+import json
+import os
 
-def main():
-    st.set_page_config(
-        page_title="Gestion des Demandes d'Achat",
-        page_icon="📦",
-        layout="wide"
-    )
+# --- CONFIGURATION DE LA PAGE ---
+str_app.set_page_config(
+    page_title="Bureau d'Études - Gestion & Validation",
+    page_icon="🏢",
+    layout="wide"
+)
 
-    st.title("📦 Application de Gestion des Demandes d'Achat")
-    st.markdown("### Workflow Multi-département (Bureau d'Études / Achats / Finance / Direction)")
+# --- DOSSIERS POUR LES FICHIERS ET LE LOGO ---
+DOSSIER_UPLOADS = "uploads_devis"
+if not os.path.exists(DOSSIER_UPLOADS):
+    os.makedirs(DOSSIER_UPLOADS)
 
-    # Initialisation de la base de données simulée dans st.session_state
-    if "requests" not in st.session_state:
-        st.session_state.requests = [
-            {
-                "id": 1,
-                "title": "Renouvellement licences CAO / DAO",
-                "department": "Bureau d'Études",
-                "supplier": "Autodesk / Revendeur agréé",
-                "amount": 2500.0,
-                "status": "En attente Achats",
-                "comment": "Renouvellement annuel indispensable pour l'équipe technique.",
-                "date": datetime.now().strftime("%Y-%m-%d %H:%M")
-            },
-            {
-                "id": 2,
-                "title": "Achat postes de travail workstation",
-                "department": "Bureau d'Études",
-                "supplier": "À sourcer",
-                "amount": 0.0,
-                "status": "En attente Achats",
-                "comment": "Besoin de 2 stations de travail hautes performances pour les nouveaux ingénieurs.",
-                "date": datetime.now().strftime("%Y-%m-%d %H:%M")
-            }
-        ]
+CHEMIN_LOGO = "logo.png"
 
-    # Sidebar pour la sélection des rôles et la vue globale
-    st.sidebar.header("Navigation & Rôles")
-    role = st.sidebar.selectbox(
-        "Sélectionner le profil actif",
-        [
-            "Tableau de Bord Global",
-            "Demandeur (Bureau d'Études)",
-            "Service Achats (DEP11)",
-            "Finance & Comptabilité (DEP12)",
-            "Direction Générale"
-        ]
-    )
+# --- STYLE CSS DESIGN & MODERNE (SaaS Look) ---
+str_app.markdown("""
+    <style>
+    /* Style général et typographie */
+    .stApp {
+        background-color: #0e1117;
+    }
+    
+    /* Boutons modernes avec effet de survol */
+    .stButton>button {
+        border-radius: 10px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 15px rgba(0, 150, 255, 0.25);
+        border-color: #1f6feb;
+    }
+    
+    /* Champs de texte élégants */
+    .stTextInput>div>div>input, .stTextArea>div>div>textarea {
+        border-radius: 8px;
+        border: 1px solid #30363d;
+        background-color: #161b22;
+        color: #c9d1d9;
+    }
+    
+    /* Expander / Conteneurs repliables stylés */
+    .streamlit-expanderHeader {
+        background-color: #161b22;
+        border-radius: 8px;
+        border: 1px solid #30363d;
+        font-weight: 600;
+    }
+    
+    /* Métriques épurées */
+    div[data-testid="stMetricValue"] {
+        font-size: 1.8rem;
+        font-weight: 700;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-    st.sidebar.markdown("---")
-    st.sidebar.info(f"**Profil Actuel :** {role}")
+# --- ACTUALISATION AUTOMATIQUE ---
+st_autorefresh(interval=5000, key="datarefreshcounter")
 
-    # -------------------------------------------------------------------------
-    # VUE 0 : TABLEAU DE BORD GLOBAL (Suivi complet pour administration/audit)
-    # -------------------------------------------------------------------------
-    if role == "Tableau de Bord Global":
-        st.header("📊 Tableau de Bord Global des Demandes d'Achats")
-        
-        if not st.session_state.requests:
-            st.info("Aucune demande enregistrée dans le système.")
-        else:
-            df = pd.DataFrame(st.session_state.requests)
-            st.dataframe(df, use_container_width=True)
-            
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total Demandes", len(df))
-            col2.metric("En attente Achats", len(df[df["status"] == "En attente Achats"]))
-            col3.metric("En attente Finance", len(df[df["status"] == "En attente Finance"]))
-            col4.metric("Approuvées", len(df[df["status"] == "Approuvé et Signé"]))
+# --- INITIALISATION DE LA BASE DE DONNÉES SQLITE ---
+def init_db():
+    conn = sqlite3.connect("database.db", check_same_thread=False)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS global_store (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS demandes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            departement TEXT,
+            titre TEXT,
+            cahier_charges TEXT,
+            montant REAL,
+            fournisseur TEXT,
+            statut TEXT,
+            etape_actuelle TEXT,
+            avis_achats TEXT,
+            avis_finance TEXT,
+            motif_refus TEXT,
+            date TEXT,
+            fichier_devis TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cahiers_charges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            departement TEXT,
+            titre TEXT,
+            contenu TEXT,
+            date TEXT,
+            destinataires_avis TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages_coordination (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            auteur TEXT,
+            texte TEXT,
+            date TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS journaux_bord (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            departement TEXT,
+            titre TEXT,
+            texte TEXT,
+            auteur TEXT,
+            date TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS logs_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT,
+            acteur TEXT,
+            action TEXT,
+            details TEXT
+        )
+    ''')
+    
+    cursor.execute("SELECT value FROM global_store WHERE key = 'budget_global'")
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO global_store (key, value) VALUES ('budget_global', ?)", (str(10000000.0),))
+        cursor.execute("INSERT INTO global_store (key, value) VALUES ('solde_restant', ?)", (str(10000000.0),))
+    
+    conn.commit()
+    conn.close()
 
-    # -------------------------------------------------------------------------
-    # VUE 1 : EXPRESSION DU BESOIN (Demandeur / Bureau d'Études)
-    # -------------------------------------------------------------------------
-    elif role == "Demandeur (Bureau d'Études)":
-        st.header("1. Expression du Besoin - Bureau d'Études")
-        
-        tab_create, tab_track = st.tabs(["Nouvelle Demande", "Mes Demandes & Suivi"])
-        
-        with tab_create:
-            with st.form("form_new_request", clear_on_submit=True):
-                title = st.text_input("Intitulé de la demande *")
-                department = st.selectbox("Département émetteur", ["Bureau d'Études", "R&D", "Projets", "Technique"])
-                supplier = st.text_input("Fournisseur pressenti (Laisser 'À sourcer' si inconnu)", value="À sourcer")
-                comment = st.text_area("Spécifications techniques / Justificatif détaillé *")
-                uploaded_file = st.file_uploader("Joindre un devis ou fichier externe (PDF, PNG, JPG)", type=["pdf", "png", "jpg"])
-                
-                submitted = st.form_submit_button("Soumettre la demande")
-                
-                if submitted:
-                    if not title or not comment:
-                        st.error("Veuillez remplir l'intitulé et les spécifications techniques.")
-                    else:
-                        new_id = max([r["id"] for r in st.session_state.requests], default=0) + 1
-                        st.session_state.requests.append({
-                            "id": new_id,
-                            "title": title,
-                            "department": department,
-                            "supplier": supplier,
-                            "amount": 0.0,
-                            "status": "En attente Achats",
-                            "comment": comment,
-                            "date": datetime.now().strftime("%Y-%m-%d %H:%M")
-                        })
-                        st.success(f"Demande #{new_id} soumise avec succès ! Statut initial : En attente Achats.")
-                        st.rerun()
+init_db()
 
-        with tab_track:
-            st.subheader("Suivi de l'état d'avancement")
-            for req in st.session_state.requests:
-                with st.expander(f"Demande #{req['id']} : {req['title']} [{req['status']}]"):
-                    st.write(f"**Département :** {req['department']}")
-                    st.write(f"**Fournisseur :** {req['supplier']}")
-                    st.write(f"**Montant estimé/chiffré :** {req['amount']} €")
-                    st.write(f"**Spécifications :** {req['comment']}")
-                    st.write(f"**Date de création :** {req['date']}")
-                    
-                    if req["status"] == "Modifications demandées":
-                        st.warning("⚠️ Le service Achats demande des modifications sur cette demande.")
-                        with st.form(f"edit_form_{req['id']}"):
-                            updated_title = st.text_input("Modifier l'intitulé", value=req["title"])
-                            updated_comment = st.text_input("Modifier les spécifications", value=req["comment"])
-                            if st.form_submit_button("Renvoyer aux Achats"):
-                                req["title"] = updated_title
-                                req["comment"] = updated_comment
-                                req["status"] = "En attente Achats"
-                                st.success("Demande modifiée et renvoyée aux Achats !")
-                                st.rerun()
+def get_db_connection():
+    return sqlite3.connect("database.db", check_same_thread=False)
 
-    # -------------------------------------------------------------------------
-    # VUE 2 : SOURCING, CHIFFRAGE & ANALYSE (Service Achats - DEP11)
-    # -------------------------------------------------------------------------
-    elif role == "Service Achats (DEP11)":
-        st.header("2. Sourcing, Chiffrage & Analyse - Service Achats")
-        
-        pending_achats = [r for r in st.session_state.requests if r["status"] in ["En attente Achats", "Modifications demandées"]]
-        
-        if not pending_achats:
-            st.info("Aucune demande en attente pour le service Achats.")
-        else:
-            for req in pending_achats:
-                with st.expander(f"Demande #{req['id']} - {req['title']} ({req['department']})"):
-                    st.write(f"**Demandeur / Spécifications :** {req['comment']}")
-                    st.write(f"**Date :** {req['date']}")
-                    
-                    with st.form(f"achats_form_{req['id']}"):
-                        new_supplier = st.text_input("Confirmer ou modifier le fournisseur", value=req["supplier"])
-                        amount = st.number_input("Saisir le montant exact (€)", min_value=0.0, value=float(req["amount"]), step=10.0)
-                        
-                        col1, col2, col3 = st.columns(3)
-                        val_btn = col1.form_submit_button("Valider & Transmettre Finance")
-                        mod_btn = col2.form_submit_button("Demander modification")
-                        ref_btn = col3.form_submit_button("Refus définitif")
-                        
-                        if val_btn:
-                            req["supplier"] = new_supplier
-                            req["amount"] = amount
-                            req["status"] = "En attente Finance"
-                            st.success("Demande validée et transmise au service Finance.")
-                            st.rerun()
-                        elif mod_btn:
-                            req["status"] = "Modifications demandées"
-                            st.warning("Demande renvoyée au demandeur pour modification.")
-                            st.rerun()
-                        elif ref_btn:
-                            req["status"] = "Refusé (Bloqué)"
-                            st.error("Demande clôturée (refus définitif).")
-                            st.rerun()
+def get_valeur_globale(key):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM global_store WHERE key = ?", (key,))
+    val = cursor.fetchone()
+    conn.close()
+    return float(val[0]) if val else 0.0
 
-    # -------------------------------------------------------------------------
-    # VUE 3 : CONTRÔLE BUDGÉTAIRE (Finance & Comptabilité - DEP12)
-    # -------------------------------------------------------------------------
-    elif role == "Finance & Comptabilité (DEP12)":
-        st.header("3. Contrôle Budgétaire - Finance & Comptabilité")
-        
-        pending_fin = [r for r in st.session_state.requests if r["status"] == "En attente Finance"]
-        
-        if not pending_fin:
-            st.info("Aucune demande en attente de contrôle budgétaire.")
-        else:
-            for req in pending_fin:
-                with st.expander(f"Demande #{req['id']} - {req['title']} | Montant : {req['amount']} €"):
-                    st.write(f"**Département :** {req['department']}")
-                    st.write(f"**Fournisseur validé :** {req['supplier']}")
-                    st.write(f"**Spécifications :** {req['comment']}")
-                    
-                    col1, col2 = st.columns(2)
-                    if col1.button("Valider le budget & Transmettre DG", key=f"fin_val_{req['id']}"):
-                        req["status"] = "En attente Signature DG"
-                        st.success("Contrôle budgétaire validé. Transmis à la Direction Générale.")
-                        st.rerun()
-                    if col2.button("Refuser (Budget insuffisant)", key=f"fin_ref_{req['id']}"):
-                        req["status"] = "Refusé (Bloqué)"
-                        st.error("Demande refusée par la finance.")
-                        st.rerun()
+def set_valeur_globale(key, val):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO global_store (key, value) VALUES (?, ?)", (key, str(val)))
+    conn.commit()
+    conn.close()
 
-    # -------------------------------------------------------------------------
-    # VUE 4 : SIGNATURE EXÉCUTIVE (Direction Générale)
-    # -------------------------------------------------------------------------
-    elif role == "Direction Générale":
-        st.header("4. Signature Exécutive - Direction Générale")
-        
-        pending_dg = [r for r in st.session_state.requests if r["status"] == "En attente Signature DG"]
-        
-        if not pending_dg:
-            st.info("Aucune demande en attente de signature exécutive.")
-        else:
-            for req in pending_dg:
-                with st.expander(f"Demande #{req['id']} - {req['title']} | Montant : {req['amount']} €"):
-                    st.write(f"**Département :** {req['department']}")
-                    st.write(f"**Fournisseur :** {req['supplier']}")
-                    st.write(f"**Spécifications :** {req['comment']}")
-                    
-                    col1, col2 = st.columns(2)
-                    if col1.button("Approuver et Signer", key=f"dg_sign_{req['id']}"):
-                        req["status"] = "Approuvé et Signé"
-                        st.success("La demande a été officiellement approuvée et signée !")
-                        st.rerun()
-                    if col2.button("Refuser la demande", key=f"dg_ref_{req['id']}"):
-                        req["status"] = "Refusé (Bloqué)"
-                        st.warning("Demande rejetée par la Direction Générale.")
-                        st.rerun()
+def ajouter_log(action, acteur, details):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO logs_audit (date, acteur, action, details) VALUES (?, ?, ?, ?)",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), acteur, action, details)
+    )
+    conn.commit()
+    conn.close()
 
-if __name__ == "__main__":
-    main()
+# --- DICTIONNAIRE DES UTILISATEURS & RÔLES ---
+UTILISATEURS = {
+    "DEP1": {"nom": "Agriculture", "mdp": "DEP123", "type": "standard", "dept": "Agriculture"},
+    "DEP2": {"nom": "Élevage & Halieutique", "mdp": "DEP123", "type": "standard", "dept": "Élevage & Halieutique"},
+    "DEP3": {"nom": "Industrie & Transformation", "mdp": "DEP123", "type": "standard", "dept": "Industrie & Transformation"},
+    "DEP4": {"nom": "Ressources Hydriques", "mdp": "DEP123", "type": "standard", "dept": "Ressources Hydriques"},
+    "DEP5": {"nom": "Énergie & Maintenance", "mdp": "DEP123", "type": "standard", "dept": "Énergie & Maintenance"},
+    "DEP6": {"nom": "Recherche & Développement", "mdp": "DEP123", "type": "standard", "dept": "Recherche & Développement"},
+    "DEP7": {"nom": "Sécurité & HSE", "mdp": "DEP123", "type": "standard", "dept": "Sécurité & HSE"},
+    "DEP8": {"nom": "Ressources Humaines & RSE", "mdp": "DEP123", "type": "standard", "dept": "Ressources Humaines & RSE"},
+    "DEP9": {"nom": "Commercial & Marketing", "mdp": "DEP123", "type": "standard", "dept": "Commercial & Marketing"},
+    "DEP10": {"nom": "IT & Data", "mdp": "DEP123", "type": "standard", "dept": "IT & Data"},
+    
+    "DEP11": {"nom": "Achats & Approvisionnements", "mdp": "DEP123", "type": "achats", "dept": "Achats & Approvisionnements"},
+    "DEP12": {"nom": "Finance & Comptabilité", "mdp": "DEP123", "type": "finance", "dept": "Finance & Comptabilité"},
+    "fondateur": {"nom": "Fondateur / Direction Générale", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
+}
+
+# --- GESTION DE LA CONNEXION (SIDEBAR AVEC LOGO SÉCURISÉ) ---
+if os.path.exists(CHEMIN_LOGO):
+    str_app.sidebar.image(CHEMIN_LOGO, use_column_width=True)
+else:
+    str_app.sidebar.markdown("## 🏢 Bureau d'Études")
+
+str_app.sidebar.markdown("---")
+
+if 'user_connecte' not in str_app.session_state:
+    str_app.session_state.user_connecte = None
+
+if str_app.session_state.user_connecte is None:
+    str_app.sidebar.subheader("Connexion Collaborateur")
+    username = str_app.sidebar.text_input("Identifiant")
+    password = str_app.sidebar.text_input("Mot de passe", type="password")
+    
+    if str_app.sidebar.button("Se connecter"):
+        with str_app.spinner("Vérification des accès..."):
+            if username in UTILISATEURS and UTILISATEURS[username]["mdp"] == password:
+                str_app.session_state.user_connecte = username
+                ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
+                str_app.rerun()
+            else:
+                str_app.sidebar.error("Identifiant ou mot de passe incorrect.")
+    str_app.stop()
+else:
+    infos_user = UTILISATEURS[str_app.session_state.user_connecte]
+    str_app.sidebar.success(f"Connecté en tant que :\n**{infos_user['nom']}**")
+    str_app.sidebar.markdown("---")
+    
+    if str_app.session_state.user_connecte == "fondateur":
+        if str_app.sidebar.button("🔄 Réinitialiser l'application (Reset)"):
+            with str_app.spinner("Réinitialisation complète..."):
+                budget_init = get_valeur_globale("budget_global")
+                set_valeur_globale("solde_restant", budget_init)
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM demandes")
+                cursor.execute("DELETE FROM cahiers_charges")
+                cursor.execute("DELETE FROM messages_coordination")
+                cursor.execute("DELETE FROM journaux_bord")
+                cursor.execute("DELETE FROM logs_audit")
+                conn.commit()
+                conn.close()
+                
+                ajouter_log("Réinitialisation", infos_user['nom'], "Base de données remise à zéro")
+                str_app.success("Application réinitialisée à zéro !")
+                str_app.rerun()
+        str_app.sidebar.markdown("---")
+
+    if str_app.sidebar.button("Se déconnecter"):
+        with str_app.spinner("Déconnexion sécurisée..."):
+            ajouter_log("Déconnexion", infos_user['nom'], "Déconnexion de l'utilisateur")
+            str_app.session_state.user_connecte = None
+            str_app.rerun()
+
+user_key = str_app.session_state.user_connecte
+profil = UTILISATEURS[user_key]
+nom_dept = profil["dept"]
+
+str_app.title(f"Tableau de Bord - {profil['nom']}")
+
+# --- BANNIÈRES DE NOTIFICATIONS ---
+conn_notif = get_db_connection()
+cursor_notif = conn_notif.cursor()
+if profil["type"] == "achats":
+    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
+    nb_pending = cursor_notif.fetchone()[0]
+    if nb_pending > 0:
+        str_app.warning(f"⚠️ Vous avez **{nb_pending}** demande(s) en attente de chiffrage et de sourcing.")
+elif profil["type"] == "finance":
+    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'finance' AND avis_finance = 'En attente'")
+    nb_pending = cursor_notif.fetchone()[0]
+    if nb_pending > 0:
+        str_app.warning(f"⚠️ Vous avez **{nb_pending}** demande(s) en attente de contrôle budgétaire.")
+elif profil["type"] == "fondateur":
+    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'fondateur'")
+    nb_pending = cursor_notif.fetchone()[0]
+    if nb_pending > 0:
+        str_app.warning(f"Vous avez **{nb_pending}** dossier(s) en attente de signature exécutive.")
+elif profil["type"] == "standard":
+    cursor_notif.execute("SELECT COUNT(*) FROM demandes WHERE departement = ? AND statut LIKE '%Refusé%'", (nom_dept,))
+    nb_refus = cursor_notif.fetchone()[0]
+    if nb_refus > 0:
+        str_app.error(f"❌ Vous avez **{nb_refus}** demande(s) refusée(s) ou nécessitant une modification.")
+conn_notif.close()
+
+str_app.markdown("---")
+
+# --- FONCTION PDF ---
+def generer_pdf(titre, texte_contenu, infos_complementaires=""):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    if os.path.exists(CHEMIN_LOGO):
+        try:
+            pdf.image(CHEMIN_LOGO, 10, 10, 25)
+        except Exception:
+            pass
+            
+    pdf.set_font("Arial", "B", 15)
+    pdf.cell(0, 10, txt="BUREAU D'ÉTUDES - DIRECTION GÉNÉRALE", ln=True, align="C")
+    pdf.set_font("Arial", "I", 10)
+    pdf.cell(0, 6, txt="Document Officiel de Validation & Traçabilité", ln=True, align="C")
+    pdf.ln(8)
+    pdf.line(10, 32, 200, 32)
+    pdf.ln(8)
+    
+    pdf.set_font("Arial", "B", 13)
+    pdf.multi_cell(0, 8, txt=titre, align="L")
+    pdf.ln(4)
+    
+    if infos_complementaires:
+        pdf.set_font("Arial", "I", 10)
+        pdf.multi_cell(0, 6, txt=infos_complementaires)
+        pdf.ln(6)
+        
+    pdf.set_font("Arial", "", 11)
+    pdf.multi_cell(0, 6, txt=texte_contenu)
+    
+    pdf_bytes = pdf.output(dest='S')
+    if isinstance(pdf_bytes, str):
+        pdf_bytes = pdf_bytes.encode('latin1', 'replace')
+        
+    return BytesIO(pdf_bytes)
+
+
+# ==========================================
+# ESPACE DE COORDINATION & JOURNAL DE BORD
+# ==========================================
+def afficher_espace_coordination_et_journal(nom_departement):
+    with str_app.expander("💬 Espace de Notes & Réunions de Coordination (Fil partagé)"):
+        with str_app.form(f"form_coord_{nom_departement}", clear_on_submit=True):
+            texte_msg = str_app.text_input("Votre message / note de coordination")
+            submit_msg = str_app.form_submit_button("Publier le message")
+            if submit_msg and texte_msg:
+                with str_app.spinner("Publication en cours..."):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO messages_coordination (auteur, texte, date) VALUES (?, ?, ?)",
+                        (nom_departement, texte_msg, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                    )
+                    conn.commit()
+                    conn.close()
+                    str_app.rerun()
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT auteur, texte, date FROM messages_coordination ORDER BY id DESC")
+        messages = cursor.fetchall()
+        conn.close()
+        
+        if messages:
+            for m in messages:
+                str_app.markdown(f"> **[{m[2]}] {m[0]}** : {m[1]}")
+
+    with str_app.expander(f"📔 Journal de Bord Quotidien ({nom_departement})"):
+        str_app.write("Consignez ici vos notes, avancements et points quotidiens au jour le jour.")
+        with str_app.form(f"form_journal_{nom_departement}", clear_on_submit=True):
+            titre_j = str_app.text_input("Titre de l'entrée du jour")
+            texte_j = str_app.text_area("Contenu / Notes du journal")
+            submit_j = str_app.form_submit_button("Ajouter au journal")
+            
+            if submit_j and titre_j and texte_j:
+                with str_app.spinner("Enregistrement..."):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO journaux_bord (departement, titre, texte, auteur, date) VALUES (?, ?, ?, ?, ?)",
+                        (nom_departement, titre_j, texte_j, nom_departement, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                    )
+                    conn.commit()
+                    conn.close()
+                    str_app.success("Entrée enregistrée dans votre journal de bord !")
+                    str_app.rerun()
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT titre, texte, date FROM journaux_bord WHERE departement = ? ORDER BY id DESC", (nom_departement,))
+        journaux = cursor.fetchall()
+        conn.close()
+        
+        if journaux:
+            str_app.markdown("### Historique de votre journal :")
+            for entree in journaux:
+                str_app.markdown(f"**[{entree[2]}] {entree[0]}**\n\n{entree[1]}\n\n---")
+        else:
+            str_app.info("Aucune entrée dans votre journal de bord pour le moment.")
+
+
+# ==========================================
+# VUE GLOBALE ET LISIBLE DES DEMANDES
+# ==========================================
+def afficher_suivi_global():
+    if profil["type"] in ["achats", "finance", "fondateur"]:
+        str_app.markdown("---")
+        with str_app.expander("📊 Tableau de Suivi Global de TOUTES les Demandes"):
+            conn = get_db_connection()
+            df_global = pd.read_sql_query("SELECT id, departement, titre, montant, fournisseur, statut, date FROM demandes", conn)
+            conn.close()
+            
+            if not df_global.empty:
+                str_app.dataframe(
+                    df_global, 
+                    use_container_width=True,
+                    column_config={
+                        "statut": str_app.column_config.TextColumn("Statut Actuel", width="large"),
+                        "titre": str_app.column_config.TextColumn("Titre de la demande", width="medium"),
+                        "fournisseur": str_app.column_config.TextColumn("Fournisseur", width="medium")
+                    }
+                )
+            else:
+                str_app.info("Aucune demande enregistrée.")
+
+
+# ==========================================
+# MODULES : CAHIERS DES CHARGES
+# ==========================================
+def afficher_module_cahiers_charges(nom_departement):
+    str_app.subheader("Rédiger et partager un cahier des charges")
+    liste_tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
+
+    with str_app.form(f"form_cc_{nom_departement}", clear_on_submit=True):
+        titre_doc = str_app.text_input("Intitulé / Titre du document")
+        contenu_doc = str_app.text_area("Contenu détaillé")
+        destinataires_avis = str_app.multiselect("Partager avec (plusieurs choix possibles) :", liste_tous_depts)
+        
+        submit_cc = str_app.form_submit_button("Enregistrer le document")
+        
+        if submit_cc:
+            if titre_doc and contenu_doc:
+                with str_app.spinner("Enregistrement et partage..."):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO cahiers_charges (departement, titre, contenu, date, destinataires_avis) VALUES (?, ?, ?, ?, ?)",
+                        (nom_departement, titre_doc, contenu_doc, datetime.now().strftime("%Y-%m-%d"), json.dumps(destinataires_avis))
+                    )
+                    conn.commit()
+                    conn.close()
+                    
+                    ajouter_log("Création Cahier des Charges", nom_departement, f"Titre: {titre_doc}")
+                    str_app.success(f"Document enregistré et partagé avec {len(destinataires_avis)} département(s) !")
+                    str_app.rerun()
+    
+    str_app.markdown("### 📁 Mes documents")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, titre, contenu, date, destinataires_avis FROM cahiers_charges WHERE departement = ?", (nom_departement,))
+    mes_docs = cursor.fetchall()
+    conn.close()
+    
+    if mes_docs:
+        for idx, doc in enumerate(mes_docs):
+            doc_id, doc_titre, doc_contenu, doc_date, doc_dest_json = doc
+            destinataires = json.loads(doc_dest_json) if doc_dest_json else []
+            partages = ", ".join(destinataires) if destinataires else "Interne"
+            
+            with str_app.expander(f"Doc #{doc_id} : {doc_titre} (Partagé avec : {partages})"):
+                str_app.write(doc_contenu)
+                pdf_io = generer_pdf(f"Cahier des Charges\n{doc_titre}", doc_contenu, f"Département: {nom_departement}\nDate: {doc_date}")
+                colA, colB = str_app.columns([1,1])
+                colA.download_button("📥 Télécharger PDF Officiel", data=pdf_io, file_name=f"cc_{doc_id}.pdf", mime="application/pdf", key=f"pdf_{nom_departement}_{doc_id}")
+                if colB.button("🗑️ Supprimer", key=f"del_cc_{nom_departement}_{doc_id}"):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM cahiers_charges WHERE id = ?", (doc_id,))
+                    conn.commit()
+                    conn.close()
+                    str_app.rerun()
+
+    str_app.markdown("### 📥 Documents reçus pour avis")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis FROM cahiers_charges WHERE departement != ?", (nom_departement,))
+    autres_docs = cursor.fetchall()
+    conn.close()
+    
+    for doc in autres_docs:
+        doc_id, d_nom, doc_titre, doc_contenu, doc_date, doc_dest_json = doc
+        destinataires = json.loads(doc_dest_json) if doc_dest_json else []
+        if nom_departement in destinataires:
+            with str_app.expander(f"📬 De [{d_nom}] : {doc_titre}"):
+                str_app.write(doc_contenu)
+                pdf_recu = generer_pdf(f"{doc_titre}", doc_contenu, f"Émetteur: {d_nom}")
+                str_app.download_button("📥 Télécharger PDF Officiel", data=pdf_recu, file_name=f"recu_{doc_id}.pdf", mime="application/pdf", key=f"recu_{d_nom}_{doc_id}")
+
+
+# ==========================================
+# MODULES : DEPARTEMENTS STANDARDS
+# ==========================================
+def afficher_trois_modules(nom_departement):
+    tab1, tab2, tab3 = str_app.tabs([
+        "1. Cahiers des Charges (Avis & Partage)", 
+        "2. Expression des Besoins", 
+        "3. Suivi & État de mes demandes"
+    ])
+
+    with tab1:
+        afficher_module_cahiers_charges(nom_departement)
+
+    with tab2:
+        str_app.subheader("Exprimer un besoin / Demande d'achat avec Justificatif Externe")
+        
+        with str_app.form("form_expression_besoin", clear_on_submit=True):
+            titre_besoin = str_app.text_input("Intitulé de la demande")
+            desc_besoin = str_app.text_area("Spécifications techniques / Justificatif")
+            fournisseur_suggere = str_app.text_input("Fournisseur pressenti (optionnel)")
+            fich_devis = str_app.file_uploader("📥 Importer un devis ou justificatif externe (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
+            
+            submit_besoin = str_app.form_submit_button("Transmettre le besoin aux Achats")
+            
+            if submit_besoin:
+                if titre_besoin and desc_besoin:
+                    nom_fichier_sauve = ""
+                    if fich_devis is not None:
+                        nom_fichier_sauve = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{fich_devis.name}"
+                        chemin_complet = os.path.join(DOSSIER_UPLOADS, nom_fichier_sauve)
+                        with open(chemin_complet, "wb") as f:
+                            f.write(fich_devis.getbuffer())
+                    
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        nom_departement, titre_besoin, desc_besoin, 0.0,
+                        fournisseur_suggere if fournisseur_suggere else "À sourcer",
+                        "En attente Achats", "achats", "En attente", "En attente", "",
+                        datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_sauve
+                    ))
+                    conn.commit()
+                    conn.close()
+                    
+                    ajouter_log("Nouvelle Demande", nom_departement, f"Demande - {titre_besoin}")
+                    str_app.success("Besoin transmis avec succès ! Les champs ont été réinitialisés.")
+                else:
+                    str_app.error("Veuillez remplir l'intitulé et les spécifications.")
+
+    with tab3:
+        str_app.subheader("Suivi, Modification et Annulation de vos demandes")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, titre, cahier_charges, fournisseur, statut, motif_refus, fichier_devis FROM demandes WHERE departement = ?", (nom_departement,))
+        mes_demandes = cursor.fetchall()
+        conn.close()
+        
+        if mes_demandes:
+            for d in mes_demandes:
+                d_id, d_titre, d_cc, d_fourn, d_statut, d_motif, d_fich = d
+                with str_app.expander(f"Demande #{d_id} : {d_titre} — Statut : {d_statut}"):
+                    str_app.write(f"**Spécifications :** {d_cc}")
+                    str_app.write(f"**Fournisseur :** {d_fourn}")
+                    
+                    if d_fich:
+                        str_app.success(f"📎 Fichier/Devis externe joint : {d_fich}")
+                        chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
+                        if os.path.exists(chemin_f):
+                            with open(chemin_f, "rb") as file_download:
+                                str_app.download_button("📥 Télécharger le document joint", data=file_download, file_name=d_fich, key=f"dl_fich_{d_id}")
+                    
+                    if d_motif:
+                        str_app.error(f"❌ **Motif du refus / demande de modification :** {d_motif}")
+                    
+                    if d_statut not in ["Approuvé et Signé", "Annulé par le département"]:
+                        if str_app.button(f"🚫 Annuler définitivement cette demande #{d_id}", key=f"btn_annuler_{d_id}"):
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("UPDATE demandes SET statut = 'Annulé par le département', etape_actuelle = 'annule' WHERE id = ?", (d_id,))
+                            conn.commit()
+                            conn.close()
+                            ajouter_log("Annulation Demande", nom_departement, f"Demande #{d_id} annulée par l'émetteur")
+                            str_app.success("La demande a été annulée avec succès.")
+                            str_app.rerun()
+
+                    if d_statut == "Refusé avec demande de modification":
+                        str_app.info("Vous pouvez modifier votre demande ci-dessous et la soumettre à nouveau (elle reprendra le circuit complet par les Achats).")
+                        with str_app.form(f"form_modif_{d_id}"):
+                            nouveau_titre = str_app.text_input("Modifier l'intitulé", value=d_titre)
+                            nouvelles_specs = str_app.text_area("Modifier les spécifications", value=d_cc)
+                            nouveau_fournisseur = str_app.text_input("Modifier le fournisseur", value=d_fourn)
+                            
+                            if str_app.form_submit_button("Soumettre à nouveau la demande modifiée"):
+                                with str_app.spinner("Mise à jour et routage..."):
+                                    conn = get_db_connection()
+                                    cursor = conn.cursor()
+                                    cursor.execute('''
+                                        UPDATE demandes 
+                                        SET titre = ?, cahier_charges = ?, fournisseur = ?, etape_actuelle = 'achats', avis_achats = 'En attente', statut = 'En attente Achats (Modifié)', motif_refus = ''
+                                        WHERE id = ?
+                                    ''', (nouveau_titre, nouvelles_specs, nouveau_fournisseur, d_id))
+                                    conn.commit()
+                                    conn.close()
+                                    
+                                    ajouter_log("Modification & Resoumission", nom_departement, f"Demande #{d_id} modifiée et relancée")
+                                    str_app.success("Demande modifiée et transmise de nouveau aux Achats !")
+                                    str_app.rerun()
+        else:
+            str_app.info("Aucune demande en cours.")
+
+
+# ==========================================
+# GESTION DES AFFICHAGES SELON LE PROFIL
+# ==========================================
+
+budget_global = get_valeur_globale("budget_global")
+solde_restant = get_valeur_globale("solde_restant")
+
+if profil["type"] == "standard":
+    afficher_trois_modules(nom_dept)
+    str_app.markdown("---")
+    afficher_espace_coordination_et_journal(nom_dept)
+
+elif profil["type"] == "achats":
+    str_app.subheader("🛒 Achats - Sourcing, Chiffrage & Cahiers des Charges")
+    
+    with str_app.expander("📊 Consulter l'état du Budget Global & Solde"):
+        col1, col2 = str_app.columns(2)
+        col1.metric("Budget Global", f"{budget_global:,.2f} €")
+        col2.metric("Solde Restant", f"{solde_restant:,.2f} €")
+    
+    tab_ach1, tab_ach2 = str_app.tabs(["1. File d'attente & Chiffrage", "2. Cahiers des Charges (Achats)"])
+    
+    with tab_ach1:
+        str_app.markdown("---")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, departement, titre, cahier_charges, fournisseur, fichier_devis FROM demandes WHERE etape_actuelle = 'achats' AND avis_achats = 'En attente'")
+        demandes_achats = cursor.fetchall()
+        conn.close()
+        
+        if demandes_achats:
+            for d in demandes_achats:
+                d_id, d_dept, d_titre, d_cc, d_fourn, d_fich = d
+                with str_app.expander(f"Besoin #{d_id} - {d_titre} (Par : {d_dept})"):
+                    str_app.write(f"**Intitulé complet :** {d_titre}")
+                    str_app.write(f"**Spécifications techniques / Justificatif :** {d_cc}")
+                    str_app.info(f"💡 **Fournisseur pressenti par le demandeur :** {d_fourn}")
+                    
+                    if d_fich:
+                        str_app.success(f"📎 Fichier externe joint : {d_fich}")
+                        chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
+                        if os.path.exists(chemin_f):
+                            with open(chemin_f, "rb") as file_download:
+                                str_app.download_button("📥 Consulter le document externe", data=file_download, file_name=d_fich, key=f"dl_achats_{d_id}")
+                    
+                    with str_app.form(f"form_achats_{d_id}"):
+                        fournisseur_choisi = str_app.text_input("Confirmer ou modifier le fournisseur", value=d_fourn if d_fourn != "À sourcer" else "")
+                        montant_chiffre = str_app.number_input("Montant exact (€)", min_value=0.0, step=100.0)
+                        action_achats = str_app.radio("Décision", ["Valider & Transmettre Finance", "Refus définitif (Bloqué)", "Refusé avec demande de modification"], key=f"a_achats_{d_id}")
+                        motif = str_app.text_input("Motif obligatoire en cas de refus / blocage")
+                        
+                        if str_app.form_submit_button("Valider la décision"):
+                            with str_app.spinner("Traitement en cours..."):
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                if action_achats == "Valider & Transmettre Finance" and montant_chiffre > 0:
+                                    cursor.execute('''
+                                        UPDATE demandes 
+                                        SET fournisseur = ?, montant = ?, avis_achats = 'Validé', avis_finance = 'En attente', etape_actuelle = 'finance', statut = 'En attente Finance'
+                                        WHERE id = ?
+                                    ''', (fournisseur_choisi, montant_chiffre, d_id))
+                                    conn.commit()
+                                    conn.close()
+                                    ajouter_log("Validation Achats", "Achats", f"Demande #{d_id} chiffrée à {montant_chiffre}€")
+                                    str_app.rerun()
+                                elif "Refus" in action_achats:
+                                    if not motif:
+                                        str_app.error("Veuillez saisir un motif pour justifier le refus.")
+                                        conn.close()
+                                    else:
+                                        etape_suivante = "bloque" if action_achats == "Refus définitif (Bloqué)" else "modification"
+                                        statut_suivi = "Refusé définitivement par les Achats" if action_achats == "Refus définitif (Bloqué)" else "Refusé avec demande de modification"
+                                        cursor.execute('''
+                                            UPDATE demandes 
+                                           
