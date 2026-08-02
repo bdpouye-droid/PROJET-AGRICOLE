@@ -7,7 +7,6 @@ from io import BytesIO
 import pandas as pd
 import streamlit as str_app
 from streamlit_autorefresh import st_autorefresh
-from fpdf import FPDF
 
 # --- CONFIGURATION DE LA PAGE ---
 str_app.set_page_config(
@@ -245,14 +244,21 @@ if profil["type"] in ["finance", "fondateur"]:
 str_app.markdown("---")
 
 # ==========================================
-# 1. MODULE INGÉNIERIE & ÉTUDES MÉTIER
+# 1. MODULE INGÉNIERIE & ÉTUDES MÉTIER (AVEC HISTORIQUE & TRAÇABILITÉ)
 # ==========================================
-def afficher_module_specifique_metier(nom_departement):
-    str_app.subheader(f"⚙️ Centre d'Ingénierie & Études Métier — {nom_departement}")
+def afficher_module_specifique_metier(nom_departement, type_profil):
+    str_app.subheader(f"⚙️ Centre d'Ingénierie & Traçabilité des Études — {nom_departement}")
     
     tous_les_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
-    tab_creer, tab_consulter = str_app.tabs(["1. Nouvelle Étude & Partage", "2. Études & Fichiers Partagés Reçus"])
     
+    # Onglets d'ingénierie
+    tab_creer, tab_consulter, tab_historique = str_app.tabs([
+        "1. Nouvelle Étude & Partage", 
+        "2. Études Reçues des Autres Départements",
+        "3. 📜 Traçabilité & Historique de vos Études"
+    ])
+    
+    # 1. CRÉER UNE ÉTUDE
     with tab_creer:
         with str_app.form(f"form_etude_{nom_departement}", clear_on_submit=True):
             titre_etude = str_app.text_input("Intitulé de l'étude / Projet technique")
@@ -304,17 +310,18 @@ def afficher_module_specifique_metier(nom_departement):
                 str_app.success("Étude enregistrée et diffusée avec succès !")
                 str_app.rerun()
 
+    # 2. ÉTUDES REÇUES
     with tab_consulter:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date FROM etudes_metier WHERE departement != ?", (nom_departement,))
+        cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date FROM etudes_metier WHERE departement != ? ORDER BY id DESC", (nom_departement,))
         toutes_etudes = cursor.fetchall()
         conn.close()
         
         etudes_recues = []
         for e in toutes_etudes:
             destinataires = json.loads(e[5]) if e[5] else []
-            if nom_departement in destinataires:
+            if nom_departement in destinataires or type_profil == "fondateur":
                 etudes_recues.append(e)
 
         if etudes_recues:
@@ -330,7 +337,7 @@ def afficher_module_specifique_metier(nom_departement):
                         chemin_f = os.path.join(DOSSIER_ETUDES, e_fich)
                         if os.path.exists(chemin_f):
                             with open(chemin_f, "rb") as file_download:
-                                str_app.download_button("📥 Télécharger le fichier technique joint", data=file_download, file_name=e_fich, key=f"dl_etude_{e_id}")
+                                str_app.download_button("📥 Télécharger le fichier technique joint", data=file_download, file_name=e_fich, key=f"dl_etude_recu_{e_id}")
                     
                     str_app.markdown("---")
                     str_app.markdown("#### 💬 Avis techniques et commentaires")
@@ -359,6 +366,58 @@ def afficher_module_specifique_metier(nom_departement):
                             str_app.rerun()
         else:
             str_app.info("Aucune étude partagée directement avec votre département.")
+
+    # 3. HISTORIQUE & TRAÇABILITÉ DES ÉTUDES ÉMISES
+    with tab_historique:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # La DG a accès à TOUTES les études créées dans la boîte, les autres voient LEURS études créées
+        if type_profil == "fondateur":
+            cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date FROM etudes_metier ORDER BY id DESC")
+        else:
+            cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date FROM etudes_metier WHERE departement = ? ORDER BY id DESC", (nom_departement,))
+            
+        mes_etudes = cursor.fetchall()
+        conn.close()
+
+        if mes_etudes:
+            for e in mes_etudes:
+                e_id, e_dept, e_titre, e_json, e_fich, e_dest, e_date = e
+                data_dict = json.loads(e_json) if e_json else {}
+                dests_list = json.loads(e_dest) if e_dest else []
+                
+                prefixe_dept = f"[{e_dept}] " if type_profil == "fondateur" else ""
+
+                with str_app.expander(f"📜 {prefixe_dept}{e_titre} — Déposé le {e_date}"):
+                    str_app.markdown(f"**Partagé avec :** {', '.join(dests_list) if dests_list else 'Aucun département sélectionné'}")
+                    
+                    str_app.markdown("##### 📌 Détails du contenu :")
+                    for k, v in data_dict.items():
+                        str_app.write(f"• **{k.capitalize()} :** {v}")
+                    
+                    if e_fich:
+                        chemin_f = os.path.join(DOSSIER_ETUDES, e_fich)
+                        if os.path.exists(chemin_f):
+                            with open(chemin_f, "rb") as file_download:
+                                str_app.download_button("📥 Télécharger le fichier original joint", data=file_download, file_name=e_fich, key=f"dl_etude_hist_{e_id}")
+                    
+                    str_app.markdown("---")
+                    str_app.markdown("##### 💬 Retours et avis reçus des départements :")
+                    
+                    conn_c = get_db_connection()
+                    cursor_c = conn_c.cursor()
+                    cursor_c.execute("SELECT auteur, commentaire, date FROM commentaires_etudes WHERE etude_id = ? ORDER BY id ASC", (e_id,))
+                    retours = cursor_c.fetchall()
+                    conn_c.close()
+                    
+                    if retours:
+                        for r in retours:
+                            str_app.markdown(f"💬 **{r[0]}** ({r[2]}) : *{r[1]}*")
+                    else:
+                        str_app.caption("Aucun commentaire ou avis reçu pour le moment.")
+        else:
+            str_app.info("Aucune étude enregistrée dans l'historique pour l'instant.")
 
 # ==========================================
 # 2. MODULE CAHIERS DES CHARGES
@@ -650,7 +709,7 @@ tabs_navigation = str_app.tabs([
 ])
 
 with tabs_navigation[0]:
-    afficher_module_specifique_metier(nom_dept)
+    afficher_module_specifique_metier(nom_dept, profil["type"])
 
 with tabs_navigation[1]:
     afficher_module_cahiers_charges(nom_dept)
