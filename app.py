@@ -21,25 +21,32 @@ os.makedirs(DOSSIER_ETUDES, exist_ok=True)
 
 CHEMIN_LOGO = "logo.png"
 
-# --- STYLE CSS PERSONNALISÉ ---
+# --- STYLE CSS PERSONNALISÉ & DESIGN MODERNE DES ONGLETS ---
 st.markdown("""
     <style>
     .stApp { background-color: #0e1117; }
+    
+    /* Boutons généraux */
     .stButton>button {
-        border-radius: 8px; font-weight: 600; transition: all 0.3s ease;
+        border-radius: 8px; font-weight: 600; transition: all 0.2s ease;
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255, 255, 255, 0.1);
     }
     .stButton>button:hover {
-        transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0, 150, 255, 0.2); border-color: #1f6feb;
+        transform: translateY(-1px); border-color: #1f6feb;
     }
+    
     .badge-notification { background-color: #f85149; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: bold; }
     .channel-header {
         background-color: #161b22; padding: 12px 18px; border-radius: 8px; 
         border-left: 4px solid #5b5fc7; margin-bottom: 15px;
     }
-    /* Masquer le sélecteur d'onglet natif pour forcer la téléportation synchrone */
-    div[data-testid="stRadio"] > label { display: none; }
-    div[data-testid="stRadio"] > div { flex-direction: row; justify-content: flex-start; gap: 10px; }
+    
+    /* Journal de Bord */
+    .note-card {
+        background-color: #161b22; border: 1px solid #30363d; border-radius: 8px;
+        padding: 14px; margin-bottom: 12px; border-left: 4px solid #238636;
+    }
+    .note-date { color: #8b949e; font-size: 0.85rem; font-weight: 600; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -66,6 +73,9 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_chat (
         id INTEGER PRIMARY KEY AUTOINCREMENT, discussion_id INTEGER, expediteur TEXT, texte TEXT, date TEXT, lus_json TEXT
     )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS journal_bord (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, auteur TEXT, note TEXT, date_note TEXT, heure_note TEXT
+    )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS logs_audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, acteur TEXT, action TEXT, details TEXT
     )''')
@@ -80,7 +90,7 @@ def init_db():
 
 init_db()
 
-# --- UTILS DATABASE & FICHIERS ---
+# --- UTILS DATABASE ---
 def get_db_connection():
     return sqlite3.connect("database.db", check_same_thread=False)
 
@@ -174,7 +184,7 @@ nom_dept = profil["dept"]
 st.sidebar.success(f"Connecté : **{profil['nom']}**")
 st.sidebar.markdown("---")
 
-# --- CALCUL DES NOTIFICATIONS MESSAGERIE ET TÉLÉPORTATION EFFECTIVE ---
+# --- CALCUL DES NOTIFICATIONS MESSAGERIE ---
 def obtenir_notifications_chat(dept_nom):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -212,7 +222,7 @@ if total_chat_notifs > 0:
         for notif in notifs_chat_list:
             if st.button(f"👉 {notif['nom']} ({notif['count']} non lu(s))", key=f"notif_btn_{notif['disc_id']}"):
                 st.session_state.discussion_active_id = notif['disc_id']
-                st.session_state.tab_actif = "4. Messagerie & Chat"  # Redirection synchrone garantie
+                st.session_state.tab_actif = "4. Messagerie & Chat"
                 st.rerun()
 
 st.sidebar.markdown("---")
@@ -227,23 +237,26 @@ if profil["type"] in ["finance", "fondateur"]:
     b_total = get_valeur_globale("budget_global")
     b_solde = get_valeur_globale("solde_restant")
     c_b1, c_b2 = st.columns(2)
-    c_b1.metric("Budget Global Allocaté", f"{b_total:,.2f} €")
+    c_b1.metric("Budget Global Allocation", f"{b_total:,.2f} €")
     c_b2.metric("Solde Restant Disponible", f"{b_solde:,.2f} €")
 
 st.markdown("---")
 
-# --- NAVIGATION PRINCIPALE SYNCHRONE ---
-onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "4. Messagerie & Chat"]
+# --- NOUVEAU DESIGN D'ONGLETS MODERNE (BARRE DE BOUTONS SANS RADIO) ---
+onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "4. Messagerie & Chat", "📖 Journal de Bord"]
 if profil["type"] in ["achats", "finance", "fondateur"]:
     onglets_possibles.append("📊 Pôle de Contrôle (Suivi Global)")
 
-onglet_selectionne = st.radio(
-    "Navigation", 
-    onglets_possibles, 
-    index=onglets_possibles.index(st.session_state.tab_actif) if st.session_state.tab_actif in onglets_possibles else 0,
-    horizontal=True
-)
-st.session_state.tab_actif = onglet_selectionne
+# Grille d'onglets au design propre
+cols_tabs = st.columns(len(onglets_possibles))
+for idx, tab_nom in enumerate(onglets_possibles):
+    is_active = (st.session_state.tab_actif == tab_nom)
+    btn_type = "primary" if is_active else "secondary"
+    if cols_tabs[idx].button(tab_nom, key=f"main_nav_tab_{idx}", use_container_width=True, type=btn_type):
+        st.session_state.tab_actif = tab_nom
+        st.rerun()
+
+st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
 # 1. MODULE INGÉNIERIE & ÉTUDES MÉTIER
@@ -353,15 +366,21 @@ def afficher_module_cdc(nom_departement, type_profil):
                                 st.download_button("📥 Télécharger pièce jointe", f, file_name=t_fich, key=f"dl_cdc_{c_id}")
 
 # ==========================================
-# 3. MODULE BESOINS & ACHATS (AVEC WORKFLOWS CROISÉS & RESSOUMISSION)
+# 3. MODULE BESOINS & ACHATS (ONGLETS DYNAMIQUES SELON RÔLE)
 # ==========================================
 def afficher_module_achats(nom_departement, type_profil):
     st.subheader("🛒 Gestion des Demandes d'Achat & Validations")
     
-    t1, t2, t3 = st.tabs(["1. Émettre une Demande", "2. Suivi de mes Demandes & Corrections", "3. 🛡️ Espace de Validation"])
+    # CONDITIONNEMENT DES SOUS-ONGLETS : Suppression du 3ème onglet s'ils ne sont pas contrôleurs !
+    est_controleur = type_profil in ["achats", "finance", "fondateur"]
+    titres_sous_tabs = ["1. Émettre une Demande", "2. Suivi de mes Demandes & Corrections"]
+    if est_controleur:
+        titres_sous_tabs.append("3. 🛡️ Espace de Validation")
+        
+    sub_tabs = st.tabs(titres_sous_tabs)
     
     # 1. ÉMISSION
-    with t1:
+    with sub_tabs[0]:
         with st.form("form_demande_achat", clear_on_submit=True):
             titre = st.text_input("Intitulé du besoin")
             desc = st.text_area("Description du besoin / Spécifications")
@@ -372,7 +391,6 @@ def afficher_module_achats(nom_departement, type_profil):
             if st.form_submit_button("Soumettre la Demande") and titre and montant > 0:
                 f_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, devis)
                 
-                # Routage du circuit selon l'émetteur
                 if type_profil == "finance":
                     etape = "achats"
                     statut = "En attente validation Achats"
@@ -394,8 +412,8 @@ def afficher_module_achats(nom_departement, type_profil):
                 st.success("Demande enregistrée dans le circuit de validation.")
                 st.rerun()
 
-    # 2. SUIVI ET FORMULAIRE DE RESSOUMISSION / CORRECTION
-    with t2:
+    # 2. SUIVI ET FORMULAIRE DE RESSOUMISSION
+    with sub_tabs[1]:
         conn = get_db_connection()
         df = pd.read_sql_query("SELECT * FROM demandes WHERE departement = ? ORDER BY id DESC", conn, params=(nom_departement,))
         conn.close()
@@ -405,7 +423,6 @@ def afficher_module_achats(nom_departement, type_profil):
                 with st.expander(f"📌 #{r['id']} - {r['titre']} ({r['montant']} €) - Statut: {r['statut']}"):
                     st.write(f"**Description :** {r['cahier_charges']}")
                     
-                    # Si demande de modification par le pôle de contrôle
                     if "Modification" in str(r['statut']):
                         st.warning(f"💬 Remarque du contrôleur : {r['retour_remarque']}")
                         st.markdown("##### ✏️ Soumettre la version corrigée")
@@ -421,7 +438,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 if c_devis is not None:
                                     nom_f = enregistrer_fichier_securise(DOSSIER_UPLOADS, c_devis)
                                 
-                                # Ré-injection dans le circuit
                                 nouv_etape = "achats" if type_profil != "achats" else "finance"
                                 nouv_statut = f"En attente validation {nouv_etape.capitalize()} (Après correction)"
                                 
@@ -437,20 +453,17 @@ def afficher_module_achats(nom_departement, type_profil):
         else:
             st.info("Aucune demande émise.")
 
-    # 3. ESPACE DE VALIDATION (BOUTONS APPROUVER, MODIFIER, REFUSER)
-    with t3:
-        if type_profil not in ["achats", "finance", "fondateur"]:
-            st.warning("Espace réservé aux pôles de validation (Achats, Finance, Direction).")
-        else:
+    # 3. ESPACE DE VALIDATION (ACCESSIBLE UNIQUEMENT AUX CONTRÔLEURS)
+    if est_controleur:
+        with sub_tabs[2]:
             conn = get_db_connection()
             cursor = conn.cursor()
             
-            # Filtre de la boîte de réception selon le rôle
             if type_profil == "achats":
                 cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'achats' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
             elif type_profil == "finance":
                 cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'finance' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
-            else: # Direction générale
+            else:
                 cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'direction' OR statut LIKE 'En attente%'")
             
             demandes_a_traiter = cursor.fetchall()
@@ -466,13 +479,12 @@ def afficher_module_achats(nom_departement, type_profil):
                         
                         col_v1, col_v2, col_v3 = st.columns(3)
                         
-                        # APPROUVER
+                        # APPROUVER SÉCURISÉ (AVEC FIX CORRECTION DU BUG IMAGE 1)
                         with col_v1:
                             if st.button(f"🟢 Approuver #{d_id}", key=f"app_{d_id}"):
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
                                 
-                                # Circuit spécial Finance / Achats / Direction
                                 if type_profil == "achats":
                                     prochaine = "direction" if d_dept == "Finance & Comptabilité" else "finance"
                                     st_msg = "En attente validation Direction" if prochaine == "direction" else "En attente validation Finance"
@@ -482,15 +494,15 @@ def afficher_module_achats(nom_departement, type_profil):
                                     prochaine = "direction" if d_dept == "Achats & Approvisionnements" else "terminee"
                                     if prochaine == "terminee":
                                         cursor.execute("UPDATE demandes SET avis_finance='Approuvé', etape_actuelle='terminee', statut='Validé & Financé' WHERE id=?", (d_id,))
-                                        solde = get_valeur_globale("solde_restant")
-                                        set_valeur_globale("solde_restant", solde - d_montant)
+                                        solde_actuel = get_valeur_globale("solde_restant")
+                                        set_valeur_globale("solde_restant", solde_actuel - float(d_montant))
                                     else:
                                         cursor.execute("UPDATE demandes SET avis_finance='Approuvé', etape_actuelle='direction', statut='En attente validation Direction' WHERE id=?", (d_id,))
                                 
                                 else: # Direction Générale
                                     cursor.execute("UPDATE demandes SET etape_actuelle='terminee', statut='Validé & Financé' WHERE id=?", (d_id,))
-                                    solde = get_valeur_globale("solde_restant")
-                                    set_valeur_globale("solde_restant", solde - d_montant)
+                                    solde_actuel = get_valeur_globale("solde_restant")
+                                    set_valeur_globale("solde_restant", solde_actuel - float(d_montant))
                                 
                                 conn.commit()
                                 conn.close()
@@ -524,7 +536,7 @@ def afficher_module_achats(nom_departement, type_profil):
                 st.info("Aucune demande en attente de validation pour votre pôle.")
 
 # ==========================================
-# 4. MODULE MESSAGERIE & CHAT UNIFIÉ (AVEC PSEUDO TEMPS RÉEL PAR FRAGMENT)
+# 4. MODULE MESSAGERIE & CHAT UNIFIÉ
 # ==========================================
 @st.fragment(run_every="3s")
 def afficher_zone_messages(discussion_id, nom_dept):
@@ -533,7 +545,6 @@ def afficher_zone_messages(discussion_id, nom_dept):
     cursor.execute("SELECT id, expediteur, texte, date, lus_json FROM messages_chat WHERE discussion_id = ?", (discussion_id,))
     messages = cursor.fetchall()
     
-    # Marquer comme lu
     for m_id, exp, txt, dt, lus_j in messages:
         lus = json.loads(lus_j) if lus_j else []
         if nom_dept not in lus:
@@ -640,10 +651,8 @@ def afficher_module_messagerie_unifiee(nom_departement):
                 </div>
                 """, unsafe_allow_html=True)
 
-                # Zone de messages isolée (Fragment temps réel)
                 afficher_zone_messages(st.session_state.discussion_active_id, nom_departement)
 
-                # Champ de frappe hors fragment pour éviter la perte de focus
                 prompt = st.chat_input("Votre message...")
                 if prompt:
                     conn = get_db_connection()
@@ -658,7 +667,63 @@ def afficher_module_messagerie_unifiee(nom_departement):
             conn.close()
 
 # ==========================================
-# 5. MODULE SUIVI GLOBAL POUR PÔLE DE CONTRÔLE
+# 5. NOUVEAU MODULE : JOURNAL DE BORD QUOTIDIEN
+# ==========================================
+def afficher_module_journal_bord(nom_departement):
+    st.subheader(f"📖 Journal de Bord Quotidien & Cahier de Notes — {nom_departement}")
+    st.markdown("Consignez ici le fil des événements, activités, observations et faits marquants du département par date et heure.")
+    
+    col_saisie, col_historique = st.columns([1.2, 1.8])
+
+    # Saisie d'une nouvelle note datée
+    with col_saisie:
+        st.markdown("#### ✍️ Ajouter une note")
+        with st.form("form_journal_note", clear_on_submit=True):
+            date_selectionnee = st.date_input("Date de l'événement", value=datetime.now())
+            note_texte = st.text_area("Note / Compte-rendu quotidien", height=140, placeholder="Ex: Début de la récolte sur la parcelle B. Problème technique résolu sur le système d'irrigation...")
+            auteur_nom = st.text_input("Auteur / Rédacteur", value=f"Équipe {nom_departement}")
+            
+            if st.form_submit_button("📘 Enregistrer dans le Journal") and note_texte:
+                heure_actuelle = datetime.now().strftime("%H:%M")
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO journal_bord (departement, auteur, note, date_note, heure_note)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (nom_departement, auteur_nom, note_texte, str(date_selectionnee), heure_actuelle))
+                conn.commit()
+                conn.close()
+                st.success("Note ajoutée au journal de bord !")
+                st.rerun()
+
+    # Historique du journal
+    with col_historique:
+        st.markdown("#### 📜 Historique & Notes du Département")
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, auteur, note, date_note, heure_note FROM journal_bord WHERE departement = ? ORDER BY date_note DESC, id DESC", (nom_departement,))
+        notes = cursor.fetchall()
+        conn.close()
+
+        if notes:
+            # Filtre par date optionnel
+            dates_dispos = ["Toutes les dates"] + sorted(list(set(n[3] for n in notes)), reverse=True)
+            filtre_d = st.selectbox("📅 Filtrer par date :", dates_dispos)
+            
+            for n_id, n_auteur, n_txt, n_date, n_heure in notes:
+                if filtre_d == "Toutes les dates" or filtre_d == n_date:
+                    st.markdown(f"""
+                    <div class="note-card">
+                        <div class="note-date">📅 {n_date} à {n_heure} | Par : {n_auteur}</div>
+                        <div style="margin-top: 8px; font-size: 0.95rem; color: #e6edf3;">{n_txt}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.info("Aucune note enregistrée dans le journal pour le moment.")
+
+# ==========================================
+# 6. MODULE SUIVI GLOBAL POUR PÔLE DE CONTRÔLE
 # ==========================================
 def afficher_module_suivi_global_controle():
     st.subheader("📊 Pôle de Contrôle & Supervision Globale")
@@ -712,6 +777,9 @@ elif st.session_state.tab_actif == "3. Besoins & Achats":
 
 elif st.session_state.tab_actif == "4. Messagerie & Chat":
     afficher_module_messagerie_unifiee(nom_dept)
+
+elif st.session_state.tab_actif == "📖 Journal de Bord":
+    afficher_module_journal_bord(nom_dept)
 
 elif st.session_state.tab_actif == "📊 Pôle de Contrôle (Suivi Global)":
     afficher_module_suivi_global_controle()
