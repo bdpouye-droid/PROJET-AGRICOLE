@@ -1,909 +1,328 @@
-import sqlite3
-import json
-import os
-import uuid
-from datetime import datetime
-import pandas as pd
 import streamlit as st
+import datetime
+import json
 
-# --- CONFIGURATION DE LA PAGE ---
-st.set_page_config(
-    page_title="Plateforme de Pilotage - Bureau d'Études",
-    page_icon="🏢",
-    layout="wide"
+# ==========================================
+# 1. INITIALISATION DE LA SESSION (DATABASE)
+# ==========================================
+st.set_page_config(page_title="ERP Enterprise & Direction", layout="wide", page_icon="🏢")
+
+if "user_role" not in st.session_state:
+    st.session_state.user_role = "Fondateur"  # Choix: Fondateur, Finance, Achats, Ingénierie, Employé
+
+if "demandes_achat" not in st.session_state:
+    st.session_state.demandes_achat = [
+        {"id": 1, "article": "Câbles HR 50m", "montant": 1200, "demandeur": "Équipe Ingénierie", "statut": "En attente", "etape_actuelle": "finance"},
+        {"id": 2, "article": "Serveur NAS 32TB", "montant": 4500, "demandeur": "Service IT", "statut": "Approuvée Finance", "etape_actuelle": "direction"}
+    ]
+
+if "solde_entreprise" not in st.session_state:
+    st.session_state.solde_entreprise = 50000.0
+
+if "canaux_chat" not in st.session_state:
+    st.session_state.canaux_chat = {
+        "Général": [
+            {"id_msg": 1, "auteur": "Direction", "texte": "Bienvenue sur le chat d'entreprise !", "heure": "09:00"},
+            {"id_msg": 2, "auteur": "Finance", "texte": "Les bilans du T2 sont prêts.", "heure": "09:15"}
+        ],
+        "Projet A": [
+            {"id_msg": 1, "auteur": "Ingénierie", "texte": "Cahier des charges mis à jour.", "heure": "10:00"}
+        ]
+    }
+
+if "etudes_ingenierie" not in st.session_state:
+    st.session_state.etudes_ingenierie = [
+        {"id": 1, "titre": "Étude d'impact réseau 2026", "auteur": "Ingénierie", "date": "2026-07-20"}
+    ]
+
+if "journal_de_bord" not in st.session_state:
+    st.session_state.journal_de_bord = [
+        {"id": 1, "auteur": "Chef de projet", "note": "Réception du matériel sur site.", "date": "2026-08-01"}
+    ]
+
+if "corbeille_direction" not in st.session_state:
+    st.session_state.corbeille_direction = []
+
+
+# ==========================================
+# FONCTIONS UTILITAIRES
+# ==========================================
+def archiver_dans_corbeille(type_element, nom_auteur, contenu_dict):
+    st.session_state.corbeille_direction.append({
+        "type": type_element,
+        "auteur_suppression": st.session_state.user_role,
+        "auteur_original": nom_auteur,
+        "date_suppression": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "donnees": contenu_dict
+    })
+
+# ==========================================
+# BARRE LATÉRALE - RÔLES & NAVIGATION
+# ==========================================
+st.sidebar.title("🏢 ERP Enterprise")
+st.session_state.user_role = st.sidebar.selectbox(
+    "Changer de rôle (Simulation)",
+    ["Fondateur", "Finance", "Achats", "Ingénierie", "Employé"]
 )
 
-# --- DOSSIERS DE STOCKAGE ---
-DOSSIER_UPLOADS = "uploads_devis"
-DOSSIER_ETUDES = "uploads_etudes"
-os.makedirs(DOSSIER_UPLOADS, exist_ok=True)
-os.makedirs(DOSSIER_ETUDES, exist_ok=True)
+st.sidebar.markdown(f"**Rôle actif :** `{st.session_state.user_role}`")
+st.sidebar.markdown(f"**Solde Actuel :** `{st.session_state.solde_entreprise:,.2f} €`")
 
-CHEMIN_LOGO = "logo.png"
+menu = [
+    "🛒 Besoins & Achats", 
+    "💳 Validation Finance & Direction", 
+    "💬 Messagerie & Chat", 
+    "📐 Études & Ingénierie", 
+    "📖 Journal de Bord"
+]
 
-# --- STYLE CSS PERSONNALISÉ & DESIGN MODERNE DES ONGLETS ---
-st.markdown("""
-    <style>
-    .stApp { background-color: #0e1117; }
-    
-    /* Boutons généraux */
-    .stButton>button {
-        border-radius: 8px; font-weight: 600; transition: all 0.2s ease;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-    .stButton>button:hover {
-        transform: translateY(-1px); border-color: #1f6feb;
-    }
-    
-    .badge-notification { background-color: #f85149; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: bold; }
-    .channel-header {
-        background-color: #161b22; padding: 12px 18px; border-radius: 8px; 
-        border-left: 4px solid #5b5fc7; margin-bottom: 15px;
-    }
-    
-    /* Journal de Bord */
-    .note-card {
-        background-color: #161b22; border: 1px solid #30363d; border-radius: 8px;
-        padding: 14px; margin-bottom: 12px; border-left: 4px solid #238636;
-    }
-    .note-date { color: #8b949e; font-size: 0.85rem; font-weight: 600; }
-    </style>
-""", unsafe_allow_html=True)
+if st.session_state.user_role == "Fondateur":
+    menu.append("🗑️ Corbeille & Historique (Direction)")
 
-# --- INITIALISATION BASE DE DONNÉES ---
-def init_db():
-    conn = sqlite3.connect("database.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS global_store (key TEXT PRIMARY KEY, value TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS demandes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, titre TEXT, cahier_charges TEXT,
-        montant REAL, fournisseur TEXT, statut TEXT, etape_actuelle TEXT, avis_achats TEXT,
-        avis_finance TEXT, motif_refus TEXT, date TEXT, fichier_devis TEXT, retour_remarque TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS etudes_metier (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, titre TEXT, donnees_json TEXT,
-        fichier_etude TEXT, destinataires_partage TEXT, date TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS cahiers_charges (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, titre TEXT, contenu TEXT, date TEXT, destinataires_avis TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS discussions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, nom_groupe TEXT, membres_json TEXT, createur TEXT, date_creation TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS messages_chat (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, discussion_id INTEGER, expediteur TEXT, texte TEXT, date TEXT, lus_json TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS journal_bord (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, auteur TEXT, note TEXT, date_note TEXT, heure_note TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS corbeille_archives (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, departement_auteur TEXT, type_element TEXT, resume TEXT, details_json TEXT, date_suppression TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS logs_audit (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, acteur TEXT, action TEXT, details TEXT
-    )''')
-    
-    cursor.execute("SELECT value FROM global_store WHERE key = 'budget_global'")
-    if not cursor.fetchone():
-        cursor.execute("INSERT INTO global_store (key, value) VALUES ('budget_global', ?)", (str(10000000.0),))
-        cursor.execute("INSERT INTO global_store (key, value) VALUES ('solde_restant', ?)", (str(10000000.0),))
-    
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# --- UTILS DATABASE ---
-def get_db_connection():
-    return sqlite3.connect("database.db", check_same_thread=False)
-
-def get_valeur_globale(key):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM global_store WHERE key = ?", (key,))
-    val = cursor.fetchone()
-    conn.close()
-    return float(val[0]) if val else 0.0
-
-def set_valeur_globale(key, val):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO global_store (key, value) VALUES (?, ?)", (key, str(val)))
-    conn.commit()
-    conn.close()
-
-def ajouter_log(action, acteur, details):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO logs_audit (date, acteur, action, details) VALUES (?, ?, ?, ?)",
-        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), acteur, action, details)
-    )
-    conn.commit()
-    conn.close()
-
-def archiver_dans_corbeille(departement_auteur, type_element, resume, details_dict):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO corbeille_archives (departement_auteur, type_element, resume, details_json, date_suppression) VALUES (?, ?, ?, ?, ?)",
-        (departement_auteur, type_element, resume, json.dumps(details_dict), datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    )
-    conn.commit()
-    conn.close()
-
-def enregistrer_fichier_securise(dossier, fichier):
-    if fichier is not None:
-        ext = os.path.splitext(fichier.name)[1]
-        nom_unique = f"{uuid.uuid4().hex[:8]}_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
-        chemin_complet = os.path.join(dossier, nom_unique)
-        with open(chemin_complet, "wb") as f:
-            f.write(fichier.getbuffer())
-        return nom_unique
-    return ""
-
-# --- ROLES ET UTILISATEURS ---
-UTILISATEURS = {
-    "DEP1": {"nom": "Agriculture", "mdp": "DEP123", "type": "standard", "dept": "Agriculture"},
-    "DEP2": {"nom": "Élevage & Halieutique", "mdp": "DEP123", "type": "standard", "dept": "Élevage & Halieutique"},
-    "DEP3": {"nom": "Industrie & Transformation", "mdp": "DEP123", "type": "standard", "dept": "Industrie & Transformation"},
-    "DEP4": {"nom": "Ressources Hydriques", "mdp": "DEP123", "type": "standard", "dept": "Ressources Hydriques"},
-    "DEP5": {"nom": "Énergie & Maintenance", "mdp": "DEP123", "type": "standard", "dept": "Énergie & Maintenance"},
-    "DEP6": {"nom": "Recherche & Développement", "mdp": "DEP123", "type": "standard", "dept": "Recherche & Développement"},
-    "DEP7": {"nom": "Sécurité & HSE", "mdp": "DEP123", "type": "standard", "dept": "Sécurité & HSE"},
-    "DEP8": {"nom": "Ressources Humaines & RSE", "mdp": "DEP123", "type": "standard", "dept": "Ressources Humaines & RSE"},
-    "DEP9": {"nom": "Commercial & Marketing", "mdp": "DEP123", "type": "standard", "dept": "Commercial & Marketing"},
-    "DEP10": {"nom": "IT & Data", "mdp": "DEP123", "type": "standard", "dept": "IT & Data"},
-    "DEP11": {"nom": "Logistique", "mdp": "DEP123", "type": "standard", "dept": "Logistique"},
-    "DEP12": {"nom": "Achats & Approvisionnements", "mdp": "DEP123", "type": "achats", "dept": "Achats & Approvisionnements"},
-    "DEP13": {"nom": "Finance & Comptabilité", "mdp": "DEP123", "type": "finance", "dept": "Finance & Comptabilité"},
-    "fondateur": {"nom": "Direction Générale - Pilotage Stratégique", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
-}
-
-# --- GESTION DE LA SESSION ---
-if 'user_connecte' not in st.session_state:
-    st.session_state.user_connecte = None
-if 'tab_actif' not in st.session_state:
-    st.session_state.tab_actif = "1. Études & Ingénierie"
-if 'discussion_active_id' not in st.session_state:
-    st.session_state.discussion_active_id = None
-
-# --- AUTHENTIFICATION ---
-if os.path.exists(CHEMIN_LOGO):
-    st.sidebar.image(CHEMIN_LOGO, use_column_width=True)
-else:
-    st.sidebar.markdown("## 🏢 Bureau d'Études")
-
-st.sidebar.markdown("---")
-
-if st.session_state.user_connecte is None:
-    st.sidebar.subheader("Connexion Collaborateur")
-    username = st.sidebar.text_input("Identifiant")
-    password = st.sidebar.text_input("Mot de passe", type="password")
-    
-    if st.sidebar.button("Se connecter"):
-        if username in UTILISATEURS and UTILISATEURS[username]["mdp"] == password:
-            st.session_state.user_connecte = username
-            ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
-            st.rerun()
-        else:
-            st.sidebar.error("Identifiant ou mot de passe incorrect.")
-    st.stop()
-
-user_key = st.session_state.user_connecte
-profil = UTILISATEURS[user_key]
-nom_dept = profil["dept"]
-
-st.sidebar.success(f"Connecté : **{profil['nom']}**")
-st.sidebar.markdown("---")
-
-# --- CALCUL DES NOTIFICATIONS MESSAGERIE ---
-def obtenir_notifications_chat(dept_nom):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, nom_groupe, membres_json FROM discussions")
-    discs = cursor.fetchall()
-    
-    notifs_chat = []
-    for d_id, nom_g, membres_j in discs:
-        membres = json.loads(membres_j)
-        if dept_nom in membres:
-            cursor.execute("SELECT expediteur, lus_json FROM messages_chat WHERE discussion_id = ?", (d_id,))
-            msgs = cursor.fetchall()
-            non_lus = 0
-            for exp, lus_j in msgs:
-                lus = json.loads(lus_j) if lus_j else []
-                if exp != dept_nom and dept_nom not in lus:
-                    non_lus += 1
-            if non_lus > 0:
-                notifs_chat.append({"disc_id": d_id, "nom": nom_g, "count": non_lus})
-    conn.close()
-    return notifs_chat
-
-notifs_chat_list = obtenir_notifications_chat(nom_dept)
-total_chat_notifs = sum(item["count"] for item in notifs_chat_list)
-
-if total_chat_notifs > 0:
-    st.sidebar.markdown(f"""
-    <div style="background-color: #161b22; padding: 10px; border-radius: 8px; border: 1px solid #f85149; text-align: center; margin-bottom: 10px;">
-        <span style="font-size: 1.1rem;">🔔</span> <b style="color: #f85149;">Centre de Notifications</b><br>
-        <span class="badge-notification">{total_chat_notifs} message(s) non lu(s)</span>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    with st.sidebar.expander("💬 Téléportation vers Discussion", expanded=True):
-        for notif in notifs_chat_list:
-            if st.button(f"👉 {notif['nom']} ({notif['count']} non lu(s))", key=f"notif_btn_{notif['disc_id']}"):
-                st.session_state.discussion_active_id = notif['disc_id']
-                st.session_state.tab_actif = "4. Messagerie & Chat"
-                st.rerun()
-
-st.sidebar.markdown("---")
-if st.sidebar.button("Se déconnecter"):
-    st.session_state.user_connecte = None
-    st.session_state.discussion_active_id = None
-    st.rerun()
-
-st.title(f"Tableau de Bord - {profil['nom']}")
-
-if profil["type"] in ["finance", "fondateur"]:
-    b_total = get_valeur_globale("budget_global")
-    b_solde = get_valeur_globale("solde_restant")
-    c_b1, c_b2 = st.columns(2)
-    c_b1.metric("Budget Global Allocation", f"{b_total:,.2f} €")
-    c_b2.metric("Solde Restant Disponible", f"{b_solde:,.2f} €")
-
-st.markdown("---")
-
-# --- NAVIGATION ONGLES PRINCIPAUX (AVEC MODULE DIRECTION CORBEILLE SI FONDATEUR) ---
-onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "4. Messagerie & Chat", "📖 Journal de Bord"]
-if profil["type"] in ["achats", "finance", "fondateur"]:
-    onglets_possibles.append("📊 Pôle de Contrôle (Suivi Global)")
-if profil["type"] == "fondateur":
-    onglets_possibles.append("🗑️ Corbeille & Historique Suppressions")
-
-cols_tabs = st.columns(len(onglets_possibles))
-for idx, tab_nom in enumerate(onglets_possibles):
-    is_active = (st.session_state.tab_actif == tab_nom)
-    btn_type = "primary" if is_active else "secondary"
-    if cols_tabs[idx].button(tab_nom, key=f"main_nav_tab_{idx}", use_container_width=True, type=btn_type):
-        st.session_state.tab_actif = tab_nom
-        st.rerun()
-
-st.markdown("<br>", unsafe_allow_html=True)
+choix_menu = st.sidebar.radio("Navigation", menu)
 
 # ==========================================
-# 1. MODULE INGÉNIERIE & ÉTUDES MÉTIER
+# MODULE 1 : BESOINS & ACHATS (ANNULATION SEULEMENT)
 # ==========================================
-def afficher_module_etudes(nom_departement, type_profil):
-    st.subheader(f"⚙️ Centre d'Ingénierie & Traçabilité des Études — {nom_departement}")
-    tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
-    t1, t2, t3 = st.tabs(["1. Nouvelle Étude & Partage", "2. Études Reçues", "3. 📜 Historique & Gestion"])
+if choix_menu == "🛒 Besoins & Achats":
+    st.title("🛒 Besoins & Demandes d'Achats")
+    st.info("💡 **Règle :** Les demandes d'achats ne peuvent pas être supprimées définitivement pour des raisons d'audit. Elles peuvent uniquement être **annulées**.")
     
-    with t1:
-        with st.form(f"form_etude_{nom_departement}", clear_on_submit=True):
-            titre = st.text_input("Intitulé de l'étude / Projet technique")
-            details = st.text_area("Spécifications et notes d'ingénierie")
-            fich = st.file_uploader("📥 Importer fichier technique", type=["pdf", "png", "jpg", "xlsx", "dwg"])
-            destinataires = st.multiselect("🤝 Partager avec :", tous_depts)
-            
-            if st.form_submit_button("Enregistrer et diffuser") and titre:
-                nom_f = enregistrer_fichier_securise(DOSSIER_ETUDES, fich)
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO etudes_metier (departement, titre, donnees_json, fichier_etude, destinataires_partage, date)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (nom_departement, titre, json.dumps({"details": details}), nom_f, json.dumps(destinataires), datetime.now().strftime("%Y-%m-%d %H:%M")))
-                conn.commit()
-                conn.close()
-                ajouter_log("Étude Métier", nom_departement, f"Étude créée: {titre}")
-                st.success("Étude diffusée !")
+    with st.expander("➕ Formuler une nouvelle demande d'achat"):
+        with st.form("form_achat"):
+            article = st.text_input("Désignation de l'article / besoin")
+            montant = st.number_input("Montant estimé (€)", min_value=1.0, value=100.0)
+            submitted = st.form_submit_button("Soumettre la demande")
+            if submitted and article:
+                nouvel_id = max([d["id"] for d in st.session_state.demandes_achat], default=0) + 1
+                st.session_state.demandes_achat.append({
+                    "id": nouvel_id,
+                    "article": article,
+                    "montant": montant,
+                    "demandeur": st.session_state.user_role,
+                    "statut": "En attente Validation Finance",
+                    "etape_actuelle": "finance"
+                })
+                st.success("Demande d'achat enregistrée et transmise à la Finance !")
                 st.rerun()
 
-    with t2:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date FROM etudes_metier WHERE departement != ? ORDER BY id DESC", (nom_departement,))
-        etudes = cursor.fetchall()
-        conn.close()
-        recus = [e for e in etudes if nom_departement in (json.loads(e[5]) if e[5] else []) or type_profil == "fondateur"]
-
-        if recus:
-            for e in recus:
-                e_id, e_dept, e_titre, e_json, e_fich, _, e_date = e
-                with st.expander(f"📁 [{e_dept}] {e_titre} ({e_date})"):
-                    data = json.loads(e_json) if e_json else {}
-                    st.write(f"**Description :** {data.get('details', '')}")
-                    if e_fich:
-                        chemin = os.path.join(DOSSIER_ETUDES, e_fich)
-                        if os.path.exists(chemin):
-                            with open(chemin, "rb") as f:
-                                st.download_button("📥 Télécharger Fichier Joint", f, file_name=e_fich, key=f"dl_et_{e_id}")
-        else:
-            st.info("Aucune étude reçue.")
-
-    with t3:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        query = "SELECT id, departement, titre, donnees_json, date FROM etudes_metier ORDER BY id DESC" if type_profil == "fondateur" else "SELECT id, departement, titre, donnees_json, date FROM etudes_metier WHERE departement = ? ORDER BY id DESC"
-        cursor.execute(query, () if type_profil == "fondateur" else (nom_departement,))
-        mes_e = cursor.fetchall()
-        conn.close()
+    st.subheader("📋 Liste des demandes d'achat")
+    for da in st.session_state.demandes_achat:
+        col1, col2, col3, col4, col5 = st.columns([1, 3, 2, 2, 2])
+        col1.write(f"**#{da['id']}**")
+        col2.write(f"**{da['article']}** ({da['montant']} €)")
+        col3.write(f"Par: {da['demandeur']}")
         
-        if mes_e:
-            for me in mes_e:
-                me_id, me_dept, me_titre, me_json, me_date = me
-                c_info1, c_info2 = st.columns([4, 1])
-                with c_info1:
-                    st.write(f"📜 **[{me_dept}] {me_titre}** — {me_date}")
-                with c_info2:
-                    if st.button("🗑️ Supprimer", key=f"del_etude_{me_id}"):
-                        archiver_dans_corbeille(me_dept, "Étude Technique", me_titre, {"details_json": me_json, "date": me_date})
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        cursor.execute("DELETE FROM etudes_metier WHERE id = ?", (me_id,))
-                        conn.commit()
-                        conn.close()
-                        st.success("Étude supprimée et archivée.")
+        # Affichage Badge Statut
+        if da['statut'] == "Annulée":
+            col4.error("🚫 Annulée")
+        elif da['statut'] == "Payée & Décaissement Effectué":
+            col4.success("✅ Payée")
+        else:
+            col4.warning(da['statut'])
+
+        # Action d'annulation (Pas de suppression)
+        if da['statut'] not in ["Annulée", "Payée & Décaissement Effectué"]:
+            if col5.button("🚫 Annuler la demande", key=f"cancel_da_{da['id']}"):
+                da['statut'] = "Annulée"
+                da['etape_actuelle'] = "annulee"
+                st.toast(f"La demande #{da['id']} a été annulée avec succès.")
+                st.rerun()
+
+# ==========================================
+# MODULE 2 : VALIDATION FINANCE & DIRECTION
+# ==========================================
+elif choix_menu == "💳 Validation Finance & Direction":
+    st.title("💳 Workflow Validation & Decaissement")
+    
+    st.subheader("1️⃣ Étape Finance (Vérification du budget)")
+    demandes_finance = [d for d in st.session_state.demandes_achat if d["etape_actuelle"] == "finance" and d["statut"] != "Annulée"]
+    
+    if not demandes_finance:
+        st.caption("Aucune demande en attente de validation Finance.")
+    else:
+        for da in demandes_finance:
+            c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+            c1.write(f"**{da['article']}** ({da['montant']} €) - Demandeur: {da['demandeur']}")
+            
+            if st.session_state.user_role in ["Finance", "Fondateur"]:
+                if c2.button("✅ Approuver & Transmettre Direction", key=f"fin_app_{da['id']}"):
+                    da['statut'] = "Approuvée par Finance (En attente Direction)"
+                    da['etape_actuelle'] = "direction"
+                    st.success("Transmis à la Direction Générale !")
+                    st.rerun()
+                if c3.button("❌ Rejeter", key=f"fin_rej_{da['id']}"):
+                    da['statut'] = "Rejetée par Finance"
+                    da['etape_actuelle'] = "rejetee"
+                    st.rerun()
+
+    st.divider()
+    st.subheader("2️⃣ Étape Direction Générale (Décaissement Final)")
+    demandes_dir = [d for d in st.session_state.demandes_achat if d["etape_actuelle"] == "direction" and d["statut"] != "Annulée"]
+    
+    if not demandes_dir:
+        st.caption("Aucune demande en attente de validation de la Direction.")
+    else:
+        for da in demandes_dir:
+            c1, c2, c3 = st.columns([4, 3, 3])
+            c1.write(f"**{da['article']}** ({da['montant']} €) - Demandeur: {da['demandeur']}")
+            
+            if st.session_state.user_role == "Fondateur":
+                if c2.button("💰 Valider le Décaissement Final", key=f"dir_pay_{da['id']}"):
+                    if st.session_state.solde_entreprise >= da['montant']:
+                        st.session_state.solde_entreprise -= da['montant']
+                        da['statut'] = "Payée & Décaissement Effectué"
+                        da['etape_actuelle'] = "terminee"
+                        st.balloons()
+                        st.success(f"Décaissement de {da['montant']} € effectué !")
                         st.rerun()
-        else:
-            st.info("Aucune étude enregistrée.")
-
-# ==========================================
-# 2. MODULE CAHIERS DES CHARGES
-# ==========================================
-def afficher_module_cdc(nom_departement, type_profil):
-    st.subheader("📋 Cahiers des Charges & Documents Partagés")
-    tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
-
-    t1, t2 = st.tabs(["1. Publier un Cahier des Charges", "2. Documents Reçus & Gestion"])
-    with t1:
-        with st.form("form_cdc"):
-            titre = st.text_input("Intitulé du document")
-            contenu = st.text_area("Contenu détaillé")
-            fich = st.file_uploader("📎 Pièce jointe", type=["pdf", "xlsx", "docx"])
-            dest = st.multiselect("Partager pour consultation :", tous_depts)
-            if st.form_submit_button("Diffuser Document") and titre:
-                f_name = enregistrer_fichier_securise(DOSSIER_UPLOADS, fich)
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO cahiers_charges (departement, titre, contenu, date, destinataires_avis) VALUES (?, ?, ?, ?, ?)",
-                               (nom_departement, f"{titre}||{f_name}", contenu, datetime.now().strftime("%Y-%m-%d %H:%M"), json.dumps(dest)))
-                conn.commit()
-                conn.close()
-                st.success("Document diffusé avec succès.")
-                st.rerun()
-
-    with t2:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis FROM cahiers_charges ORDER BY id DESC")
-        cdcs = cursor.fetchall()
-        conn.close()
-        for c in cdcs:
-            c_id, c_dept, c_titre_raw, c_txt, c_date, c_dest_raw = c
-            dests = json.loads(c_dest_raw) if c_dest_raw else []
-            if nom_departement in dests or c_dept == nom_departement or type_profil == "fondateur":
-                parts = c_titre_raw.split("||")
-                t_titre = parts[0]
-                t_fich = parts[1] if len(parts) > 1 else ""
-                
-                with st.expander(f"📄 [{c_dept}] {t_titre} ({c_date})"):
-                    st.write(c_txt)
-                    if t_fich:
-                        ch = os.path.join(DOSSIER_UPLOADS, t_fich)
-                        if os.path.exists(ch):
-                            with open(ch, "rb") as f:
-                                st.download_button("📥 Télécharger pièce jointe", f, file_name=t_fich, key=f"dl_cdc_{c_id}")
-                    
-                    if c_dept == nom_departement or type_profil == "fondateur":
-                        if st.button("🗑️ Supprimer ce Cahier des Charges", key=f"del_cdc_{c_id}"):
-                            archiver_dans_corbeille(c_dept, "Cahier des Charges", t_titre, {"contenu": c_txt, "date": c_date})
-                            conn = get_db_connection()
-                            cursor = conn.cursor()
-                            cursor.execute("DELETE FROM cahiers_charges WHERE id = ?", (c_id,))
-                            conn.commit()
-                            conn.close()
-                            st.success("Cahier des charges supprimé et archivé.")
-                            st.rerun()
-
-# ==========================================
-# 3. MODULE BESOINS & ACHATS
-# ==========================================
-def afficher_module_achats(nom_departement, type_profil):
-    st.subheader("🛒 Gestion des Demandes d'Achat & Validations")
-    
-    est_controleur = type_profil in ["achats", "finance", "fondateur"]
-    titres_sous_tabs = ["1. Émettre une Demande", "2. Suivi de mes Demandes & Corrections"]
-    if est_controleur:
-        titres_sous_tabs.append("3. 🛡️ Espace de Validation")
-        
-    sub_tabs = st.tabs(titres_sous_tabs)
-    
-    # 1. ÉMISSION
-    with sub_tabs[0]:
-        with st.form("form_demande_achat", clear_on_submit=True):
-            titre = st.text_input("Intitulé du besoin")
-            desc = st.text_area("Description du besoin / Spécifications")
-            montant = st.number_input("Montant estimé (€)", min_value=0.0, step=100.0)
-            fournisseur = st.text_input("Fournisseur proposé (Facultatif)")
-            devis = st.file_uploader("📎 Importer devis", type=["pdf", "png", "jpg", "xlsx"])
-            
-            if st.form_submit_button("Soumettre la Demande") and titre and montant > 0:
-                f_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, devis)
-                
-                if type_profil == "finance":
-                    etape = "achats"
-                    statut = "En attente validation Achats"
-                elif type_profil == "achats":
-                    etape = "finance"
-                    statut = "En attente validation Finance"
-                else:
-                    etape = "achats"
-                    statut = "En attente validation Achats"
-
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (nom_departement, titre, desc, montant, fournisseur, statut, etape, "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), f_devis, ""))
-                conn.commit()
-                conn.close()
-                st.success("Demande enregistrée dans le circuit de validation.")
-                st.rerun()
-
-    # 2. SUIVI ET FORMULAIRE DE RESSOUMISSION
-    with sub_tabs[1]:
-        conn = get_db_connection()
-        df = pd.read_sql_query("SELECT * FROM demandes WHERE departement = ? ORDER BY id DESC", conn, params=(nom_departement,))
-        conn.close()
-        
-        if not df.empty:
-            for _, r in df.iterrows():
-                with st.expander(f"📌 #{r['id']} - {r['titre']} ({r['montant']} €) - Statut: {r['statut']}"):
-                    st.write(f"**Description :** {r['cahier_charges']}")
-                    
-                    c_del1, c_del2 = st.columns([4, 1])
-                    with c_del2:
-                        if st.button("🗑️ Supprimer", key=f"del_dem_{r['id']}"):
-                            archiver_dans_corbeille(nom_departement, "Demande d'Achat", f"#{r['id']} - {r['titre']} ({r['montant']} €)", {"statut": r['statut']})
-                            conn = get_db_connection()
-                            cursor = conn.cursor()
-                            cursor.execute("DELETE FROM demandes WHERE id = ?", (r['id'],))
-                            conn.commit()
-                            conn.close()
-                            st.success("Demande supprimée et archivée.")
-                            st.rerun()
-
-                    if "Modification" in str(r['statut']):
-                        st.warning(f"💬 Remarque du contrôleur : {r['retour_remarque']}")
-                        st.markdown("##### ✏️ Soumettre la version corrigée")
-                        
-                        with st.form(f"form_corriger_{r['id']}"):
-                            c_titre = st.text_input("Titre corrigé", value=r['titre'])
-                            c_desc = st.text_area("Description corrigée", value=r['cahier_charges'])
-                            c_montant = st.number_input("Nouveau montant (€)", value=float(r['montant']))
-                            c_devis = st.file_uploader("Nouveau devis (laisser vide si inchangé)", type=["pdf", "png", "jpg", "xlsx"])
-                            
-                            if st.form_submit_button("Envoyer la correction"):
-                                nom_f = r['fichier_devis']
-                                if c_devis is not None:
-                                    nom_f = enregistrer_fichier_securise(DOSSIER_UPLOADS, c_devis)
-                                
-                                nouv_etape = "achats" if type_profil != "achats" else "finance"
-                                nouv_statut = f"En attente validation {nouv_etape.capitalize()} (Après correction)"
-                                
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                cursor.execute("""
-                                    UPDATE demandes SET titre=?, cahier_charges=?, montant=?, fichier_devis=?, statut=?, etape_actuelle=?, retour_remarque='' WHERE id=?
-                                """, (c_titre, c_desc, c_montant, nom_f, nouv_statut, nouv_etape, r['id']))
-                                conn.commit()
-                                conn.close()
-                                st.success("Demande corrigée et renvoyée en validation !")
-                                st.rerun()
-        else:
-            st.info("Aucune demande émise.")
-
-    # 3. ESPACE DE VALIDATION CORRIGÉ (FLUX FINANCE -> DIRECTION)
-    if est_controleur:
-        with sub_tabs[2]:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            if type_profil == "achats":
-                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'achats' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
-            elif type_profil == "finance":
-                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'finance' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
-            else:
-                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'direction' OR statut LIKE 'En attente%'")
-            
-            demandes_a_traiter = cursor.fetchall()
-            conn.close()
-
-            if demandes_a_traiter:
-                for d in demandes_a_traiter:
-                    d_id, d_dept, d_titre, d_desc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_motif, d_date, d_fich, d_rem = d
-                    
-                    with st.expander(f"📥 Dossier #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
-                        st.write(f"**Description :** {d_desc}")
-                        st.write(f"**Fournisseur :** {d_fourn}")
-                        
-                        col_v1, col_v2, col_v3 = st.columns(3)
-                        
-                        # APPROUVER CORRIGÉ (FLUX SANS BUG ET PASSAGE DIRECTION OBLIGATOIRE POUR LA FINANCE)
-                        with col_v1:
-                            if st.button(f"🟢 Approuver #{d_id}", key=f"app_{d_id}"):
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                
-                                if type_profil == "achats":
-                                    prochaine = "direction" if d_dept == "Finance & Comptabilité" else "finance"
-                                    st_msg = "En attente validation Direction" if prochaine == "direction" else "En attente validation Finance"
-                                    cursor.execute("UPDATE demandes SET avis_achats='Approuvé', etape_actuelle=?, statut=? WHERE id=?", (prochaine, st_msg, d_id))
-                                
-                                elif type_profil == "finance":
-                                    # Correction demandée : La finance approuve mais renvoie obligatoirement à la direction pour le décaissement final !
-                                    cursor.execute("UPDATE demandes SET avis_finance='Approuvé', etape_actuelle='direction', statut='En attente validation Direction' WHERE id=?", (d_id,))
-                                
-                                else: # Direction Générale (Seule habilitée à décaisser définitivement)
-                                    cursor.execute("UPDATE demandes SET etape_actuelle='terminee', statut='Validé & Financé' WHERE id=?", (d_id,))
-                                    conn.commit()
-                                    conn.close()
-                                    solde_actuel = get_valeur_globale("solde_restant")
-                                    set_valeur_globale("solde_restant", solde_actuel - float(d_montant))
-                                    st.success(f"Dossier #{d_id} approuvé et décaissement effectué !")
-                                    st.rerun()
-                                    
-                                conn.commit()
-                                conn.close()
-                                st.success(f"Dossier #{d_id} approuvé !")
-                                st.rerun()
-
-                        # DEMANDER MODIFICATION
-                        with col_v2:
-                            remarque = st.text_input("Remarque d'ajustement", key=f"rem_{d_id}")
-                            if st.button(f"🟡 Requis modification #{d_id}", key=f"mod_{d_id}") and remarque:
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE demandes SET statut='Demande de Modification', etape_actuelle='emetteur', retour_remarque=? WHERE id=?", (remarque, d_id))
-                                conn.commit()
-                                conn.close()
-                                st.warning("Demande renvoyée pour correction.")
-                                st.rerun()
-
-                        # REFUS DÉFINITIF
-                        with col_v3:
-                            motif = st.text_input("Motif du refus", key=f"mot_{d_id}")
-                            if st.button(f"🔴 Refuser définitivement #{d_id}", key=f"ref_{d_id}") and motif:
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE demandes SET statut='Refusé', etape_actuelle='terminee', motif_refus=? WHERE id=?", (motif, d_id))
-                                conn.commit()
-                                conn.close()
-                                st.error("Dossier refusé.")
-                                st.rerun()
-            else:
-                st.info("Aucune demande en attente de validation pour votre pôle.")
-
-# ==========================================
-# 4. MODULE MESSAGERIE & CHAT UNIFIÉ
-# ==========================================
-@st.fragment(run_every="3s")
-def afficher_zone_messages(discussion_id, nom_dept):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, expediteur, texte, date, lus_json FROM messages_chat WHERE discussion_id = ?", (discussion_id,))
-    messages = cursor.fetchall()
-    
-    for m_id, exp, txt, dt, lus_j in messages:
-        lus = json.loads(lus_j) if lus_j else []
-        if nom_dept not in lus:
-            lus.append(nom_dept)
-            cursor.execute("UPDATE messages_chat SET lus_json = ? WHERE id = ?", (json.dumps(lus), m_id))
-    conn.commit()
-
-    chat_box = st.container(height=380)
-    with chat_box:
-        if messages:
-            for m_id, exp, txt, dt, _ in messages:
-                is_me = (exp == nom_dept)
-                role = "user" if is_me else "assistant"
-                avatar = "👤" if is_me else "🏢"
-                
-                c_m1, c_m2 = st.columns([5, 1])
-                with c_m1:
-                    with st.chat_message(role, avatar=avatar):
-                        st.markdown(f"**{exp}** <small style='color: #8b949e;'>({dt})</small>", unsafe_allow_html=True)
-                        st.write(txt)
-                with c_m2:
-                    if is_me:
-                        if st.button("🗑️", key=f"del_msg_{m_id}", help="Supprimer ce message"):
-                            archiver_dans_corbeille(nom_dept, "Message Chat", txt[:40], {"discussion_id": discussion_id, "date": dt})
-                            conn_del = get_db_connection()
-                            cursor_del = conn_del.cursor()
-                            cursor_del.execute("DELETE FROM messages_chat WHERE id = ?", (m_id,))
-                            conn_del.commit()
-                            conn_del.close()
-                            st.rerun()
-        else:
-            st.info("Discussion démarrée. Envoyez le premier message !")
-    conn.close()
-
-def afficher_module_messagerie_unifiee(nom_departement):
-    st.subheader("💬 Hub de Discussion & Communication Directe")
-    tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
-    
-    col_groupes, col_chat = st.columns([1.1, 2.2])
-
-    with col_groupes:
-        st.markdown("#### 💬 Salons & Conversations")
-        
-        with st.expander("➕ Créer une nouvelle discussion", expanded=False):
-            with st.form("form_nouveau_groupe"):
-                membres_selectionnes = st.multiselect("Sélectionner les participants :", tous_depts)
-                nom_groupe_custom = st.text_input("Nom du groupe (Facultatif)")
-                
-                if st.form_submit_button("Démarrer la discussion") and membres_selectionnes:
-                    tous_membres = list(set(membres_selectionnes + [nom_departement]))
-                    if not nom_groupe_custom:
-                        nom_groupe_custom = ", ".join(membres_selectionnes[:2]) + ("..." if len(membres_selectionnes) > 2 else "")
-                    
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "INSERT INTO discussions (nom_groupe, membres_json, createur, date_creation) VALUES (?, ?, ?, ?)",
-                        (nom_groupe_custom, json.dumps(tous_membres), nom_departement, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                    )
-                    nouveau_id = cursor.lastrowid
-                    conn.commit()
-                    conn.close()
-                    st.session_state.discussion_active_id = nouveau_id
+                    else:
+                        st.error("Solde insuffisant pour procéder au décaissement.")
+                if c3.button("❌ Refuser Décaissement", key=f"dir_ref_{da['id']}"):
+                    da['statut'] = "Refusée par la Direction"
+                    da['etape_actuelle'] = "rejetee"
                     st.rerun()
+            else:
+                c2.info("En attente d'approbation par le Fondateur.")
 
-        st.markdown("---")
+# ==========================================
+# MODULE 3 : MESSAGERIE & CHAT (SUPPRESSION MESSAGE & CANAL)
+# ==========================================
+elif choix_menu == "💬 Messagerie & Chat":
+    st.title("💬 Messagerie & Canaux de Discussion")
+    
+    col_canal, col_chat = st.columns([1, 3])
+    
+    with col_canal:
+        st.subheader("📢 Canaux")
+        canal_selectionne = st.radio("Sélectionner un canal", list(st.session_state.canaux_chat.keys()))
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, nom_groupe, membres_json FROM discussions ORDER BY id DESC")
-        toutes_discs = cursor.fetchall()
-        
-        discussions_utilisateur = []
-        for d_id, nom_g, membres_j in toutes_discs:
-            membres = json.loads(membres_j)
-            if nom_departement in membres:
-                cursor.execute("SELECT expediteur, lus_json FROM messages_chat WHERE discussion_id = ?", (d_id,))
-                msgs = cursor.fetchall()
-                nb_non_lus = 0
-                for exp, lus_j in msgs:
-                    lus = json.loads(lus_j) if lus_j else []
-                    if exp != nom_departement and nom_departement not in lus:
-                        nb_non_lus += 1
-                
-                label = f"{'🔴 ' + str(nb_non_lus) + ' ' if nb_non_lus > 0 else ''}{nom_g}"
-                discussions_utilisateur.append((d_id, label, nom_g, nb_non_lus))
-
-        conn.close()
-
-        if discussions_utilisateur:
-            if st.session_state.discussion_active_id is None:
-                st.session_state.discussion_active_id = discussions_utilisateur[0][0]
-
-            for d_id, label, nom_g, count in discussions_utilisateur:
-                type_button = "primary" if st.session_state.discussion_active_id == d_id else "secondary"
-                if st.button(label, key=f"btn_disc_{d_id}", use_container_width=True, type=type_button):
-                    st.session_state.discussion_active_id = d_id
+        st.divider()
+        with st.expander("➕ Créer un canal"):
+            nouveau_canal = st.text_input("Nom du canal")
+            if st.button("Créer") and nouveau_canal:
+                if nouveau_canal not in st.session_state.canaux_chat:
+                    st.session_state.canaux_chat[nouveau_canal] = []
                     st.rerun()
-        else:
-            st.info("Aucune discussion active.")
+        
+        # Option de suppression de Canal
+        st.divider()
+        if st.button(f"🗑️ Supprimer le canal '{canal_selectionne}'", type="secondary"):
+            if len(st.session_state.canaux_chat) > 1:
+                discussion_supprimee = st.session_state.canaux_chat.pop(canal_selectionne)
+                archiver_dans_corbeille(
+                    type_element="Canal de Discussion",
+                    nom_auteur="N/A",
+                    contenu_dict={"canal": canal_selectionne, "messages": discussion_supprimee}
+                )
+                st.toast(f"Le canal '{canal_selectionne}' et son historique ont été supprimés.")
+                st.rerun()
+            else:
+                st.error("Impossible de supprimer le dernier canal actif.")
 
     with col_chat:
-        if st.session_state.discussion_active_id:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT nom_groupe, membres_json FROM discussions WHERE id = ?", (st.session_state.discussion_active_id,))
-            disc_info = cursor.fetchone()
-
-            if disc_info:
-                nom_g, membres_j = disc_info
-                membres = json.loads(membres_j)
-
-                st.markdown(f"""
-                <div class="channel-header">
-                    <b style="font-size: 1.1rem; color: #ffffff;">👥 {nom_g}</b><br>
-                    <small style="color: #8b949e;">Membres : {', '.join(membres)}</small>
-                </div>
-                """, unsafe_allow_html=True)
-
-                afficher_zone_messages(st.session_state.discussion_active_id, nom_departement)
-
-                prompt = st.chat_input("Votre message...")
-                if prompt:
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "INSERT INTO messages_chat (discussion_id, expediteur, texte, date, lus_json) VALUES (?, ?, ?, ?, ?)",
-                        (st.session_state.discussion_active_id, nom_departement, prompt, datetime.now().strftime("%Y-%m-%d %H:%M"), json.dumps([nom_departement]))
-                    )
-                    conn.commit()
-                    conn.close()
-                    st.rerun()
-            conn.close()
-
-# ==========================================
-# 5. JOURNAL DE BORD QUOTIDIEN
-# ==========================================
-def afficher_module_journal_bord(nom_departement):
-    st.subheader(f"📖 Journal de Bord Quotidien & Cahier de Notes — {nom_departement}")
-    st.markdown("Consignez ici le fil des événements, activités, observations et faits marquants du département par date et heure.")
-    
-    col_saisie, col_historique = st.columns([1.2, 1.8])
-
-    with col_saisie:
-        st.markdown("#### ✍️ Ajouter une note")
-        with st.form("form_journal_note", clear_on_submit=True):
-            date_selectionnee = st.date_input("Date de l'événement", value=datetime.now())
-            note_texte = st.text_area("Note / Compte-rendu quotidien", height=140, placeholder="Ex: Début de la récolte sur la parcelle B...")
-            auteur_nom = st.text_input("Auteur / Rédacteur", value=f"Équipe {nom_departement}")
+        st.subheader(f"💬 Conversation : #{canal_selectionne}")
+        
+        # Zone des messages
+        messages = st.session_state.canaux_chat[canal_selectionne]
+        for idx, msg in enumerate(messages):
+            c_msg, c_del = st.columns([6, 1])
+            c_msg.markdown(f"**{msg['auteur']}** *({msg['heure']})* : {msg['texte']}")
             
-            if st.form_submit_button("📘 Enregistrer dans le Journal") and note_texte:
-                heure_actuelle = datetime.now().strftime("%H:%M")
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO journal_bord (departement, auteur, note, date_note, heure_note)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (nom_departement, auteur_nom, note_texte, str(date_selectionnee), heure_actuelle))
-                conn.commit()
-                conn.close()
-                st.success("Note ajoutée au journal de bord !")
+            # Bouton de suppression de message individuel
+            if c_del.button("🗑️", key=f"del_msg_{canal_selectionne}_{idx}"):
+                msg_supprime = messages.pop(idx)
+                archiver_dans_corbeille(
+                    type_element="Message Chat",
+                    nom_auteur=msg_supprime["auteur"],
+                    contenu_dict={"canal": canal_selectionne, "message": msg_supprime}
+                )
+                st.rerun()
+        
+        # Envoi de message
+        st.divider()
+        with st.form("form_chat_msg", clear_on_submit=True):
+            nouveau_texte = st.text_input("Écrire un message...")
+            if st.form_submit_button("Envoyer") and nouveau_texte:
+                messages.append({
+                    "id_msg": len(messages) + 1,
+                    "auteur": st.session_state.user_role,
+                    "texte": nouveau_texte,
+                    "heure": datetime.datetime.now().strftime("%H:%M")
+                })
                 st.rerun()
 
-    with col_historique:
-        st.markdown("#### 📜 Historique & Notes du Département")
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, auteur, note, date_note, heure_note FROM journal_bord WHERE departement = ? ORDER BY date_note DESC, id DESC", (nom_departement,))
-        notes = cursor.fetchall()
-        conn.close()
-
-        if notes:
-            dates_dispos = ["Toutes les dates"] + sorted(list(set(n[3] for n in notes)), reverse=True)
-            filtre_d = st.selectbox("📅 Filtrer par date :", dates_dispos)
-            
-            for n_id, n_auteur, n_txt, n_date, n_heure in notes:
-                if filtre_d == "Toutes les dates" or filtre_d == n_date:
-                    c_n1, c_n2 = st.columns([5, 1])
-                    with c_n1:
-                        st.markdown(f"""
-                        <div class="note-card">
-                            <div class="note-date">📅 {n_date} à {n_heure} | Par : {n_auteur}</div>
-                            <div style="margin-top: 8px; font-size: 0.95rem; color: #e6edf3;">{n_txt}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    with c_n2:
-                        if st.button("🗑️", key=f"del_note_{n_id}", help="Supprimer cette note"):
-                            archiver_dans_corbeille(nom_departement, "Journal de Bord", n_txt[:40], {"date": n_date, "auteur": n_auteur})
-                            conn = get_db_connection()
-                            cursor = conn.cursor()
-                            cursor.execute("DELETE FROM journal_bord WHERE id = ?", (n_id,))
-                            conn.commit()
-                            conn.close()
-                            st.success("Note supprimée et archivée.")
-                            st.rerun()
-        else:
-            st.info("Aucune note enregistrée dans le journal pour le moment.")
-
 # ==========================================
-# 6. MODULE SUIVI GLOBAL POUR PÔLE DE CONTRÔLE
+# MODULE 4 : ÉTUDES & INGÉNIERIE
 # ==========================================
-def afficher_module_suivi_global_controle():
-    st.subheader("📊 Pôle de Contrôle & Supervision Globale")
+elif choix_menu == "📐 Études & Ingénierie":
+    st.title("📐 Études & Ingénierie")
     
-    conn = get_db_connection()
-    df_demandes = pd.read_sql_query("SELECT * FROM demandes ORDER BY id DESC", conn)
-    conn.close()
-
-    if df_demandes.empty:
-        st.info("Aucune donnée enregistrée.")
-        return
-
-    col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
-    col_kpi1.metric("Total Demandes Émises", len(df_demandes))
-    col_kpi2.metric("En Cours de Validation", len(df_demandes[df_demandes['statut'].str.contains("attente|Demande", case=False, na=False)]))
-    col_kpi3.metric("Validées & Financées", len(df_demandes[df_demandes['statut'] == "Validé & Financé"]))
-    col_kpi4.metric("Volume Cumulé (€)", f"{df_demandes['montant'].sum():,.2f} €")
-
-    st.markdown("---")
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        depts_dispos = ["Tous"] + list(df_demandes['departement'].unique())
-        dept_filtre = st.selectbox("Filtrer par Département Émetteur :", depts_dispos)
-    with col_f2:
-        statuts_dispos = ["Tous"] + list(df_demandes['statut'].unique())
-        statut_filtre = st.selectbox("Filtrer par Statut de validation :", statuts_dispos)
-
-    df_filtré = df_demandes.copy()
-    if dept_filtre != "Tous":
-        df_filtré = df_filtré[df_filtré['departement'] == dept_filtre]
-    if statut_filtre != "Tous":
-        df_filtré = df_filtré[df_filtré['statut'] == statut_filtre]
-
-    st.dataframe(
-        df_filtré[['id', 'date', 'departement', 'titre', 'montant', 'fournisseur', 'statut', 'etape_actuelle', 'avis_achats', 'avis_finance']],
-        use_container_width=True,
-        hide_index=True
-    )
-
-# ==========================================
-# 7. MODULE DIRECTION : CORBEILLE & HISTORIQUE DES SUPPRESSIONS
-# ==========================================
-def afficher_module_direction_corbeille():
-    st.subheader("🗑️ Supervisions des Éléments Supprimés (Corbeille Centralisée)")
-    st.markdown("Cet espace exclusif à la Direction Générale liste l'ensemble des éléments supprimés par les différents départements (messages, notes, demandes, études, cahiers des charges) pour des besoins d'audit et de traçabilité.")
-
-    conn = get_db_connection()
-    df_corbeille = pd.read_sql_query("SELECT * FROM corbeille_archives ORDER BY id DESC", conn)
-    conn.close()
-
-    if not df_corbeille.empty:
-        col_c1, col_c2 = st.columns(2)
-        with col_c1:
-            dept_c_filtre = st.selectbox("Filtrer par Département :", ["Tous"] + list(df_corbeille['departement_auteur'].unique()))
-        with col_c2:
-            type_c_filtre = st.selectbox("Filtrer par Type d'élément :", ["Tous"] + list(df_corbeille['type_element'].unique()))
-
-        df_c_filtre = df_corbeille.copy()
-        if dept_c_filtre != "Tous":
-            df_c_filtre = df_c_filtre[df_c_filtre['departement_auteur'] == dept_c_filtre]
-        if type_c_filtre != "Tous":
-            df_c_filtre = df_c_filtre[df_c_filtre['type_element'] == type_c_filtre]
-
-        for _, row in df_c_filtre.iterrows():
-            with st.expander(f"🗑️ [{row['type_element']}] - Département : {row['departement_auteur']} (Supprimé le {row['date_suppression']})"):
-                st.write(f"**Résumé / Contenu abrégé :** {row['resume']}")
-                if row['details_json']:
-                    try:
-                        details = json.loads(row['details_json'])
-                        st.json(details)
-                    except:
-                        pass
-        
-        st.markdown("---")
-        if st.button("🧹 Vider entièrement la corbeille d'archives"):
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM corbeille_archives")
-            conn.commit()
-            conn.close()
-            st.success("La corbeille a été vidée.")
+    with st.expander("➕ Publier une nouvelle étude"):
+        titre_etude = st.text_input("Titre du document/étude")
+        if st.button("Publier") and titre_etude:
+            nouv_etude = {
+                "id": len(st.session_state.etudes_ingenierie) + 1,
+                "titre": titre_etude,
+                "auteur": st.session_state.user_role,
+                "date": str(datetime.date.today())
+            }
+            st.session_state.etudes_ingenierie.append(nouv_etude)
             st.rerun()
+
+    st.subheader("📚 Documents & Etudes partagées")
+    for idx, etude in enumerate(st.session_state.etudes_ingenierie):
+        c1, c2, c3 = st.columns([5, 2, 1])
+        c1.write(f"📄 **{etude['titre']}** (Auteur: {etude['auteur']} | Date: {etude['date']})")
+        if c3.button("🗑️", key=f"del_etude_{etude['id']}"):
+            item = st.session_state.etudes_ingenierie.pop(idx)
+            archiver_dans_corbeille("Étude & Ingénierie", item["auteur"], item)
+            st.rerun()
+
+# ==========================================
+# MODULE 5 : JOURNAL DE BORD
+# ==========================================
+elif choix_menu == "📖 Journal de Bord":
+    st.title("📖 Journal de Bord de l'Entreprise")
+    
+    with st.form("form_journal", clear_on_submit=True):
+        note_texte = st.text_area("Ajouter une note au journal de bord")
+        if st.form_submit_button("Enregistrer Note") and note_texte:
+            st.session_state.journal_de_bord.append({
+                "id": len(st.session_state.journal_de_bord) + 1,
+                "auteur": st.session_state.user_role,
+                "note": note_texte,
+                "date": str(datetime.date.today())
+            })
+            st.rerun()
+
+    st.subheader("📜 Historique des Notes")
+    for idx, j in enumerate(st.session_state.journal_de_bord):
+        c1, c2 = st.columns([6, 1])
+        c1.info(f"**{j['auteur']}** ({j['date']}) : {j['note']}")
+        if c2.button("🗑️", key=f"del_j_{j['id']}"):
+            item = st.session_state.journal_de_bord.pop(idx)
+            archiver_dans_corbeille("Journal de Bord", item["auteur"], item)
+            st.rerun()
+
+# ==========================================
+# MODULE 6 : CORBEILLE DE LA DIRECTION (EXCLUSIF FONDATEUR)
+# ==========================================
+elif choix_menu == "🗑️ Corbeille & Historique (Direction)":
+    st.title("🗑️ Corbeille Centralisée & Audit des Suppressions")
+    st.warning("🔒 **Espace Réservé à la Direction Générale** : Cet onglet conserve la traçabilité complète de tout élément supprimé par les utilisateurs.")
+    
+    if st.button("🔥 Vider définitivement la corbeille"):
+        st.session_state.corbeille_direction.clear()
+        st.success("La corbeille a été vidée.")
+        st.rerun()
+        
+    st.divider()
+    
+    if not st.session_state.corbeille_direction:
+        st.info("La corbeille est actuellement vide.")
     else:
-        st.info("Aucun élément supprimé pour l'instant.")
-
-# ==========================================
-# ROUTAGE DYNAMIQUE DES VUES
-# ==========================================
-if st.session_state.tab_actif == "1. Études & Ingénierie":
-    afficher_module_etudes(nom_dept, profil["type"])
-
-elif st.session_state.tab_actif == "2. Cahiers des Charges":
-    afficher_module_cdc(nom_dept, profil["type"])
-
-elif st.session_state.tab_actif == "3. Besoins & Achats":
-    afficher_module_achats(nom_dept, profil["type"])
-
-elif st.session_state.tab_actif == "4. Messagerie & Chat":
-    afficher_module_messagerie_unifiee(nom_dept)
-
-elif st.session_state.tab_actif == "📖 Journal de Bord":
-    afficher_module_journal_bord(nom_dept)
-
-elif st.session_state.tab_actif == "📊 Pôle de Contrôle (Suivi Global)":
-    afficher_module_suivi_global_controle()
-
-elif st.session_state.tab_actif == "🗑️ Corbeille & Historique Suppressions":
-    afficher_module_direction_corbeille()
+        for idx, item in enumerate(reversed(st.session_state.corbeille_direction)):
+            with st.expander(f"🗑️ [{item['type']}] Supprimé le {item['date_suppression']} par {item['auteur_suppression']}"):
+                st.write(f"**Auteur d'origine :** {item['auteur_original']}")
+                st.json(item["donnees"])
