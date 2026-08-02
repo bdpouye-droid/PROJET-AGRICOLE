@@ -33,23 +33,20 @@ st.markdown("""
         transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0, 150, 255, 0.2); border-color: #1f6feb;
     }
     .badge-notification { background-color: #f85149; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: bold; }
-    
     .channel-header {
         background-color: #161b22; padding: 12px 18px; border-radius: 8px; 
         border-left: 4px solid #5b5fc7; margin-bottom: 15px;
     }
-    .notif-card {
-        background-color: #161b22; border: 1px solid #30363d; border-radius: 8px;
-        padding: 10px; margin-bottom: 8px; cursor: pointer;
-    }
+    /* Masquer le sélecteur d'onglet natif pour forcer la téléportation synchrone */
+    div[data-testid="stRadio"] > label { display: none; }
+    div[data-testid="stRadio"] > div { flex-direction: row; justify-content: flex-start; gap: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- INITIALISATION ET MIGRATION SQLITE ---
+# --- INITIALISATION BASE DE DONNÉES ---
 def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False)
     cursor = conn.cursor()
-    
     cursor.execute('''CREATE TABLE IF NOT EXISTS global_store (key TEXT PRIMARY KEY, value TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS demandes (
         id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, titre TEXT, cahier_charges TEXT,
@@ -73,12 +70,6 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, acteur TEXT, action TEXT, details TEXT
     )''')
     
-    # Check migrations
-    cursor.execute("PRAGMA table_info(demandes)")
-    cols = [column[1] for column in cursor.fetchall()]
-    if "retour_remarque" not in cols:
-        cursor.execute("ALTER TABLE demandes ADD COLUMN retour_remarque TEXT DEFAULT ''")
-    
     cursor.execute("SELECT value FROM global_store WHERE key = 'budget_global'")
     if not cursor.fetchone():
         cursor.execute("INSERT INTO global_store (key, value) VALUES ('budget_global', ?)", (str(10000000.0),))
@@ -89,7 +80,7 @@ def init_db():
 
 init_db()
 
-# --- UTILS DB & FICHIERS ---
+# --- UTILS DATABASE & FICHIERS ---
 def get_db_connection():
     return sqlite3.connect("database.db", check_same_thread=False)
 
@@ -150,7 +141,7 @@ UTILISATEURS = {
 if 'user_connecte' not in st.session_state:
     st.session_state.user_connecte = None
 if 'tab_actif' not in st.session_state:
-    st.session_state.tab_actif = 0
+    st.session_state.tab_actif = "1. Études & Ingénierie"
 if 'discussion_active_id' not in st.session_state:
     st.session_state.discussion_active_id = None
 
@@ -183,30 +174,7 @@ nom_dept = profil["dept"]
 st.sidebar.success(f"Connecté : **{profil['nom']}**")
 st.sidebar.markdown("---")
 
-if st.session_state.user_connecte == "fondateur":
-    if st.sidebar.button("🔄 Reset Global de l'application"):
-        budget_init = get_valeur_globale("budget_global")
-        set_valeur_globale("solde_restant", budget_init)
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM demandes")
-        cursor.execute("DELETE FROM etudes_metier")
-        cursor.execute("DELETE FROM cahiers_charges")
-        cursor.execute("DELETE FROM discussions")
-        cursor.execute("DELETE FROM messages_chat")
-        cursor.execute("DELETE FROM logs_audit")
-        conn.commit()
-        conn.close()
-        st.success("Réinitialisation terminée.")
-        st.rerun()
-    st.sidebar.markdown("---")
-
-if st.sidebar.button("Se déconnecter"):
-    st.session_state.user_connecte = None
-    st.session_state.discussion_active_id = None
-    st.rerun()
-
-# --- CALCUL DES NOTIFICATIONS DE MESSAGERIE & DE DEMANDES ---
+# --- CALCUL DES NOTIFICATIONS MESSAGERIE ET TÉLÉPORTATION EFFECTIVE ---
 def obtenir_notifications_chat(dept_nom):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -232,12 +200,11 @@ def obtenir_notifications_chat(dept_nom):
 notifs_chat_list = obtenir_notifications_chat(nom_dept)
 total_chat_notifs = sum(item["count"] for item in notifs_chat_list)
 
-# Affichage Centre de Notification & Téléportation dans Sidebar
 if total_chat_notifs > 0:
     st.sidebar.markdown(f"""
     <div style="background-color: #161b22; padding: 10px; border-radius: 8px; border: 1px solid #f85149; text-align: center; margin-bottom: 10px;">
         <span style="font-size: 1.1rem;">🔔</span> <b style="color: #f85149;">Centre de Notifications</b><br>
-        <span class="badge-notification">{total_chat_notifs} nouveau(x) message(s)</span>
+        <span class="badge-notification">{total_chat_notifs} message(s) non lu(s)</span>
     </div>
     """, unsafe_allow_html=True)
     
@@ -245,8 +212,14 @@ if total_chat_notifs > 0:
         for notif in notifs_chat_list:
             if st.button(f"👉 {notif['nom']} ({notif['count']} non lu(s))", key=f"notif_btn_{notif['disc_id']}"):
                 st.session_state.discussion_active_id = notif['disc_id']
-                st.session_state.tab_actif = 3  # Téléportation automatique vers l'onglet 4 (Messagerie)
+                st.session_state.tab_actif = "4. Messagerie & Chat"  # Redirection synchrone garantie
                 st.rerun()
+
+st.sidebar.markdown("---")
+if st.sidebar.button("Se déconnecter"):
+    st.session_state.user_connecte = None
+    st.session_state.discussion_active_id = None
+    st.rerun()
 
 st.title(f"Tableau de Bord - {profil['nom']}")
 
@@ -254,10 +227,23 @@ if profil["type"] in ["finance", "fondateur"]:
     b_total = get_valeur_globale("budget_global")
     b_solde = get_valeur_globale("solde_restant")
     c_b1, c_b2 = st.columns(2)
-    c_b1.metric("Budget Global Allocated", f"{b_total:,.2f} €")
+    c_b1.metric("Budget Global Allocaté", f"{b_total:,.2f} €")
     c_b2.metric("Solde Restant Disponible", f"{b_solde:,.2f} €")
 
 st.markdown("---")
+
+# --- NAVIGATION PRINCIPALE SYNCHRONE ---
+onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "4. Messagerie & Chat"]
+if profil["type"] in ["achats", "finance", "fondateur"]:
+    onglets_possibles.append("📊 Pôle de Contrôle (Suivi Global)")
+
+onglet_selectionne = st.radio(
+    "Navigation", 
+    onglets_possibles, 
+    index=onglets_possibles.index(st.session_state.tab_actif) if st.session_state.tab_actif in onglets_possibles else 0,
+    horizontal=True
+)
+st.session_state.tab_actif = onglet_selectionne
 
 # ==========================================
 # 1. MODULE INGÉNIERIE & ÉTUDES MÉTIER
@@ -265,7 +251,6 @@ st.markdown("---")
 def afficher_module_etudes(nom_departement, type_profil):
     st.subheader(f"⚙️ Centre d'Ingénierie & Traçabilité des Études — {nom_departement}")
     tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
-    
     t1, t2, t3 = st.tabs(["1. Nouvelle Étude & Partage", "2. Études Reçues", "3. 📜 Historique"])
     
     with t1:
@@ -368,14 +353,16 @@ def afficher_module_cdc(nom_departement, type_profil):
                                 st.download_button("📥 Télécharger pièce jointe", f, file_name=t_fich, key=f"dl_cdc_{c_id}")
 
 # ==========================================
-# 3. MODULE BESOINS & ACHATS
+# 3. MODULE BESOINS & ACHATS (AVEC WORKFLOWS CROISÉS & RESSOUMISSION)
 # ==========================================
 def afficher_module_achats(nom_departement, type_profil):
-    st.subheader("🛒 Gestion des Demandes d'Achat")
-    t1, t2 = st.tabs(["1. Émettre / Corriger une Demande", "2. Suivi de mes demandes"])
+    st.subheader("🛒 Gestion des Demandes d'Achat & Validations")
     
+    t1, t2, t3 = st.tabs(["1. Émettre une Demande", "2. Suivi de mes Demandes & Corrections", "3. 🛡️ Espace de Validation"])
+    
+    # 1. ÉMISSION
     with t1:
-        with st.form("form_demande_achat"):
+        with st.form("form_demande_achat", clear_on_submit=True):
             titre = st.text_input("Intitulé du besoin")
             desc = st.text_area("Description du besoin / Spécifications")
             montant = st.number_input("Montant estimé (€)", min_value=0.0, step=100.0)
@@ -384,47 +371,199 @@ def afficher_module_achats(nom_departement, type_profil):
             
             if st.form_submit_button("Soumettre la Demande") and titre and montant > 0:
                 f_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, devis)
-                etape = "finance" if type_profil == "achats" else "achats"
-                statut = "En attente validation Finance" if type_profil == "achats" else "En attente validation Achats"
+                
+                # Routage du circuit selon l'émetteur
+                if type_profil == "finance":
+                    etape = "achats"
+                    statut = "En attente validation Achats"
+                elif type_profil == "achats":
+                    etape = "finance"
+                    statut = "En attente validation Finance"
+                else:
+                    etape = "achats"
+                    statut = "En attente validation Achats"
+
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (nom_departement, titre, desc, montant, fournisseur, statut, etape, "Auto-validé" if type_profil == "achats" else "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), f_devis, ""))
+                """, (nom_departement, titre, desc, montant, fournisseur, statut, etape, "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), f_devis, ""))
                 conn.commit()
                 conn.close()
                 st.success("Demande enregistrée dans le circuit de validation.")
                 st.rerun()
 
+    # 2. SUIVI ET FORMULAIRE DE RESSOUMISSION / CORRECTION
     with t2:
         conn = get_db_connection()
         df = pd.read_sql_query("SELECT * FROM demandes WHERE departement = ? ORDER BY id DESC", conn, params=(nom_departement,))
         conn.close()
+        
         if not df.empty:
             for _, r in df.iterrows():
                 with st.expander(f"📌 #{r['id']} - {r['titre']} ({r['montant']} €) - Statut: {r['statut']}"):
                     st.write(f"**Description :** {r['cahier_charges']}")
-                    if r.get('retour_remarque'):
-                        st.warning(f"💬 Remarque de révision : {r['retour_remarque']}")
+                    
+                    # Si demande de modification par le pôle de contrôle
+                    if "Modification" in str(r['statut']):
+                        st.warning(f"💬 Remarque du contrôleur : {r['retour_remarque']}")
+                        st.markdown("##### ✏️ Soumettre la version corrigée")
+                        
+                        with st.form(f"form_corriger_{r['id']}"):
+                            c_titre = st.text_input("Titre corrigé", value=r['titre'])
+                            c_desc = st.text_area("Description corrigée", value=r['cahier_charges'])
+                            c_montant = st.number_input("Nouveau montant (€)", value=float(r['montant']))
+                            c_devis = st.file_uploader("Nouveau devis (laisser vide si inchangé)", type=["pdf", "png", "jpg", "xlsx"])
+                            
+                            if st.form_submit_button("Envoyer la correction"):
+                                nom_f = r['fichier_devis']
+                                if c_devis is not None:
+                                    nom_f = enregistrer_fichier_securise(DOSSIER_UPLOADS, c_devis)
+                                
+                                # Ré-injection dans le circuit
+                                nouv_etape = "achats" if type_profil != "achats" else "finance"
+                                nouv_statut = f"En attente validation {nouv_etape.capitalize()} (Après correction)"
+                                
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                cursor.execute("""
+                                    UPDATE demandes SET titre=?, cahier_charges=?, montant=?, fichier_devis=?, statut=?, etape_actuelle=?, retour_remarque='' WHERE id=?
+                                """, (c_titre, c_desc, c_montant, nom_f, nouv_statut, nouv_etape, r['id']))
+                                conn.commit()
+                                conn.close()
+                                st.success("Demande corrigée et renvoyée en validation !")
+                                st.rerun()
         else:
             st.info("Aucune demande émise.")
 
+    # 3. ESPACE DE VALIDATION (BOUTONS APPROUVER, MODIFIER, REFUSER)
+    with t3:
+        if type_profil not in ["achats", "finance", "fondateur"]:
+            st.warning("Espace réservé aux pôles de validation (Achats, Finance, Direction).")
+        else:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Filtre de la boîte de réception selon le rôle
+            if type_profil == "achats":
+                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'achats' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
+            elif type_profil == "finance":
+                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'finance' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
+            else: # Direction générale
+                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'direction' OR statut LIKE 'En attente%'")
+            
+            demandes_a_traiter = cursor.fetchall()
+            conn.close()
+
+            if demandes_a_traiter:
+                for d in demandes_a_traiter:
+                    d_id, d_dept, d_titre, d_desc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_motif, d_date, d_fich, d_rem = d
+                    
+                    with st.expander(f"📥 Dossier #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
+                        st.write(f"**Description :** {d_desc}")
+                        st.write(f"**Fournisseur :** {d_fourn}")
+                        
+                        col_v1, col_v2, col_v3 = st.columns(3)
+                        
+                        # APPROUVER
+                        with col_v1:
+                            if st.button(f"🟢 Approuver #{d_id}", key=f"app_{d_id}"):
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                
+                                # Circuit spécial Finance / Achats / Direction
+                                if type_profil == "achats":
+                                    prochaine = "direction" if d_dept == "Finance & Comptabilité" else "finance"
+                                    st_msg = "En attente validation Direction" if prochaine == "direction" else "En attente validation Finance"
+                                    cursor.execute("UPDATE demandes SET avis_achats='Approuvé', etape_actuelle=?, statut=? WHERE id=?", (prochaine, st_msg, d_id))
+                                
+                                elif type_profil == "finance":
+                                    prochaine = "direction" if d_dept == "Achats & Approvisionnements" else "terminee"
+                                    if prochaine == "terminee":
+                                        cursor.execute("UPDATE demandes SET avis_finance='Approuvé', etape_actuelle='terminee', statut='Validé & Financé' WHERE id=?", (d_id,))
+                                        solde = get_valeur_globale("solde_restant")
+                                        set_valeur_globale("solde_restant", solde - d_montant)
+                                    else:
+                                        cursor.execute("UPDATE demandes SET avis_finance='Approuvé', etape_actuelle='direction', statut='En attente validation Direction' WHERE id=?", (d_id,))
+                                
+                                else: # Direction Générale
+                                    cursor.execute("UPDATE demandes SET etape_actuelle='terminee', statut='Validé & Financé' WHERE id=?", (d_id,))
+                                    solde = get_valeur_globale("solde_restant")
+                                    set_valeur_globale("solde_restant", solde - d_montant)
+                                
+                                conn.commit()
+                                conn.close()
+                                st.success(f"Dossier #{d_id} approuvé !")
+                                st.rerun()
+
+                        # DEMANDER MODIFICATION
+                        with col_v2:
+                            remarque = st.text_input("Remarque d'ajustement", key=f"rem_{d_id}")
+                            if st.button(f"🟡 Requis modification #{d_id}", key=f"mod_{d_id}") and remarque:
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE demandes SET statut='Demande de Modification', etape_actuelle='emetteur', retour_remarque=? WHERE id=?", (remarque, d_id))
+                                conn.commit()
+                                conn.close()
+                                st.warning("Demande renvoyée pour correction.")
+                                st.rerun()
+
+                        # REFUS DÉFINITIF
+                        with col_v3:
+                            motif = st.text_input("Motif du refus", key=f"mot_{d_id}")
+                            if st.button(f"🔴 Refuser définitivement #{d_id}", key=f"ref_{d_id}") and motif:
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE demandes SET statut='Refusé', etape_actuelle='terminee', motif_refus=? WHERE id=?", (motif, d_id))
+                                conn.commit()
+                                conn.close()
+                                st.error("Dossier refusé.")
+                                st.rerun()
+            else:
+                st.info("Aucune demande en attente de validation pour votre pôle.")
+
 # ==========================================
-# 4. MODULE MESSAGERIE & CHAT UNIFIÉ (AVEC GROUPES & NOTIFS)
+# 4. MODULE MESSAGERIE & CHAT UNIFIÉ (AVEC PSEUDO TEMPS RÉEL PAR FRAGMENT)
 # ==========================================
+@st.fragment(run_every="3s")
+def afficher_zone_messages(discussion_id, nom_dept):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, expediteur, texte, date, lus_json FROM messages_chat WHERE discussion_id = ?", (discussion_id,))
+    messages = cursor.fetchall()
+    
+    # Marquer comme lu
+    for m_id, exp, txt, dt, lus_j in messages:
+        lus = json.loads(lus_j) if lus_j else []
+        if nom_dept not in lus:
+            lus.append(nom_dept)
+            cursor.execute("UPDATE messages_chat SET lus_json = ? WHERE id = ?", (json.dumps(lus), m_id))
+    conn.commit()
+
+    chat_box = st.container(height=380)
+    with chat_box:
+        if messages:
+            for m_id, exp, txt, dt, _ in messages:
+                is_me = (exp == nom_dept)
+                role = "user" if is_me else "assistant"
+                avatar = "👤" if is_me else "🏢"
+                with st.chat_message(role, avatar=avatar):
+                    st.markdown(f"**{exp}** <small style='color: #8b949e;'>({dt})</small>", unsafe_allow_html=True)
+                    st.write(txt)
+        else:
+            st.info("Discussion démarrée. Envoyez le premier message !")
+    conn.close()
+
 def afficher_module_messagerie_unifiee(nom_departement):
     st.subheader("💬 Hub de Discussion & Communication Directe")
-    
     tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
     
     col_groupes, col_chat = st.columns([1.1, 2.2])
 
-    # 1. Sélection ou création des salons de discussion
     with col_groupes:
         st.markdown("#### 💬 Salons & Conversations")
         
-        # Modal/Formulaire de création de nouveau groupe
         with st.expander("➕ Créer une nouvelle discussion", expanded=False):
             with st.form("form_nouveau_groupe"):
                 membres_selectionnes = st.multiselect("Sélectionner les participants :", tous_depts)
@@ -449,7 +588,6 @@ def afficher_module_messagerie_unifiee(nom_departement):
 
         st.markdown("---")
         
-        # Récupération de toutes les discussions de l'utilisateur avec badges de non-lus 🔴
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, nom_groupe, membres_json FROM discussions ORDER BY id DESC")
@@ -459,7 +597,6 @@ def afficher_module_messagerie_unifiee(nom_departement):
         for d_id, nom_g, membres_j in toutes_discs:
             membres = json.loads(membres_j)
             if nom_departement in membres:
-                # Compter les non lus
                 cursor.execute("SELECT expediteur, lus_json FROM messages_chat WHERE discussion_id = ?", (d_id,))
                 msgs = cursor.fetchall()
                 nb_non_lus = 0
@@ -483,9 +620,8 @@ def afficher_module_messagerie_unifiee(nom_departement):
                     st.session_state.discussion_active_id = d_id
                     st.rerun()
         else:
-            st.info("Aucune discussion active. Créez-en une ci-dessus !")
+            st.info("Aucune discussion active.")
 
-    # 2. Zone d'affichage du Chat
     with col_chat:
         if st.session_state.discussion_active_id:
             conn = get_db_connection()
@@ -497,7 +633,6 @@ def afficher_module_messagerie_unifiee(nom_departement):
                 nom_g, membres_j = disc_info
                 membres = json.loads(membres_j)
 
-                # Header de conversation
                 st.markdown(f"""
                 <div class="channel-header">
                     <b style="font-size: 1.1rem; color: #ffffff;">👥 {nom_g}</b><br>
@@ -505,35 +640,14 @@ def afficher_module_messagerie_unifiee(nom_departement):
                 </div>
                 """, unsafe_allow_html=True)
 
-                # Marquer les messages comme LUS automatiquement lors de l'ouverture
-                cursor.execute("SELECT id, expediteur, texte, date, lus_json FROM messages_chat WHERE discussion_id = ?", (st.session_state.discussion_active_id,))
-                messages = cursor.fetchall()
-                
-                for m_id, exp, txt, dt, lus_j in messages:
-                    lus = json.loads(lus_j) if lus_j else []
-                    if nom_departement not in lus:
-                        lus.append(nom_departement)
-                        cursor.execute("UPDATE messages_chat SET lus_json = ? WHERE id = ?", (json.dumps(lus), m_id))
-                conn.commit()
+                # Zone de messages isolée (Fragment temps réel)
+                afficher_zone_messages(st.session_state.discussion_active_id, nom_departement)
 
-                # Conteneur des messages avec bulles native Streamlit
-                chat_box = st.container(height=400)
-                with chat_box:
-                    if messages:
-                        for m_id, exp, txt, dt, _ in messages:
-                            is_me = (exp == nom_departement)
-                            role = "user" if is_me else "assistant"
-                            avatar = "👤" if is_me else "🏢"
-                            
-                            with st.chat_message(role, avatar=avatar):
-                                st.markdown(f"**{exp}** <small style='color: #8b949e;'>({dt})</small>", unsafe_allow_html=True)
-                                st.write(txt)
-                    else:
-                        st.info("Discussion démarrée. Envoyez le premier message !")
-
-                # Zone de Saisie du Message
+                # Champ de frappe hors fragment pour éviter la perte de focus
                 prompt = st.chat_input("Votre message...")
                 if prompt:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
                     cursor.execute(
                         "INSERT INTO messages_chat (discussion_id, expediteur, texte, date, lus_json) VALUES (?, ?, ?, ?, ?)",
                         (st.session_state.discussion_active_id, nom_departement, prompt, datetime.now().strftime("%Y-%m-%d %H:%M"), json.dumps([nom_departement]))
@@ -544,7 +658,7 @@ def afficher_module_messagerie_unifiee(nom_departement):
             conn.close()
 
 # ==========================================
-# 5. NOSTE MODULE : SUIVI GLOBAL POUR PÔLES DE CONTRÔLE
+# 5. MODULE SUIVI GLOBAL POUR PÔLE DE CONTRÔLE
 # ==========================================
 def afficher_module_suivi_global_controle():
     st.subheader("📊 Pôle de Contrôle & Supervision Globale")
@@ -554,10 +668,9 @@ def afficher_module_suivi_global_controle():
     conn.close()
 
     if df_demandes.empty:
-        st.info("Aucune donnée disponible dans le système pour le moment.")
+        st.info("Aucune donnée enregistrée.")
         return
 
-    # Indicateurs clés KPI (Haut de page)
     col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
     col_kpi1.metric("Total Demandes Émises", len(df_demandes))
     col_kpi2.metric("En Cours de Validation", len(df_demandes[df_demandes['statut'].str.contains("attente|Demande", case=False, na=False)]))
@@ -565,8 +678,6 @@ def afficher_module_suivi_global_controle():
     col_kpi4.metric("Volume Cumulé (€)", f"{df_demandes['montant'].sum():,.2f} €")
 
     st.markdown("---")
-    st.markdown("### 🔍 Filtres de Contrôle Détaillés")
-
     col_f1, col_f2 = st.columns(2)
     with col_f1:
         depts_dispos = ["Tous"] + list(df_demandes['departement'].unique())
@@ -575,79 +686,32 @@ def afficher_module_suivi_global_controle():
         statuts_dispos = ["Tous"] + list(df_demandes['statut'].unique())
         statut_filtre = st.selectbox("Filtrer par Statut de validation :", statuts_dispos)
 
-    # Filtrage dynamique
     df_filtré = df_demandes.copy()
     if dept_filtre != "Tous":
         df_filtré = df_filtré[df_filtré['departement'] == dept_filtre]
     if statut_filtre != "Tous":
         df_filtré = df_filtré[df_filtré['statut'] == statut_filtre]
 
-    # Tableau interactif des demandes
-    st.markdown("##### 📋 Table de Supervision Consolidée")
     st.dataframe(
         df_filtré[['id', 'date', 'departement', 'titre', 'montant', 'fournisseur', 'statut', 'etape_actuelle', 'avis_achats', 'avis_finance']],
         use_container_width=True,
         hide_index=True
     )
 
-    # Détail d'une demande sélectionnée
-    st.markdown("---")
-    st.markdown("##### 🕵️ Inspection Approfondie d'un Dossier")
-    demande_ids = df_filtré['id'].tolist()
-    if demande_ids:
-        selected_id = st.selectbox("Sélectionner l'ID de la demande à inspecter :", demande_ids)
-        row_selected = df_filtré[df_filtré['id'] == selected_id].iloc[0]
-        
-        c_det1, c_det2 = st.columns(2)
-        with c_det1:
-            st.write(f"**Émetteur :** {row_selected['departement']}")
-            st.write(f"**Montant :** {row_selected['montant']:,.2f} €")
-            st.write(f"**Fournisseur :** {row_selected['fournisseur']}")
-            st.write(f"**Date d'émission :** {row_selected['date']}")
-        with c_det2:
-            st.write(f"**Statut Actuel :** {row_selected['statut']}")
-            st.write(f"**Avis Achats :** {row_selected['avis_achats']}")
-            st.write(f"**Avis Finance :** {row_selected['avis_finance']}")
-            if row_selected.get('retour_remarque'):
-                st.warning(f"Note de révision : {row_selected['retour_remarque']}")
-
-        st.info(f"**Description du Besoin :**\n{row_selected['cahier_charges']}")
-        
-        if row_selected.get('fichier_devis'):
-            chemin = os.path.join(DOSSIER_UPLOADS, row_selected['fichier_devis'])
-            if os.path.exists(chemin):
-                with open(chemin, "rb") as f:
-                    st.download_button("📥 Télécharger le Devis de Contrôle", f, file_name=row_selected['fichier_devis'], key=f"dl_ctrl_{selected_id}")
-
 # ==========================================
-# AGENCEMENT PRINCIPAL AVEC NAVIGATION DYNAMIQUE
+# ROUTAGE DYNAMIQUE DES VUES
 # ==========================================
-# Construction des onglets selon le rôle de l'utilisateur connecté
-onglets_titres = [
-    "1. Études & Ingénierie", 
-    "2. Cahiers des Charges", 
-    "3. Besoins & Achats", 
-    "4. Messagerie & Chat"
-]
-
-# Les rôles de supervision bénéficient de l'onglet 5 de Suivi Global
-if profil["type"] in ["achats", "finance", "fondateur"]:
-    onglets_titres.append("📊 Pôle de Contrôle (Suivi Global)")
-
-tabs_navigation = st.tabs(onglets_titres)
-
-with tabs_navigation[0]:
+if st.session_state.tab_actif == "1. Études & Ingénierie":
     afficher_module_etudes(nom_dept, profil["type"])
 
-with tabs_navigation[1]:
+elif st.session_state.tab_actif == "2. Cahiers des Charges":
     afficher_module_cdc(nom_dept, profil["type"])
 
-with tabs_navigation[2]:
+elif st.session_state.tab_actif == "3. Besoins & Achats":
     afficher_module_achats(nom_dept, profil["type"])
 
-with tabs_navigation[3]:
+elif st.session_state.tab_actif == "4. Messagerie & Chat":
     afficher_module_messagerie_unifiee(nom_dept)
 
-if profil["type"] in ["achats", "finance", "fondateur"]:
-    with tabs_navigation[4]:
-        afficher_module_suivi_global_controle()
+elif st.session_state.tab_actif == "📊 Pôle de Contrôle (Suivi Global)":
+    afficher_module_suivi_global_controle()
