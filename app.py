@@ -54,7 +54,7 @@ str_app.markdown("""
 # --- ACTUALISATION AUTOMATIQUE ---
 st_autorefresh(interval=5000, key="datarefreshcounter")
 
-# --- INITIALISATION DE LA BASE DE DONNÉES SQLITE ---
+# --- INITIALISATION & MIGRATION AUTOMATIQUE SQLITE ---
 def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False)
     cursor = conn.cursor()
@@ -82,6 +82,17 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, acteur TEXT, action TEXT, details TEXT
     )''')
     
+    # MIGRATION AUTOMATIQUE : Ajouter la colonne retour_remarque si elle manquait
+    cursor.execute("PRAGMA table_info(demandes)")
+    cols = [column[1] for column in cursor.fetchall()]
+    if "retour_remarque" not in cols:
+        cursor.execute("ALTER TABLE demandes ADD COLUMN retour_remarque TEXT DEFAULT ''")
+    
+    cursor.execute("PRAGMA table_info(messages_directs)")
+    cols_msg = [column[1] for column in cursor.fetchall()]
+    if "type_envoi" not in cols_msg:
+        cursor.execute("ALTER TABLE messages_directs ADD COLUMN type_envoi TEXT DEFAULT 'direct'")
+
     cursor.execute("SELECT value FROM global_store WHERE key = 'budget_global'")
     if not cursor.fetchone():
         cursor.execute("INSERT INTO global_store (key, value) VALUES ('budget_global', ?)", (str(10000000.0),))
@@ -218,7 +229,6 @@ def compter_notifications_actives(dept_nom, type_profil):
         res_dg = cursor.fetchone()
         if res_dg: total_notifs += res_dg[0]
 
-    # Notifications pour les retours/modifications adressés au département émetteur
     cursor.execute("SELECT COUNT(*) FROM demandes WHERE departement = ? AND (etape_actuelle = 'emetteur_retour' OR etape_actuelle = 'achats_retour')", (dept_nom,))
     res_retours = cursor.fetchone()
     if res_retours: total_notifs += res_retours[0]
@@ -470,7 +480,6 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
 
     # 1. ÉMETTRE OU MODIFIER UNE DEMANDE
     with tab_creer:
-        # Traitement spécial si des demandes sont renvoyées pour correction à cet émetteur ou aux achats
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -482,7 +491,7 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
         conn.close()
 
         if demandes_a_corriger:
-            str_app.warning("⚠️ Vous avez des demandes nécessitant une correction ou un ajustement suite à un retour de la Finance / DG !")
+            str_app.warning("⚠️ Vous avez des demandes nécessitant une correction suite à un retour de la Finance / DG !")
             for d in demandes_a_corriger:
                 d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_ach, d_fin, d_refus, d_date, d_fich, d_retour = d
                 with str_app.expander(f"🔴 Action Requise sur Demande #{d_id} : {d_titre}", expanded=True):
@@ -505,7 +514,6 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                             conn_u = get_db_connection()
                             cur_u = conn_u.cursor()
                             
-                            # Si c'est renvoyé par l'émetteur -> repart chez Achats (ou directement Finance si émis par Achats)
                             prochaine_etape = "finance" if type_profil == "achats" else "achats"
                             nouveau_statut = "En attente validation Finance (Corrigé)" if type_profil == "achats" else "En attente validation Achats (Corrigé)"
 
@@ -575,19 +583,22 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                     str_app.write(f"**Contenu / Description :** {row['cahier_charges']}")
                     str_app.write(f"**Fournisseur :** {row['fournisseur']}")
                     str_app.write(f"**Avis Achats :** {row['avis_achats']} | **Avis Finance :** {row['avis_finance']}")
-                    if row['fichier_devis']:
+                    
+                    if row.get('fichier_devis'):
                         chemin_d = os.path.join(DOSSIER_UPLOADS, row['fichier_devis'])
                         if os.path.exists(chemin_d):
                             with open(chemin_d, "rb") as fd:
                                 str_app.download_button("📥 Consulter le devis joint", data=fd, file_name=row['fichier_devis'], key=f"dl_suivi_{row['id']}")
-                    if row['retour_remarque']:
+                    
+                    # Sécurisation si la clé existe dans la ligne Pandas
+                    if 'retour_remarque' in row and row['retour_remarque']:
                         str_app.warning(f"💬 Demande de modification reçue : {row['retour_remarque']}")
-                    if row['motif_refus']:
+                    if row.get('motif_refus'):
                         str_app.error(f"Motif du refus définitif : {row['motif_refus']}")
         else:
             str_app.info("Aucune demande d'achat enregistrée pour votre département.")
 
-    # 3. ESPACE DE VALIDATION (AVEC OPTION DE RENVOI / DEMANDE DE MODIFICATION)
+    # 3. ESPACE DE VALIDATION
     if tab_validation is not None:
         with tab_validation:
             conn = get_db_connection()
@@ -700,7 +711,7 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                                     ajouter_log("Validation DG", "Direction Générale", f"Validation finale demande #{d_id}")
                                     str_app.rerun()
                             with col_d2:
-                                dest_dg = str_app.radio(f"Renvoir DG #{d_id} à :", ["Émetteur", "Achats"], key=f"rad_dg_{d_id}")
+                                dest_dg = str_app.radio(f"Renvoi DG #{d_id} à :", ["Émetteur", "Achats"], key=f"rad_dg_{d_id}")
                                 note_dg = str_app.text_input(f"Instructions DG #{d_id}", key=f"note_dg_{d_id}")
                                 if str_app.button(f"↩️ Renvoyer dossier #{d_id}"):
                                     target_etape = "emetteur_retour" if dest_dg == "Émetteur" else "achats_retour"
@@ -739,7 +750,6 @@ def afficher_module_messagerie_directe(nom_departement):
 
         with col_canvas_chat:
             if dept_selectionne:
-                # Header du Chat Teams
                 str_app.markdown(f"""
                 <div style="background-color: #1f2430; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; border-bottom: 2px solid #5b5fc7;">
                     <span style="font-size: 1.2rem;">💬</span> <b style="font-size: 1.1rem; color: #ffffff;">{dept_selectionne}</b>
@@ -759,7 +769,6 @@ def afficher_module_messagerie_directe(nom_departement):
                 chat_messages = cursor.fetchall()
                 conn.close()
 
-                # Conteneur des messages de chat
                 chat_container = str_app.container(height=380)
                 with chat_container:
                     if chat_messages:
@@ -790,7 +799,6 @@ def afficher_module_messagerie_directe(nom_departement):
                     else:
                         str_app.info(f"Aucun message échangé pour le moment avec {dept_selectionne}.")
 
-                # Zone de saisie moderne
                 with str_app.form(f"form_send_teams_{dept_selectionne}", clear_on_submit=True):
                     c_txt, c_btn = str_app.columns([4, 1])
                     with c_txt:
@@ -823,7 +831,6 @@ def afficher_module_messagerie_directe(nom_departement):
                     target_str = ",".join(depts_cibles)
                     conn = get_db_connection()
                     cursor = conn.cursor()
-                    # On enregistre une entrée globale de diffusion avec le tag multi
                     for dest in depts_cibles:
                         cursor.execute(
                             "INSERT INTO messages_directs (expediteur, destinataire, texte, date, type_envoi) VALUES (?, ?, ?, ?, ?)",
