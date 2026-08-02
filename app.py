@@ -1,10 +1,10 @@
 import sqlite3
 import json
 import os
+import uuid
 from datetime import datetime
 import pandas as pd
 import streamlit as str_app
-from streamlit_autorefresh import st_autorefresh
 
 # --- CONFIGURATION DE LA PAGE ---
 str_app.set_page_config(
@@ -21,7 +21,7 @@ os.makedirs(DOSSIER_ETUDES, exist_ok=True)
 
 CHEMIN_LOGO = "logo.png"
 
-# --- STYLE CSS DESIGN CORPORATE & TEAMS ---
+# --- STYLE CSS AMÉLIORÉ ---
 str_app.markdown("""
     <style>
     .stApp { background-color: #0e1117; }
@@ -32,27 +32,15 @@ str_app.markdown("""
     .stButton>button:hover {
         transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0, 150, 255, 0.2); border-color: #1f6feb;
     }
-    .stTextInput>div>div>input, .stTextArea>div>div>textarea {
-        border-radius: 6px; border: 1px solid #30363d; background-color: #161b22; color: #c9d1d9; white-space: pre-wrap;
-    }
-    div[data-testid="stMetricValue"] { font-size: 1.6rem; font-weight: 700; }
     .badge-notification { background-color: #f85149; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: bold; }
     
-    /* TEAMS CHAT DESIGN STYLES */
-    .chat-bubble-me {
-        background-color: #5b5fc7; color: #ffffff; padding: 10px 14px; border-radius: 12px 12px 2px 12px; margin-bottom: 6px; max-width: 80%; display: inline-block;
-    }
-    .chat-bubble-other {
-        background-color: #292d3e; color: #e6edf3; padding: 10px 14px; border-radius: 12px 12px 12px 2px; margin-bottom: 6px; max-width: 80%; border: 1px solid #3b4252; display: inline-block;
-    }
-    .chat-avatar {
-        width: 32px; height: 32px; border-radius: 50%; background-color: #464b5d; color: white; text-align: center; line-height: 32px; font-weight: bold; margin-right: 8px; display: inline-block; font-size: 0.85rem;
+    /* STYLE CHAT TEAMS ENRICHIE */
+    .channel-header {
+        background-color: #161b22; padding: 12px 18px; border-radius: 8px; 
+        border-left: 4px solid #5b5fc7; margin-bottom: 15px;
     }
     </style>
 """, unsafe_allow_html=True)
-
-# --- ACTUALISATION AUTOMATIQUE ---
-st_autorefresh(interval=5000, key="datarefreshcounter")
 
 # --- INITIALISATION & MIGRATION AUTOMATIQUE SQLITE ---
 def init_db():
@@ -82,7 +70,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, acteur TEXT, action TEXT, details TEXT
     )''')
     
-    # MIGRATION AUTOMATIQUE : Ajouter la colonne retour_remarque si elle manquait
+    # Migrations de colonnes
     cursor.execute("PRAGMA table_info(demandes)")
     cols = [column[1] for column in cursor.fetchall()]
     if "retour_remarque" not in cols:
@@ -130,6 +118,16 @@ def ajouter_log(action, acteur, details):
     )
     conn.commit()
     conn.close()
+
+def enregistrer_fichier_securise(dossier, fichier):
+    if fichier is not None:
+        ext = os.path.splitext(fichier.name)[1]
+        nom_unique = f"{uuid.uuid4().hex[:8]}_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
+        chemin_complet = os.path.join(dossier, nom_unique)
+        with open(chemin_complet, "wb") as f:
+            f.write(fichier.getbuffer())
+        return nom_unique
+    return ""
 
 # --- UTILISATEURS & RÔLES ---
 UTILISATEURS = {
@@ -265,7 +263,7 @@ def afficher_module_specifique_metier(nom_departement, type_profil):
     tab_creer, tab_consulter, tab_historique = str_app.tabs([
         "1. Nouvelle Étude & Partage", 
         "2. Études Reçues des Autres Départements",
-        "3. 📜 Traçabilité & Historique de vos Études"
+        "3. 📜 Traçabilité & Historique"
     ])
     
     with tab_creer:
@@ -285,11 +283,7 @@ def afficher_module_specifique_metier(nom_departement, type_profil):
             submit_etude = str_app.form_submit_button("Enregistrer et diffuser l'étude")
             
             if submit_etude and titre_etude:
-                nom_fich_sauve = ""
-                if fich_etude is not None:
-                    nom_fich_sauve = f"etude_{datetime.now().strftime('%Y%m%d%H%M%S')}_{fich_etude.name}"
-                    with open(os.path.join(DOSSIER_ETUDES, nom_fich_sauve), "wb") as f:
-                        f.write(fich_etude.getbuffer())
+                nom_fich_sauve = enregistrer_fichier_securise(DOSSIER_ETUDES, fich_etude)
                 
                 conn = get_db_connection()
                 cursor = conn.cursor()
@@ -381,11 +375,7 @@ def afficher_module_cahiers_charges(nom_departement, type_profil):
             destinataires_avis = str_app.multiselect("Partager avec pour avis :", tous_les_depts)
             
             if str_app.form_submit_button("Enregistrer et diffuser") and titre_cdc:
-                nom_fich_cdc = ""
-                if fichier_cdc is not None:
-                    nom_fich_cdc = f"cdc_{datetime.now().strftime('%Y%m%d%H%M%S')}_{fichier_cdc.name}"
-                    with open(os.path.join(DOSSIER_UPLOADS, nom_fich_cdc), "wb") as f:
-                        f.write(fichier_cdc.getbuffer())
+                nom_fich_cdc = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_cdc)
 
                 conn = get_db_connection()
                 cursor = conn.cursor()
@@ -424,7 +414,7 @@ def afficher_module_cahiers_charges(nom_departement, type_profil):
                         chemin_f = os.path.join(DOSSIER_UPLOADS, fichier_joint)
                         if os.path.exists(chemin_f):
                             with open(chemin_f, "rb") as fj:
-                                str_app.download_button("📥 Télécharger la pièce jointe / devis", data=fj, file_name=fichier_joint, key=f"dl_cdc_recu_{c_id}")
+                                str_app.download_button("📥 Télécharger la pièce jointe", data=fj, file_name=fichier_joint, key=f"dl_cdc_recu_{c_id}")
         else:
             str_app.info("Aucun cahier des charges partagé avec votre département.")
 
@@ -460,7 +450,7 @@ def afficher_module_cahiers_charges(nom_departement, type_profil):
             str_app.info("Aucun cahier des charges émis pour le moment.")
 
 # ==========================================
-# 3. MODULE BESOINS & SUIVI (AVEC WORKFLOW COMPLET & RENVOI POUR MODIFICATION)
+# 3. MODULE BESOINS & SUIVI
 # ==========================================
 def afficher_module_besoins_et_suivi(nom_departement, type_profil):
     str_app.subheader("🛒 Gestion des Demandes d'Achat")
@@ -478,7 +468,6 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
         ])
         tab_validation = None
 
-    # 1. ÉMETTRE OU MODIFIER UNE DEMANDE
     with tab_creer:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -491,11 +480,11 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
         conn.close()
 
         if demandes_a_corriger:
-            str_app.warning("⚠️ Vous avez des demandes nécessitant une correction suite à un retour de la Finance / DG !")
+            str_app.warning("⚠️ Des demandes nécessitent votre correction suite à un retour d'arbitrage !")
             for d in demandes_a_corriger:
                 d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_ach, d_fin, d_refus, d_date, d_fich, d_retour = d
                 with str_app.expander(f"🔴 Action Requise sur Demande #{d_id} : {d_titre}", expanded=True):
-                    str_app.error(f"💬 Remarques du pôle de contrôle : {d_retour}")
+                    str_app.error(f"💬 Remarques : {d_retour}")
                     
                     with str_app.form(f"form_corriger_{d_id}"):
                         nouveau_titre = str_app.text_input("Titre", value=d_titre)
@@ -507,13 +496,10 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                         if str_app.form_submit_button("🔄 Renvoyer la demande corrigée"):
                             nom_d_fich = d_fich
                             if nouveau_devis is not None:
-                                nom_d_fich = f"devis_rev_{datetime.now().strftime('%Y%m%d%H%M%S')}_{nouveau_devis.name}"
-                                with open(os.path.join(DOSSIER_UPLOADS, nom_d_fich), "wb") as f:
-                                    f.write(nouveau_devis.getbuffer())
+                                nom_d_fich = enregistrer_fichier_securise(DOSSIER_UPLOADS, nouveau_devis)
 
                             conn_u = get_db_connection()
                             cur_u = conn_u.cursor()
-                            
                             prochaine_etape = "finance" if type_profil == "achats" else "achats"
                             nouveau_statut = "En attente validation Finance (Corrigé)" if type_profil == "achats" else "En attente validation Achats (Corrigé)"
 
@@ -535,14 +521,10 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
             cahier_charges = str_app.text_area("Description synthétique / Contenu de la demande")
             montant = str_app.number_input("Montant estimé ou devis (€)", min_value=0.0, step=100.0)
             fournisseur = str_app.text_input("Fournisseur pressenti (Optionnel)")
-            fichier_devis = str_app.file_uploader("📎 Devis officiel joint (PDF/Image/Excel)", type=["pdf", "png", "jpg", "jpeg", "xlsx"])
+            fichier_devis = str_app.file_uploader("📎 Devis officiel joint", type=["pdf", "png", "jpg", "jpeg", "xlsx"])
 
             if str_app.form_submit_button("🚀 Soumettre la demande d'achat") and titre and montant > 0:
-                nom_devis = ""
-                if fichier_devis is not None:
-                    nom_devis = f"devis_{datetime.now().strftime('%Y%m%d%H%M%S')}_{fichier_devis.name}"
-                    with open(os.path.join(DOSSIER_UPLOADS, nom_devis), "wb") as f:
-                        f.write(fichier_devis.getbuffer())
+                nom_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_devis)
 
                 if type_profil == "achats":
                     etape_initiale = "finance"
@@ -570,7 +552,6 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                 str_app.success("Demande soumise avec succès !")
                 str_app.rerun()
 
-    # 2. SUIVI DES DEMANDES
     with tab_suivi:
         conn = get_db_connection()
         df_demandes = pd.read_sql_query("SELECT * FROM demandes WHERE departement = ? ORDER BY id DESC", conn, params=(nom_departement,))
@@ -590,7 +571,6 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                             with open(chemin_d, "rb") as fd:
                                 str_app.download_button("📥 Consulter le devis joint", data=fd, file_name=row['fichier_devis'], key=f"dl_suivi_{row['id']}")
                     
-                    # Sécurisation si la clé existe dans la ligne Pandas
                     if 'retour_remarque' in row and row['retour_remarque']:
                         str_app.warning(f"💬 Demande de modification reçue : {row['retour_remarque']}")
                     if row.get('motif_refus'):
@@ -598,7 +578,6 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
         else:
             str_app.info("Aucune demande d'achat enregistrée pour votre département.")
 
-    # 3. ESPACE DE VALIDATION
     if tab_validation is not None:
         with tab_validation:
             conn = get_db_connection()
@@ -617,7 +596,6 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                         with open(chemin_f, "rb") as fd:
                             str_app.download_button("📥 Télécharger / Consulter le Devis", data=fd, file_name=d_fich, key=f"dl_val_{d_id}")
 
-            # VALIDATION ACHATS
             if type_profil == "achats":
                 str_app.markdown("### 🛒 Validations Achats")
                 cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'achats'")
@@ -650,7 +628,6 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                 else:
                     str_app.info("Aucune demande en attente côté Achats.")
 
-            # VALIDATION FINANCE
             elif type_profil == "finance":
                 str_app.markdown("### 💶 Validations Finance")
                 cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'finance'")
@@ -687,7 +664,6 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                 else:
                     str_app.info("Aucune demande en attente côté Finance.")
 
-            # VALIDATION DIRECTION GÉNÉRALE
             elif type_profil == "fondateur":
                 str_app.markdown("### 👑 Validations Stratégiques Direction Générale")
                 cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'fondateur'")
@@ -724,36 +700,52 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
             conn.close()
 
 # ==========================================
-# 4. MODULE MESSAGERIE & CHAT (INTERFACE STYLE TEAMS + TRAÇABILITÉ MULTI-DESTINATAIRES)
+# 4. MODULE MESSAGERIE & CHAT (AVEC NATIVE ST.CHAT AMÉLIORÉ)
 # ==========================================
 def afficher_module_messagerie_directe(nom_departement):
-    str_app.subheader("💬 Hub de Communication & Discussions (Style Microsoft Teams)")
+    str_app.subheader("💬 Hub de Communication & Discussions")
     
     tous_les_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
     
     tab_teams, tab_multi_tracabilite = str_app.tabs([
-        "💬 Salon de Chat & Canaux Privés",
+        "💬 Discussions Directes",
         "📢 Diffusion Multi-Destinataires & Historique"
     ])
 
-    # 1. INTERFACE DE CHAT STYLE TEAMS
     with tab_teams:
         col_sidebar_chat, col_canvas_chat = str_app.columns([1, 2.3])
 
         with col_sidebar_chat:
             str_app.markdown("#### 🗂️ Contacts & Canaux")
-            dept_selectionne = str_app.radio(
+            
+            # Lister les contacts avec un indicateur s'il y a des messages
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Préparation des labels enrichis
+            depts_avec_notif = []
+            for d_name in tous_les_depts:
+                cursor.execute("SELECT COUNT(*) FROM messages_directs WHERE expediteur = ? AND destinataire = ?", (d_name, nom_departement))
+                count = cursor.fetchone()[0]
+                label = f"🔴 {d_name}" if count > 0 else d_name
+                depts_avec_notif.append((label, d_name))
+            conn.close()
+
+            dept_label_select = str_app.radio(
                 "Sélectionner une discussion :",
-                tous_les_depts,
+                [item[0] for item in depts_avec_notif],
                 key="teams_chat_dept_select"
             )
+            
+            # Retrouver le nom réel du département sélectionné
+            dept_selectionne = next(item[1] for item in depts_avec_notif if item[0] == dept_label_select)
 
         with col_canvas_chat:
             if dept_selectionne:
                 str_app.markdown(f"""
-                <div style="background-color: #1f2430; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; border-bottom: 2px solid #5b5fc7;">
+                <div class="channel-header">
                     <span style="font-size: 1.2rem;">💬</span> <b style="font-size: 1.1rem; color: #ffffff;">{dept_selectionne}</b>
-                    <small style="color: #8b949e; margin-left: 10px;">• Discussion directe sécurisée</small>
+                    <small style="color: #8b949e; margin-left: 10px;">• Canal Direct Sécurisé</small>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -769,55 +761,36 @@ def afficher_module_messagerie_directe(nom_departement):
                 chat_messages = cursor.fetchall()
                 conn.close()
 
+                # Container de messages avec Streamlit Native Chat UI
                 chat_container = str_app.container(height=380)
                 with chat_container:
                     if chat_messages:
                         for msg in chat_messages:
                             exp, _, txt, dt = msg
                             is_me = (exp == nom_departement)
-                            initiales = exp[:2].upper()
-
-                            if is_me:
-                                str_app.markdown(f"""
-                                <div style="display: flex; justify-content: flex-end; align-items: flex-end; margin-bottom: 10px;">
-                                    <div class="chat-bubble-me">
-                                        <div style="font-size: 0.75rem; opacity: 0.8; margin-bottom: 4px;"><b>Vous</b> • {dt}</div>
-                                        <div>{txt}</div>
-                                    </div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                            else:
-                                str_app.markdown(f"""
-                                <div style="display: flex; justify-content: flex-start; align-items: flex-start; margin-bottom: 10px;">
-                                    <div class="chat-avatar">{initiales}</div>
-                                    <div class="chat-bubble-other">
-                                        <div style="font-size: 0.75rem; color: #8b949e; margin-bottom: 4px;"><b>{exp}</b> • {dt}</div>
-                                        <div>{txt}</div>
-                                    </div>
-                                </div>
-                                """, unsafe_allow_html=True)
+                            
+                            role = "user" if is_me else "assistant"
+                            avatar = "👤" if is_me else "🏢"
+                            
+                            with str_app.chat_message(role, avatar=avatar):
+                                str_app.markdown(f"**{exp}** <small style='color: #8b949e;'>({dt})</small>", unsafe_allow_html=True)
+                                str_app.write(txt)
                     else:
                         str_app.info(f"Aucun message échangé pour le moment avec {dept_selectionne}.")
 
-                with str_app.form(f"form_send_teams_{dept_selectionne}", clear_on_submit=True):
-                    c_txt, c_btn = str_app.columns([4, 1])
-                    with c_txt:
-                        msg_saisi = str_app.text_input("Tapez un message...", placeholder=f"Écrire à {dept_selectionne}...", label_visibility="collapsed")
-                    with c_btn:
-                        envoyer_msg = str_app.form_submit_button("Envoyer ✈️")
+                # Saisie fluide du chat
+                prompt = str_app.chat_input(f"Écrire un message à {dept_selectionne}...")
+                if prompt:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO messages_directs (expediteur, destinataire, texte, date, type_envoi) VALUES (?, ?, ?, ?, 'direct')",
+                        (nom_departement, dept_selectionne, prompt, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                    )
+                    conn.commit()
+                    conn.close()
+                    str_app.rerun()
 
-                    if envoyer_msg and msg_saisi:
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        cursor.execute(
-                            "INSERT INTO messages_directs (expediteur, destinataire, texte, date, type_envoi) VALUES (?, ?, ?, ?, 'direct')",
-                            (nom_departement, dept_selectionne, msg_saisi, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                        )
-                        conn.commit()
-                        conn.close()
-                        str_app.rerun()
-
-    # 2. DIFFUSION MULTI-DESTINATAIRES & HISTORIQUE/TRAÇABILITÉ
     with tab_multi_tracabilite:
         col_m_send, col_m_hist = str_app.columns([1, 1.2])
 
