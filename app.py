@@ -2,9 +2,15 @@ import sqlite3
 import json
 import os
 import uuid
-from datetime import datetime
+import io
+from datetime import datetime, date
 import pandas as pd
 import streamlit as st
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(
@@ -21,34 +27,182 @@ os.makedirs(DOSSIER_ETUDES, exist_ok=True)
 
 CHEMIN_LOGO = "logo.png"
 
-# --- STYLE CSS PERSONNALISÉ & DESIGN MODERNE DES ONGLETS ---
+# --- STYLE CSS PERSONNALISÉ & DESIGN MODERNE ---
 st.markdown("""
     <style>
-    .stApp { background-color: #0e1117; }
-    
+    :root {
+        --accent: #5b8def;
+        --accent-2: #7c5cf5;
+        --bg-card: #151a23;
+        --bg-card-2: #11151c;
+        --border: #262d3a;
+        --text-muted: #8b96a5;
+        --success: #2ea043;
+        --warning: #d29922;
+        --danger: #f85149;
+    }
+
+    .stApp {
+        background: radial-gradient(circle at 0% 0%, #12161f 0%, #0b0e14 55%, #0a0c11 100%);
+    }
+
+    h1, h2, h3 { letter-spacing: -0.01em; }
+
+    /* Titre principal */
+    h1 {
+        background: linear-gradient(90deg, #ffffff 0%, #b9c6e8 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-weight: 800;
+    }
+
     /* Boutons généraux */
     .stButton>button {
-        border-radius: 8px; font-weight: 600; transition: all 0.2s ease;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 10px; font-weight: 600; transition: all 0.15s ease;
+        border: 1px solid var(--border); background-color: #171c26;
     }
     .stButton>button:hover {
-        transform: translateY(-1px); border-color: #1f6feb;
+        transform: translateY(-1px); border-color: var(--accent);
+        box-shadow: 0 4px 14px rgba(91, 141, 239, 0.25);
     }
-    
-    .badge-notification { background-color: #f85149; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: bold; }
+    .stButton>button[kind="primary"] {
+        background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 100%);
+        border: none; color: white;
+    }
+    .stDownloadButton>button {
+        border-radius: 10px; font-weight: 600; border: 1px solid var(--border);
+        background-color: #14201a; color: #b7f0c2;
+    }
+    .stDownloadButton>button:hover { border-color: var(--success); transform: translateY(-1px); }
+
+    .badge-notification {
+        background: linear-gradient(90deg, #f85149, #d63b32);
+        color: white; padding: 2px 9px; border-radius: 12px; font-size: 0.75rem; font-weight: 700;
+    }
     .channel-header {
-        background-color: #161b22; padding: 12px 18px; border-radius: 8px; 
-        border-left: 4px solid #5b5fc7; margin-bottom: 15px;
+        background-color: var(--bg-card); padding: 12px 18px; border-radius: 10px;
+        border-left: 4px solid var(--accent-2); margin-bottom: 15px;
     }
-    
-    /* Journal de Bord */
+
+    /* Cartes génériques (journal, listes...) */
     .note-card {
-        background-color: #161b22; border: 1px solid #30363d; border-radius: 8px;
-        padding: 14px; margin-bottom: 12px; border-left: 4px solid #238636;
+        background-color: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+        padding: 14px; margin-bottom: 12px; border-left: 4px solid var(--success);
     }
-    .note-date { color: #8b949e; font-size: 0.85rem; font-weight: 600; }
+    .note-date { color: var(--text-muted); font-size: 0.85rem; font-weight: 600; }
+
+    /* Barre de filtres */
+    .filter-bar {
+        background-color: var(--bg-card-2); border: 1px solid var(--border); border-radius: 12px;
+        padding: 14px 16px 4px 16px; margin-bottom: 16px;
+    }
+    .filter-bar-title { color: var(--text-muted); font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+
+    /* Barre d'export */
+    .export-bar { display: flex; gap: 8px; margin: 6px 0 14px 0; }
+
+    /* KPI cards */
+    div[data-testid="stMetric"] {
+        background-color: var(--bg-card); border: 1px solid var(--border);
+        border-radius: 12px; padding: 12px 16px;
+    }
+
+    /* Statut pills utilisés via markdown */
+    .pill { display:inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 700; }
+    .pill-attente { background: rgba(210,153,34,0.15); color: #e3b341; border: 1px solid rgba(210,153,34,0.4); }
+    .pill-valide { background: rgba(46,160,67,0.15); color: #56d364; border: 1px solid rgba(46,160,67,0.4); }
+    .pill-refuse { background: rgba(248,81,73,0.15); color: #ff7b72; border: 1px solid rgba(248,81,73,0.4); }
+    .pill-modif { background: rgba(91,141,239,0.15); color: #79b8ff; border: 1px solid rgba(91,141,239,0.4); }
+
+    /* Onglets natifs st.tabs */
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px 8px 0 0; background-color: var(--bg-card-2); padding: 8px 16px;
+    }
+    .stTabs [aria-selected="true"] { background-color: var(--bg-card); border-bottom: 2px solid var(--accent); }
     </style>
 """, unsafe_allow_html=True)
+
+# ==========================================
+# UTILITAIRES : EXPORT EXCEL / PDF
+# ==========================================
+def exporter_excel_bytes(df: pd.DataFrame, nom_feuille="Données"):
+    """Retourne les bytes d'un fichier Excel généré à partir d'un DataFrame."""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=nom_feuille[:31] or "Données")
+        worksheet = writer.sheets[nom_feuille[:31] or "Données"]
+        for i, col in enumerate(df.columns):
+            largeur = min(max(len(str(col)), df[col].astype(str).map(len).max() if len(df) else 10) + 2, 50)
+            worksheet.column_dimensions[worksheet.cell(row=1, column=i + 1).column_letter].width = largeur
+    return buffer.getvalue()
+
+def exporter_pdf_bytes(df: pd.DataFrame, titre="Export", colonnes_max=8):
+    """Retourne les bytes d'un PDF listant un DataFrame sous forme de tableau."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), topMargin=1.2*cm, bottomMargin=1.2*cm)
+    styles = getSampleStyleSheet()
+    elements = [Paragraph(titre, styles["Title"]), Spacer(1, 0.4*cm)]
+    elements.append(Paragraph(f"Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", styles["Normal"]))
+    elements.append(Spacer(1, 0.5*cm))
+
+    df_aff = df.copy()
+    if len(df_aff.columns) > colonnes_max:
+        df_aff = df_aff.iloc[:, :colonnes_max]
+
+    df_aff = df_aff.astype(str)
+    data = [list(df_aff.columns)] + df_aff.values.tolist()
+
+    tableau = Table(data, repeatRows=1)
+    tableau.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f2f4f7")]),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    elements.append(tableau)
+    doc.build(elements)
+    return buffer.getvalue()
+
+def afficher_boutons_export(df: pd.DataFrame, nom_base: str, titre_pdf: str = None, key_prefix: str = ""):
+    """Affiche côte à côte un bouton d'export Excel et un bouton d'export PDF pour un DataFrame."""
+    if df.empty:
+        return
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            "📊 Exporter en Excel",
+            data=exporter_excel_bytes(df, nom_base),
+            file_name=f"{nom_base}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"xlsx_{key_prefix}", use_container_width=True
+        )
+    with c2:
+        st.download_button(
+            "📄 Exporter en PDF",
+            data=exporter_pdf_bytes(df, titre_pdf or nom_base),
+            file_name=f"{nom_base}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+            mime="application/pdf",
+            key=f"pdf_{key_prefix}", use_container_width=True
+        )
+
+def pill_statut(statut: str) -> str:
+    """Retourne un badge HTML coloré selon le statut."""
+    s = str(statut).lower()
+    if "validé" in s or "financé" in s or "approuvé" in s:
+        classe = "pill-valide"
+    elif "refusé" in s:
+        classe = "pill-refuse"
+    elif "modification" in s:
+        classe = "pill-modif"
+    else:
+        classe = "pill-attente"
+    return f'<span class="pill {classe}">{statut}</span>'
 
 # --- INITIALISATION BASE DE DONNÉES ---
 def init_db():
@@ -310,16 +464,43 @@ def afficher_module_etudes(nom_departement, type_profil):
         recus = [e for e in etudes if nom_departement in (json.loads(e[5]) if e[5] else []) or type_profil == "fondateur"]
 
         if recus:
-            for e in recus:
-                e_id, e_dept, e_titre, e_json, e_fich, _, e_date = e
-                with st.expander(f"📁 [{e_dept}] {e_titre} ({e_date})"):
-                    data = json.loads(e_json) if e_json else {}
-                    st.write(f"**Description :** {data.get('details', '')}")
-                    if e_fich:
-                        chemin = os.path.join(DOSSIER_ETUDES, e_fich)
-                        if os.path.exists(chemin):
-                            with open(chemin, "rb") as f:
-                                st.download_button("📥 Télécharger Fichier Joint", f, file_name=e_fich, key=f"dl_et_{e_id}")
+            depts_dispo = ["Tous"] + sorted(set(e[1] for e in recus))
+            st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer</div>', unsafe_allow_html=True)
+            c_f1, c_f2 = st.columns([2, 1])
+            with c_f1:
+                recherche = st.text_input("Rechercher (titre ou description)", key="recherche_etudes_recues")
+            with c_f2:
+                dept_choisi = st.selectbox("Département émetteur", depts_dispo, key="dept_etudes_recues")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            def _match(e):
+                data = json.loads(e[3]) if e[3] else {}
+                texte = f"{e[2]} {data.get('details', '')}".lower()
+                ok_recherche = recherche.lower() in texte if recherche else True
+                ok_dept = (dept_choisi == "Tous") or (e[1] == dept_choisi)
+                return ok_recherche and ok_dept
+
+            recus_filtres = [e for e in recus if _match(e)]
+
+            df_export = pd.DataFrame([{
+                "ID": e[0], "Département": e[1], "Titre": e[2],
+                "Description": (json.loads(e[3]) if e[3] else {}).get("details", ""), "Date": e[6]
+            } for e in recus_filtres])
+            afficher_boutons_export(df_export, "etudes_recues", "Études Reçues", key_prefix="etudes_recues")
+
+            if recus_filtres:
+                for e in recus_filtres:
+                    e_id, e_dept, e_titre, e_json, e_fich, _, e_date = e
+                    with st.expander(f"📁 [{e_dept}] {e_titre} ({e_date})"):
+                        data = json.loads(e_json) if e_json else {}
+                        st.write(f"**Description :** {data.get('details', '')}")
+                        if e_fich:
+                            chemin = os.path.join(DOSSIER_ETUDES, e_fich)
+                            if os.path.exists(chemin):
+                                with open(chemin, "rb") as f:
+                                    st.download_button("📥 Télécharger Fichier Joint", f, file_name=e_fich, key=f"dl_et_{e_id}")
+            else:
+                st.info("Aucune étude ne correspond aux filtres.")
         else:
             st.info("Aucune étude reçue.")
 
@@ -332,7 +513,15 @@ def afficher_module_etudes(nom_departement, type_profil):
         conn.close()
         
         if mes_e:
-            for me in mes_e:
+            recherche_h = st.text_input("🔎 Rechercher un titre", key="recherche_etudes_historique")
+            mes_e_filtres = [me for me in mes_e if (recherche_h.lower() in me[2].lower()) or not recherche_h]
+
+            df_export_h = pd.DataFrame([{
+                "ID": me[0], "Département": me[1], "Titre": me[2], "Date": me[4]
+            } for me in mes_e_filtres])
+            afficher_boutons_export(df_export_h, "etudes_historique", "Historique des Études", key_prefix="etudes_hist")
+
+            for me in mes_e_filtres:
                 me_id, me_dept, me_titre, me_json, me_date = me
                 c_info1, c_info2 = st.columns([4, 1])
                 with c_info1:
@@ -381,32 +570,65 @@ def afficher_module_cdc(nom_departement, type_profil):
         cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis FROM cahiers_charges ORDER BY id DESC")
         cdcs = cursor.fetchall()
         conn.close()
+
+        cdcs_visibles = []
         for c in cdcs:
             c_id, c_dept, c_titre_raw, c_txt, c_date, c_dest_raw = c
             dests = json.loads(c_dest_raw) if c_dest_raw else []
             if nom_departement in dests or c_dept == nom_departement or type_profil == "fondateur":
-                parts = c_titre_raw.split("||")
-                t_titre = parts[0]
-                t_fich = parts[1] if len(parts) > 1 else ""
-                
-                with st.expander(f"📄 [{c_dept}] {t_titre} ({c_date})"):
-                    st.write(c_txt)
-                    if t_fich:
-                        ch = os.path.join(DOSSIER_UPLOADS, t_fich)
-                        if os.path.exists(ch):
-                            with open(ch, "rb") as f:
-                                st.download_button("📥 Télécharger pièce jointe", f, file_name=t_fich, key=f"dl_cdc_{c_id}")
-                    
-                    if c_dept == nom_departement or type_profil == "fondateur":
-                        if st.button("🗑️ Supprimer ce Cahier des Charges", key=f"del_cdc_{c_id}"):
-                            archiver_dans_corbeille(c_dept, "Cahier des Charges", t_titre, {"contenu": c_txt, "date": c_date})
-                            conn = get_db_connection()
-                            cursor = conn.cursor()
-                            cursor.execute("DELETE FROM cahiers_charges WHERE id = ?", (c_id,))
-                            conn.commit()
-                            conn.close()
-                            st.success("Cahier des charges supprimé et archivé.")
-                            st.rerun()
+                cdcs_visibles.append(c)
+
+        if cdcs_visibles:
+            depts_dispo_cdc = ["Tous"] + sorted(set(c[1] for c in cdcs_visibles))
+            st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer</div>', unsafe_allow_html=True)
+            cf1, cf2 = st.columns([2, 1])
+            with cf1:
+                recherche_cdc = st.text_input("Rechercher (titre ou contenu)", key="recherche_cdc")
+            with cf2:
+                dept_cdc = st.selectbox("Département émetteur", depts_dispo_cdc, key="dept_cdc")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            def _match_cdc(c):
+                titre_seul = c[2].split("||")[0]
+                texte = f"{titre_seul} {c[3]}".lower()
+                ok_recherche = recherche_cdc.lower() in texte if recherche_cdc else True
+                ok_dept = (dept_cdc == "Tous") or (c[1] == dept_cdc)
+                return ok_recherche and ok_dept
+
+            cdcs_filtres = [c for c in cdcs_visibles if _match_cdc(c)]
+
+            df_export_cdc = pd.DataFrame([{
+                "ID": c[0], "Département": c[1], "Titre": c[2].split("||")[0],
+                "Contenu": c[3], "Date": c[4]
+            } for c in cdcs_filtres])
+            afficher_boutons_export(df_export_cdc, "cahiers_des_charges", "Cahiers des Charges", key_prefix="cdc")
+        else:
+            cdcs_filtres = []
+
+        for c in cdcs_filtres:
+            c_id, c_dept, c_titre_raw, c_txt, c_date, c_dest_raw = c
+            parts = c_titre_raw.split("||")
+            t_titre = parts[0]
+            t_fich = parts[1] if len(parts) > 1 else ""
+
+            with st.expander(f"📄 [{c_dept}] {t_titre} ({c_date})"):
+                st.write(c_txt)
+                if t_fich:
+                    ch = os.path.join(DOSSIER_UPLOADS, t_fich)
+                    if os.path.exists(ch):
+                        with open(ch, "rb") as f:
+                            st.download_button("📥 Télécharger pièce jointe", f, file_name=t_fich, key=f"dl_cdc_{c_id}")
+
+                if c_dept == nom_departement or type_profil == "fondateur":
+                    if st.button("🗑️ Supprimer ce Cahier des Charges", key=f"del_cdc_{c_id}"):
+                        archiver_dans_corbeille(c_dept, "Cahier des Charges", t_titre, {"contenu": c_txt, "date": c_date})
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM cahiers_charges WHERE id = ?", (c_id,))
+                        conn.commit()
+                        conn.close()
+                        st.success("Cahier des charges supprimé et archivé.")
+                        st.rerun()
 
 # ==========================================
 # 3. MODULE BESOINS & ACHATS
@@ -461,8 +683,34 @@ def afficher_module_achats(nom_departement, type_profil):
         conn.close()
         
         if not df.empty:
-            for _, r in df.iterrows():
-                with st.expander(f"📌 #{r['id']} - {r['titre']} ({r['montant']} €) - Statut: {r['statut']}"):
+            st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer mes demandes</div>', unsafe_allow_html=True)
+            fc1, fc2, fc3 = st.columns([2, 1.2, 1.2])
+            with fc1:
+                recherche_dem = st.text_input("Rechercher (titre/description)", key="recherche_mes_demandes")
+            with fc2:
+                statuts_dispo_dem = ["Tous"] + sorted(df["statut"].unique().tolist())
+                statut_dem_filtre = st.selectbox("Statut", statuts_dispo_dem, key="statut_mes_demandes")
+            with fc3:
+                montant_min = st.number_input("Montant minimum (€)", min_value=0.0, step=100.0, key="montant_min_mes_demandes")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            df_filtre_dem = df.copy()
+            if recherche_dem:
+                masque = df_filtre_dem["titre"].str.contains(recherche_dem, case=False, na=False) | df_filtre_dem["cahier_charges"].str.contains(recherche_dem, case=False, na=False)
+                df_filtre_dem = df_filtre_dem[masque]
+            if statut_dem_filtre != "Tous":
+                df_filtre_dem = df_filtre_dem[df_filtre_dem["statut"] == statut_dem_filtre]
+            if montant_min > 0:
+                df_filtre_dem = df_filtre_dem[df_filtre_dem["montant"] >= montant_min]
+
+            afficher_boutons_export(
+                df_filtre_dem[["id", "date", "titre", "montant", "fournisseur", "statut", "etape_actuelle"]],
+                "mes_demandes_achat", "Mes Demandes d'Achat", key_prefix="mes_demandes"
+            )
+
+            for _, r in df_filtre_dem.iterrows():
+                with st.expander(f"📌 #{r['id']} - {r['titre']} ({r['montant']:,.2f} €) - Statut: {r['statut']}"):
+                    st.markdown(pill_statut(r['statut']), unsafe_allow_html=True)
                     st.write(f"**Description :** {r['cahier_charges']}")
                     
                     c_del1, c_del2 = st.columns([4, 1])
@@ -524,6 +772,15 @@ def afficher_module_achats(nom_departement, type_profil):
             conn.close()
 
             if demandes_a_traiter:
+                df_a_traiter = pd.DataFrame(demandes_a_traiter, columns=[
+                    "id", "departement", "titre", "cahier_charges", "montant", "fournisseur",
+                    "statut", "etape_actuelle", "avis_achats", "avis_finance", "motif_refus",
+                    "date", "fichier_devis", "retour_remarque"
+                ])
+                afficher_boutons_export(
+                    df_a_traiter[["id", "date", "departement", "titre", "montant", "fournisseur", "statut"]],
+                    "dossiers_a_valider", "Dossiers en Attente de Validation", key_prefix="validation"
+                )
                 for d in demandes_a_traiter:
                     d_id, d_dept, d_titre, d_desc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_motif, d_date, d_fich, d_rem = d
                     
@@ -771,29 +1028,52 @@ def afficher_module_journal_bord(nom_departement):
         conn.close()
 
         if notes:
-            dates_dispos = ["Toutes les dates"] + sorted(list(set(n[3] for n in notes)), reverse=True)
-            filtre_d = st.selectbox("📅 Filtrer par date :", dates_dispos)
-            
-            for n_id, n_auteur, n_txt, n_date, n_heure in notes:
-                if filtre_d == "Toutes les dates" or filtre_d == n_date:
-                    c_n1, c_n2 = st.columns([5, 1])
-                    with c_n1:
-                        st.markdown(f"""
-                        <div class="note-card">
-                            <div class="note-date">📅 {n_date} à {n_heure} | Par : {n_auteur}</div>
-                            <div style="margin-top: 8px; font-size: 0.95rem; color: #e6edf3;">{n_txt}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    with c_n2:
-                        if st.button("🗑️", key=f"del_note_{n_id}", help="Supprimer cette note"):
-                            archiver_dans_corbeille(nom_departement, "Journal de Bord", n_txt[:40], {"date": n_date, "auteur": n_auteur})
-                            conn = get_db_connection()
-                            cursor = conn.cursor()
-                            cursor.execute("DELETE FROM journal_bord WHERE id = ?", (n_id,))
-                            conn.commit()
-                            conn.close()
-                            st.success("Note supprimée et archivée.")
-                            st.rerun()
+            st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer</div>', unsafe_allow_html=True)
+            fj1, fj2, fj3 = st.columns([1.2, 1.2, 2])
+            with fj1:
+                dates_dispos = ["Toutes les dates"] + sorted(list(set(n[3] for n in notes)), reverse=True)
+                filtre_d = st.selectbox("📅 Date", dates_dispos)
+            with fj2:
+                auteurs_dispos = ["Tous"] + sorted(list(set(n[1] for n in notes)))
+                filtre_auteur = st.selectbox("👤 Auteur", auteurs_dispos)
+            with fj3:
+                recherche_note = st.text_input("Rechercher dans les notes")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            notes_filtrees = [
+                n for n in notes
+                if (filtre_d == "Toutes les dates" or filtre_d == n[3])
+                and (filtre_auteur == "Tous" or filtre_auteur == n[1])
+                and (not recherche_note or recherche_note.lower() in n[2].lower())
+            ]
+
+            df_export_journal = pd.DataFrame([{
+                "Date": n[3], "Heure": n[4], "Auteur": n[1], "Note": n[2]
+            } for n in notes_filtrees])
+            afficher_boutons_export(df_export_journal, f"journal_de_bord_{nom_departement}", "Journal de Bord", key_prefix="journal")
+
+            if not notes_filtrees:
+                st.info("Aucune note ne correspond aux filtres.")
+
+            for n_id, n_auteur, n_txt, n_date, n_heure in notes_filtrees:
+                c_n1, c_n2 = st.columns([5, 1])
+                with c_n1:
+                    st.markdown(f"""
+                    <div class="note-card">
+                        <div class="note-date">📅 {n_date} à {n_heure} | Par : {n_auteur}</div>
+                        <div style="margin-top: 8px; font-size: 0.95rem; color: #e6edf3;">{n_txt}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with c_n2:
+                    if st.button("🗑️", key=f"del_note_{n_id}", help="Supprimer cette note"):
+                        archiver_dans_corbeille(nom_departement, "Journal de Bord", n_txt[:40], {"date": n_date, "auteur": n_auteur})
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM journal_bord WHERE id = ?", (n_id,))
+                        conn.commit()
+                        conn.close()
+                        st.success("Note supprimée et archivée.")
+                        st.rerun()
         else:
             st.info("Aucune note enregistrée dans le journal pour le moment.")
 
@@ -818,22 +1098,36 @@ def afficher_module_suivi_global_controle():
     col_kpi4.metric("Volume Cumulé (€)", f"{df_demandes['montant'].sum():,.2f} €")
 
     st.markdown("---")
-    col_f1, col_f2 = st.columns(2)
+    st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer</div>', unsafe_allow_html=True)
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     with col_f1:
-        depts_dispos = ["Tous"] + list(df_demandes['departement'].unique())
-        dept_filtre = st.selectbox("Filtrer par Département Émetteur :", depts_dispos)
+        depts_dispos = ["Tous"] + sorted(df_demandes['departement'].unique().tolist())
+        dept_filtre = st.selectbox("Département Émetteur", depts_dispos)
     with col_f2:
-        statuts_dispos = ["Tous"] + list(df_demandes['statut'].unique())
-        statut_filtre = st.selectbox("Filtrer par Statut de validation :", statuts_dispos)
+        statuts_dispos = ["Tous"] + sorted(df_demandes['statut'].unique().tolist())
+        statut_filtre = st.selectbox("Statut de validation", statuts_dispos)
+    with col_f3:
+        recherche_g = st.text_input("Recherche (titre/fournisseur)")
+    with col_f4:
+        montant_min_g = st.number_input("Montant minimum (€)", min_value=0.0, step=100.0)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     df_filtré = df_demandes.copy()
     if dept_filtre != "Tous":
         df_filtré = df_filtré[df_filtré['departement'] == dept_filtre]
     if statut_filtre != "Tous":
         df_filtré = df_filtré[df_filtré['statut'] == statut_filtre]
+    if recherche_g:
+        masque_g = df_filtré['titre'].str.contains(recherche_g, case=False, na=False) | df_filtré['fournisseur'].str.contains(recherche_g, case=False, na=False)
+        df_filtré = df_filtré[masque_g]
+    if montant_min_g > 0:
+        df_filtré = df_filtré[df_filtré['montant'] >= montant_min_g]
+
+    colonnes_affichees = ['id', 'date', 'departement', 'titre', 'montant', 'fournisseur', 'statut', 'etape_actuelle', 'avis_achats', 'avis_finance']
+    afficher_boutons_export(df_filtré[colonnes_affichees], "suivi_global_demandes", "Suivi Global des Demandes d'Achat", key_prefix="suivi_global")
 
     st.dataframe(
-        df_filtré[['id', 'date', 'departement', 'titre', 'montant', 'fournisseur', 'statut', 'etape_actuelle', 'avis_achats', 'avis_finance']],
+        df_filtré[colonnes_affichees],
         use_container_width=True,
         hide_index=True
     )
@@ -861,6 +1155,11 @@ def afficher_module_direction_corbeille():
             df_c_filtre = df_c_filtre[df_c_filtre['departement_auteur'] == dept_c_filtre]
         if type_c_filtre != "Tous":
             df_c_filtre = df_c_filtre[df_c_filtre['type_element'] == type_c_filtre]
+
+        afficher_boutons_export(
+            df_c_filtre[['id', 'date_suppression', 'departement_auteur', 'type_element', 'resume']],
+            "corbeille_archives", "Corbeille & Historique des Suppressions", key_prefix="corbeille"
+        )
 
         for _, row in df_c_filtre.iterrows():
             with st.expander(f"🗑️ [{row['type_element']}] - Département : {row['departement_auteur']} (Supprimé le {row['date_suppression']})"):
