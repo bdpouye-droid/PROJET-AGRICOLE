@@ -76,6 +76,9 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS journal_bord (
         id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, auteur TEXT, note TEXT, date_note TEXT, heure_note TEXT
     )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS corbeille_archives (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, departement_auteur TEXT, type_element TEXT, resume TEXT, details_json TEXT, date_suppression TEXT
+    )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS logs_audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, acteur TEXT, action TEXT, details TEXT
     )''')
@@ -115,6 +118,16 @@ def ajouter_log(action, acteur, details):
     cursor.execute(
         "INSERT INTO logs_audit (date, acteur, action, details) VALUES (?, ?, ?, ?)",
         (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), acteur, action, details)
+    )
+    conn.commit()
+    conn.close()
+
+def archiver_dans_corbeille(departement_auteur, type_element, resume, details_dict):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO corbeille_archives (departement_auteur, type_element, resume, details_json, date_suppression) VALUES (?, ?, ?, ?, ?)",
+        (departement_auteur, type_element, resume, json.dumps(details_dict), datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     )
     conn.commit()
     conn.close()
@@ -242,12 +255,13 @@ if profil["type"] in ["finance", "fondateur"]:
 
 st.markdown("---")
 
-# --- NOUVEAU DESIGN D'ONGLETS MODERNE (BARRE DE BOUTONS SANS RADIO) ---
+# --- NAVIGATION ONGLES PRINCIPAUX (AVEC MODULE DIRECTION CORBEILLE SI FONDATEUR) ---
 onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "4. Messagerie & Chat", "📖 Journal de Bord"]
 if profil["type"] in ["achats", "finance", "fondateur"]:
     onglets_possibles.append("📊 Pôle de Contrôle (Suivi Global)")
+if profil["type"] == "fondateur":
+    onglets_possibles.append("🗑️ Corbeille & Historique Suppressions")
 
-# Grille d'onglets au design propre
 cols_tabs = st.columns(len(onglets_possibles))
 for idx, tab_nom in enumerate(onglets_possibles):
     is_active = (st.session_state.tab_actif == tab_nom)
@@ -264,7 +278,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 def afficher_module_etudes(nom_departement, type_profil):
     st.subheader(f"⚙️ Centre d'Ingénierie & Traçabilité des Études — {nom_departement}")
     tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
-    t1, t2, t3 = st.tabs(["1. Nouvelle Étude & Partage", "2. Études Reçues", "3. 📜 Historique"])
+    t1, t2, t3 = st.tabs(["1. Nouvelle Étude & Partage", "2. Études Reçues", "3. 📜 Historique & Gestion"])
     
     with t1:
         with st.form(f"form_etude_{nom_departement}", clear_on_submit=True):
@@ -312,12 +326,29 @@ def afficher_module_etudes(nom_departement, type_profil):
     with t3:
         conn = get_db_connection()
         cursor = conn.cursor()
-        query = "SELECT id, departement, titre, date FROM etudes_metier ORDER BY id DESC" if type_profil == "fondateur" else "SELECT id, departement, titre, date FROM etudes_metier WHERE departement = ? ORDER BY id DESC"
+        query = "SELECT id, departement, titre, donnees_json, date FROM etudes_metier ORDER BY id DESC" if type_profil == "fondateur" else "SELECT id, departement, titre, donnees_json, date FROM etudes_metier WHERE departement = ? ORDER BY id DESC"
         cursor.execute(query, () if type_profil == "fondateur" else (nom_departement,))
         mes_e = cursor.fetchall()
         conn.close()
-        for me in mes_e:
-            st.write(f"📜 **[{me[1]}] {me[2]}** — {me[3]}")
+        
+        if mes_e:
+            for me in mes_e:
+                me_id, me_dept, me_titre, me_json, me_date = me
+                c_info1, c_info2 = st.columns([4, 1])
+                with c_info1:
+                    st.write(f"📜 **[{me_dept}] {me_titre}** — {me_date}")
+                with c_info2:
+                    if st.button("🗑️ Supprimer", key=f"del_etude_{me_id}"):
+                        archiver_dans_corbeille(me_dept, "Étude Technique", me_titre, {"details_json": me_json, "date": me_date})
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM etudes_metier WHERE id = ?", (me_id,))
+                        conn.commit()
+                        conn.close()
+                        st.success("Étude supprimée et archivée.")
+                        st.rerun()
+        else:
+            st.info("Aucune étude enregistrée.")
 
 # ==========================================
 # 2. MODULE CAHIERS DES CHARGES
@@ -326,7 +357,7 @@ def afficher_module_cdc(nom_departement, type_profil):
     st.subheader("📋 Cahiers des Charges & Documents Partagés")
     tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
 
-    t1, t2 = st.tabs(["1. Publier un Cahier des Charges", "2. Documents Reçus & Suivi"])
+    t1, t2 = st.tabs(["1. Publier un Cahier des Charges", "2. Documents Reçus & Gestion"])
     with t1:
         with st.form("form_cdc"):
             titre = st.text_input("Intitulé du document")
@@ -357,6 +388,7 @@ def afficher_module_cdc(nom_departement, type_profil):
                 parts = c_titre_raw.split("||")
                 t_titre = parts[0]
                 t_fich = parts[1] if len(parts) > 1 else ""
+                
                 with st.expander(f"📄 [{c_dept}] {t_titre} ({c_date})"):
                     st.write(c_txt)
                     if t_fich:
@@ -364,14 +396,24 @@ def afficher_module_cdc(nom_departement, type_profil):
                         if os.path.exists(ch):
                             with open(ch, "rb") as f:
                                 st.download_button("📥 Télécharger pièce jointe", f, file_name=t_fich, key=f"dl_cdc_{c_id}")
+                    
+                    if c_dept == nom_departement or type_profil == "fondateur":
+                        if st.button("🗑️ Supprimer ce Cahier des Charges", key=f"del_cdc_{c_id}"):
+                            archiver_dans_corbeille(c_dept, "Cahier des Charges", t_titre, {"contenu": c_txt, "date": c_date})
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM cahiers_charges WHERE id = ?", (c_id,))
+                            conn.commit()
+                            conn.close()
+                            st.success("Cahier des charges supprimé et archivé.")
+                            st.rerun()
 
 # ==========================================
-# 3. MODULE BESOINS & ACHATS (ONGLETS DYNAMIQUES SELON RÔLE)
+# 3. MODULE BESOINS & ACHATS
 # ==========================================
 def afficher_module_achats(nom_departement, type_profil):
     st.subheader("🛒 Gestion des Demandes d'Achat & Validations")
     
-    # CONDITIONNEMENT DES SOUS-ONGLETS : Suppression du 3ème onglet s'ils ne sont pas contrôleurs !
     est_controleur = type_profil in ["achats", "finance", "fondateur"]
     titres_sous_tabs = ["1. Émettre une Demande", "2. Suivi de mes Demandes & Corrections"]
     if est_controleur:
@@ -423,6 +465,18 @@ def afficher_module_achats(nom_departement, type_profil):
                 with st.expander(f"📌 #{r['id']} - {r['titre']} ({r['montant']} €) - Statut: {r['statut']}"):
                     st.write(f"**Description :** {r['cahier_charges']}")
                     
+                    c_del1, c_del2 = st.columns([4, 1])
+                    with c_del2:
+                        if st.button("🗑️ Supprimer", key=f"del_dem_{r['id']}"):
+                            archiver_dans_corbeille(nom_departement, "Demande d'Achat", f"#{r['id']} - {r['titre']} ({r['montant']} €)", {"statut": r['statut']})
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM demandes WHERE id = ?", (r['id'],))
+                            conn.commit()
+                            conn.close()
+                            st.success("Demande supprimée et archivée.")
+                            st.rerun()
+
                     if "Modification" in str(r['statut']):
                         st.warning(f"💬 Remarque du contrôleur : {r['retour_remarque']}")
                         st.markdown("##### ✏️ Soumettre la version corrigée")
@@ -453,7 +507,7 @@ def afficher_module_achats(nom_departement, type_profil):
         else:
             st.info("Aucune demande émise.")
 
-    # 3. ESPACE DE VALIDATION (ACCESSIBLE UNIQUEMENT AUX CONTRÔLEURS)
+    # 3. ESPACE DE VALIDATION CORRIGÉ (FLUX FINANCE -> DIRECTION)
     if est_controleur:
         with sub_tabs[2]:
             conn = get_db_connection()
@@ -479,7 +533,7 @@ def afficher_module_achats(nom_departement, type_profil):
                         
                         col_v1, col_v2, col_v3 = st.columns(3)
                         
-                        # APPROUVER SÉCURISÉ (AVEC FIX CORRECTION DU BUG IMAGE 1)
+                        # APPROUVER CORRIGÉ (FLUX SANS BUG ET PASSAGE DIRECTION OBLIGATOIRE POUR LA FINANCE)
                         with col_v1:
                             if st.button(f"🟢 Approuver #{d_id}", key=f"app_{d_id}"):
                                 conn = get_db_connection()
@@ -491,19 +545,18 @@ def afficher_module_achats(nom_departement, type_profil):
                                     cursor.execute("UPDATE demandes SET avis_achats='Approuvé', etape_actuelle=?, statut=? WHERE id=?", (prochaine, st_msg, d_id))
                                 
                                 elif type_profil == "finance":
-                                    prochaine = "direction" if d_dept == "Achats & Approvisionnements" else "terminee"
-                                    if prochaine == "terminee":
-                                        cursor.execute("UPDATE demandes SET avis_finance='Approuvé', etape_actuelle='terminee', statut='Validé & Financé' WHERE id=?", (d_id,))
-                                        solde_actuel = get_valeur_globale("solde_restant")
-                                        set_valeur_globale("solde_restant", solde_actuel - float(d_montant))
-                                    else:
-                                        cursor.execute("UPDATE demandes SET avis_finance='Approuvé', etape_actuelle='direction', statut='En attente validation Direction' WHERE id=?", (d_id,))
+                                    # Correction demandée : La finance approuve mais renvoie obligatoirement à la direction pour le décaissement final !
+                                    cursor.execute("UPDATE demandes SET avis_finance='Approuvé', etape_actuelle='direction', statut='En attente validation Direction' WHERE id=?", (d_id,))
                                 
-                                else: # Direction Générale
+                                else: # Direction Générale (Seule habilitée à décaisser définitivement)
                                     cursor.execute("UPDATE demandes SET etape_actuelle='terminee', statut='Validé & Financé' WHERE id=?", (d_id,))
+                                    conn.commit()
+                                    conn.close()
                                     solde_actuel = get_valeur_globale("solde_restant")
                                     set_valeur_globale("solde_restant", solde_actuel - float(d_montant))
-                                
+                                    st.success(f"Dossier #{d_id} approuvé et décaissement effectué !")
+                                    st.rerun()
+                                    
                                 conn.commit()
                                 conn.close()
                                 st.success(f"Dossier #{d_id} approuvé !")
@@ -559,9 +612,22 @@ def afficher_zone_messages(discussion_id, nom_dept):
                 is_me = (exp == nom_dept)
                 role = "user" if is_me else "assistant"
                 avatar = "👤" if is_me else "🏢"
-                with st.chat_message(role, avatar=avatar):
-                    st.markdown(f"**{exp}** <small style='color: #8b949e;'>({dt})</small>", unsafe_allow_html=True)
-                    st.write(txt)
+                
+                c_m1, c_m2 = st.columns([5, 1])
+                with c_m1:
+                    with st.chat_message(role, avatar=avatar):
+                        st.markdown(f"**{exp}** <small style='color: #8b949e;'>({dt})</small>", unsafe_allow_html=True)
+                        st.write(txt)
+                with c_m2:
+                    if is_me:
+                        if st.button("🗑️", key=f"del_msg_{m_id}", help="Supprimer ce message"):
+                            archiver_dans_corbeille(nom_dept, "Message Chat", txt[:40], {"discussion_id": discussion_id, "date": dt})
+                            conn_del = get_db_connection()
+                            cursor_del = conn_del.cursor()
+                            cursor_del.execute("DELETE FROM messages_chat WHERE id = ?", (m_id,))
+                            conn_del.commit()
+                            conn_del.close()
+                            st.rerun()
         else:
             st.info("Discussion démarrée. Envoyez le premier message !")
     conn.close()
@@ -667,7 +733,7 @@ def afficher_module_messagerie_unifiee(nom_departement):
             conn.close()
 
 # ==========================================
-# 5. NOUVEAU MODULE : JOURNAL DE BORD QUOTIDIEN
+# 5. JOURNAL DE BORD QUOTIDIEN
 # ==========================================
 def afficher_module_journal_bord(nom_departement):
     st.subheader(f"📖 Journal de Bord Quotidien & Cahier de Notes — {nom_departement}")
@@ -675,12 +741,11 @@ def afficher_module_journal_bord(nom_departement):
     
     col_saisie, col_historique = st.columns([1.2, 1.8])
 
-    # Saisie d'une nouvelle note datée
     with col_saisie:
         st.markdown("#### ✍️ Ajouter une note")
         with st.form("form_journal_note", clear_on_submit=True):
             date_selectionnee = st.date_input("Date de l'événement", value=datetime.now())
-            note_texte = st.text_area("Note / Compte-rendu quotidien", height=140, placeholder="Ex: Début de la récolte sur la parcelle B. Problème technique résolu sur le système d'irrigation...")
+            note_texte = st.text_area("Note / Compte-rendu quotidien", height=140, placeholder="Ex: Début de la récolte sur la parcelle B...")
             auteur_nom = st.text_input("Auteur / Rédacteur", value=f"Équipe {nom_departement}")
             
             if st.form_submit_button("📘 Enregistrer dans le Journal") and note_texte:
@@ -696,7 +761,6 @@ def afficher_module_journal_bord(nom_departement):
                 st.success("Note ajoutée au journal de bord !")
                 st.rerun()
 
-    # Historique du journal
     with col_historique:
         st.markdown("#### 📜 Historique & Notes du Département")
         
@@ -707,18 +771,29 @@ def afficher_module_journal_bord(nom_departement):
         conn.close()
 
         if notes:
-            # Filtre par date optionnel
             dates_dispos = ["Toutes les dates"] + sorted(list(set(n[3] for n in notes)), reverse=True)
             filtre_d = st.selectbox("📅 Filtrer par date :", dates_dispos)
             
             for n_id, n_auteur, n_txt, n_date, n_heure in notes:
                 if filtre_d == "Toutes les dates" or filtre_d == n_date:
-                    st.markdown(f"""
-                    <div class="note-card">
-                        <div class="note-date">📅 {n_date} à {n_heure} | Par : {n_auteur}</div>
-                        <div style="margin-top: 8px; font-size: 0.95rem; color: #e6edf3;">{n_txt}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    c_n1, c_n2 = st.columns([5, 1])
+                    with c_n1:
+                        st.markdown(f"""
+                        <div class="note-card">
+                            <div class="note-date">📅 {n_date} à {n_heure} | Par : {n_auteur}</div>
+                            <div style="margin-top: 8px; font-size: 0.95rem; color: #e6edf3;">{n_txt}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    with c_n2:
+                        if st.button("🗑️", key=f"del_note_{n_id}", help="Supprimer cette note"):
+                            archiver_dans_corbeille(nom_departement, "Journal de Bord", n_txt[:40], {"date": n_date, "auteur": n_auteur})
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM journal_bord WHERE id = ?", (n_id,))
+                            conn.commit()
+                            conn.close()
+                            st.success("Note supprimée et archivée.")
+                            st.rerun()
         else:
             st.info("Aucune note enregistrée dans le journal pour le moment.")
 
@@ -764,6 +839,52 @@ def afficher_module_suivi_global_controle():
     )
 
 # ==========================================
+# 7. MODULE DIRECTION : CORBEILLE & HISTORIQUE DES SUPPRESSIONS
+# ==========================================
+def afficher_module_direction_corbeille():
+    st.subheader("🗑️ Supervisions des Éléments Supprimés (Corbeille Centralisée)")
+    st.markdown("Cet espace exclusif à la Direction Générale liste l'ensemble des éléments supprimés par les différents départements (messages, notes, demandes, études, cahiers des charges) pour des besoins d'audit et de traçabilité.")
+
+    conn = get_db_connection()
+    df_corbeille = pd.read_sql_query("SELECT * FROM corbeille_archives ORDER BY id DESC", conn)
+    conn.close()
+
+    if not df_corbeille.empty:
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            dept_c_filtre = st.selectbox("Filtrer par Département :", ["Tous"] + list(df_corbeille['departement_auteur'].unique()))
+        with col_c2:
+            type_c_filtre = st.selectbox("Filtrer par Type d'élément :", ["Tous"] + list(df_corbeille['type_element'].unique()))
+
+        df_c_filtre = df_corbeille.copy()
+        if dept_c_filtre != "Tous":
+            df_c_filtre = df_c_filtre[df_c_filtre['departement_auteur'] == dept_c_filtre]
+        if type_c_filtre != "Tous":
+            df_c_filtre = df_c_filtre[df_c_filtre['type_element'] == type_c_filtre]
+
+        for _, row in df_c_filtre.iterrows():
+            with st.expander(f"🗑️ [{row['type_element']}] - Département : {row['departement_auteur']} (Supprimé le {row['date_suppression']})"):
+                st.write(f"**Résumé / Contenu abrégé :** {row['resume']}")
+                if row['details_json']:
+                    try:
+                        details = json.loads(row['details_json'])
+                        st.json(details)
+                    except:
+                        pass
+        
+        st.markdown("---")
+        if st.button("🧹 Vider entièrement la corbeille d'archives"):
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM corbeille_archives")
+            conn.commit()
+            conn.close()
+            st.success("La corbeille a été vidée.")
+            st.rerun()
+    else:
+        st.info("Aucun élément supprimé pour l'instant.")
+
+# ==========================================
 # ROUTAGE DYNAMIQUE DES VUES
 # ==========================================
 if st.session_state.tab_actif == "1. Études & Ingénierie":
@@ -783,3 +904,6 @@ elif st.session_state.tab_actif == "📖 Journal de Bord":
 
 elif st.session_state.tab_actif == "📊 Pôle de Contrôle (Suivi Global)":
     afficher_module_suivi_global_controle()
+
+elif st.session_state.tab_actif == "🗑️ Corbeille & Historique Suppressions":
+    afficher_module_direction_corbeille()
