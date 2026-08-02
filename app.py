@@ -234,12 +234,13 @@ if nb_notifs > 0:
     </div>
     """, unsafe_allow_html=True)
 
-# Affichage des métriques budgétaires pour tous
-b_total = get_valeur_globale("budget_global")
-b_solde = get_valeur_globale("solde_restant")
-col_b1, col_b2 = str_app.columns(2)
-col_b1.metric("Budget Global Allocation", f"{b_total:,.2f} €")
-col_b2.metric("Solde Disponible", f"{b_solde:,.2f} €")
+# 🔒 RESTRICTION BUDGETAIRE : Visible uniquement par Finance (DEP13) et Fondateur (DG)
+if profil["type"] in ["finance", "fondateur"]:
+    b_total = get_valeur_globale("budget_global")
+    b_solde = get_valeur_globale("solde_restant")
+    col_b1, col_b2 = str_app.columns(2)
+    col_b1.metric("Budget Global Allocation", f"{b_total:,.2f} €")
+    col_b2.metric("Solde Disponible", f"{b_solde:,.2f} €")
 
 str_app.markdown("---")
 
@@ -424,17 +425,26 @@ def afficher_module_cahiers_charges(nom_departement):
             str_app.info("Aucun cahier des charges partagé avec votre département.")
 
 # ==========================================
-# 3. MODULE BESOINS & SUIVI (WORKFLOW ACHATS/FINANCE)
+# 3. MODULE BESOINS & SUIVI (RESTREINT SELON RÔLE)
 # ==========================================
 def afficher_module_besoins_et_suivi(nom_departement, type_profil):
-    str_app.subheader("🛒 Gestion des Demandes d'Achat & Validation Budgétaire")
+    str_app.subheader("🛒 Gestion des Demandes d'Achat")
 
-    tab_creer, tab_suivi, tab_validation = str_app.tabs([
-        "1. Émettre une Demande d'Achat", 
-        "2. Suivi de vos Demandes", 
-        "3. Espace de Validation (Achats / Finance / DG)"
-    ])
+    # 🔒 GESTION DYNAMIQUE DES SOUS-ONGLETS SELON RÔLE
+    if type_profil in ["achats", "finance", "fondateur"]:
+        tab_creer, tab_suivi, tab_validation = str_app.tabs([
+            "1. Émettre une Demande d'Achat", 
+            "2. Suivi de vos Demandes", 
+            "3. Espace de Validation"
+        ])
+    else:
+        tab_creer, tab_suivi = str_app.tabs([
+            "1. Émettre une Demande d'Achat", 
+            "2. Suivi de vos Demandes"
+        ])
+        tab_validation = None
 
+    # 1. ÉMETTRE DEMANDE
     with tab_creer:
         with str_app.form(f"form_demande_{nom_departement}", clear_on_submit=True):
             titre = str_app.text_input("Intitulé du besoin / équipement")
@@ -467,6 +477,7 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                 str_app.success("Demande transmise au Service Achats !")
                 str_app.rerun()
 
+    # 2. SUIVI DES DEMANDES
     with tab_suivi:
         conn = get_db_connection()
         df_demandes = pd.read_sql_query("SELECT * FROM demandes WHERE departement = ? ORDER BY id DESC", conn, params=(nom_departement,))
@@ -483,73 +494,73 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
         else:
             str_app.info("Aucune demande d'achat enregistrée pour votre département.")
 
-    with tab_validation:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+    # 3. ESPACE DE VALIDATION (Uniquement pour Achats / Finance / DG)
+    if tab_validation is not None:
+        with tab_validation:
+            conn = get_db_connection()
+            cursor = conn.cursor()
 
-        if type_profil == "achats":
-            str_app.markdown("### 🛒 Validations Achats")
-            cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'achats'")
-            demandes_achats = cursor.fetchall()
+            if type_profil == "achats":
+                str_app.markdown("### 🛒 Validations Achats")
+                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'achats'")
+                demandes_achats = cursor.fetchall()
 
-            if demandes_achats:
-                for d in demandes_achats:
-                    d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
-                    with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
-                        str_app.write(f"**Description :** {d_cc}")
-                        c1, c2 = str_app.columns(2)
-                        with c1:
-                            if str_app.button(f"✅ Valider & transmettre Finance #{d_id}"):
-                                cursor.execute("UPDATE demandes SET avis_achats='Favorable', etape_actuelle='finance', statut='En attente validation Finance' WHERE id=?", (d_id,))
+                if demandes_achats:
+                    for d in demandes_achats:
+                        d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
+                        with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
+                            str_app.write(f"**Description :** {d_cc}")
+                            c1, c2 = str_app.columns(2)
+                            with c1:
+                                if str_app.button(f"✅ Valider & transmettre Finance #{d_id}"):
+                                    cursor.execute("UPDATE demandes SET avis_achats='Favorable', etape_actuelle='finance', statut='En attente validation Finance' WHERE id=?", (d_id,))
+                                    conn.commit()
+                                    str_app.rerun()
+                            with c2:
+                                motif = str_app.text_input(f"Motif refus #{d_id}")
+                                if str_app.button(f"❌ Refuser #{d_id}"):
+                                    cursor.execute("UPDATE demandes SET statut='Refusé par Achats', avis_achats='Défavorable', motif_refus=? WHERE id=?", (motif, d_id))
+                                    conn.commit()
+                                    str_app.rerun()
+                else:
+                    str_app.info("Aucune demande en attente côté Achats.")
+
+            elif type_profil == "finance":
+                str_app.markdown("### 💶 Validations Finance")
+                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'finance'")
+                demandes_fin = cursor.fetchall()
+
+                if demandes_fin:
+                    for d in demandes_fin:
+                        d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
+                        with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
+                            if str_app.button(f"✅ Approuver Financement #{d_id}"):
+                                cursor.execute("UPDATE demandes SET avis_finance='Favorable', etape_actuelle='fondateur', statut='En attente arbitrage Direction' WHERE id=?", (d_id,))
                                 conn.commit()
                                 str_app.rerun()
-                        with c2:
-                            motif = str_app.text_input(f"Motif refus #{d_id}")
-                            if str_app.button(f"❌ Refuser #{d_id}"):
-                                cursor.execute("UPDATE demandes SET statut='Refusé par Achats', avis_achats='Défavorable', motif_refus=? WHERE id=?", (motif, d_id))
+                else:
+                    str_app.info("Aucune demande en attente côté Finance.")
+
+            elif type_profil == "fondateur":
+                str_app.markdown("### 👑 Validations Stratégiques Direction Générale")
+                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'fondateur'")
+                demandes_dg = cursor.fetchall()
+
+                if demandes_dg:
+                    for d in demandes_dg:
+                        d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
+                        with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
+                            if str_app.button(f"🎉 APPROUVER ET LIBÉRER FONDS #{d_id}"):
+                                solde = get_valeur_globale("solde_restant")
+                                set_valeur_globale("solde_restant", solde - d_montant)
+                                cursor.execute("UPDATE demandes SET statut='Validé & Financé', etape_actuelle='termine' WHERE id=?", (d_id,))
                                 conn.commit()
+                                ajouter_log("Validation DG", "Direction Générale", f"Validation finale demande #{d_id}")
                                 str_app.rerun()
-            else:
-                str_app.info("Aucune demande en attente côté Achats.")
-
-        elif type_profil == "finance":
-            str_app.markdown("### 💶 Validations Finance")
-            cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'finance'")
-            demandes_fin = cursor.fetchall()
-
-            if demandes_fin:
-                for d in demandes_fin:
-                    d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
-                    with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
-                        if str_app.button(f"✅ Approuver Financement #{d_id}"):
-                            cursor.execute("UPDATE demandes SET avis_finance='Favorable', etape_actuelle='fondateur', statut='En attente arbitrage Direction' WHERE id=?", (d_id,))
-                            conn.commit()
-                            str_app.rerun()
-            else:
-                str_app.info("Aucune demande en attente côté Finance.")
-
-        elif type_profil == "fondateur":
-            str_app.markdown("### 👑 Validations Stratégiques Direction Générale")
-            cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'fondateur'")
-            demandes_dg = cursor.fetchall()
-
-            if demandes_dg:
-                for d in demandes_dg:
-                    d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
-                    with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
-                        if str_app.button(f"🎉 APPROUVER ET LIBÉRER FONDS #{d_id}"):
-                            solde = get_valeur_globale("solde_restant")
-                            set_valeur_globale("solde_restant", solde - d_montant)
-                            cursor.execute("UPDATE demandes SET statut='Validé & Financé', etape_actuelle='termine' WHERE id=?", (d_id,))
-                            conn.commit()
-                            ajouter_log("Validation DG", "Direction Générale", f"Validation finale demande #{d_id}")
-                            str_app.rerun()
-            else:
-                str_app.info("Aucun arbitrage requis au niveau Direction.")
-        else:
-            str_app.info("Seuls les départements Achats, Finance et la Direction Générale gèrent cet espace.")
-        
-        conn.close()
+                else:
+                    str_app.info("Aucun arbitrage requis au niveau Direction.")
+            
+            conn.close()
 
 # ==========================================
 # 4. MODULE MESSAGERIE & CHAT TEAMS
