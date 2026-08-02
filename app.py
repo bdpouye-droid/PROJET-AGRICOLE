@@ -2,8 +2,6 @@ import sqlite3
 import json
 import os
 from datetime import datetime
-from io import BytesIO
-
 import pandas as pd
 import streamlit as str_app
 from streamlit_autorefresh import st_autorefresh
@@ -38,9 +36,6 @@ str_app.markdown("""
         border-radius: 6px; border: 1px solid #30363d; background-color: #161b22; color: #c9d1d9; white-space: pre-wrap;
     }
     div[data-testid="stMetricValue"] { font-size: 1.6rem; font-weight: 700; }
-    .badge-vert { background-color: #238636; color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.85rem; font-weight: 600; }
-    .badge-orange { background-color: #9e6a03; color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.85rem; font-weight: 600; }
-    .badge-rouge { background-color: #da3633; color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.85rem; font-weight: 600; }
     .badge-notification { background-color: #f85149; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
@@ -69,14 +64,8 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS cahiers_charges (
         id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, titre TEXT, contenu TEXT, date TEXT, destinataires_avis TEXT
     )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS messages_coordination (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, auteur TEXT, texte TEXT, date TEXT
-    )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_directs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, expediteur TEXT, destinataire TEXT, texte TEXT, date TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS journaux_bord (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, titre TEXT, texte TEXT, auteur TEXT, date TEXT
     )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS logs_audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, acteur TEXT, action TEXT, details TEXT
@@ -138,7 +127,7 @@ UTILISATEURS = {
     "fondateur": {"nom": "Direction Générale - Pilotage Stratégique", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
 }
 
-# --- BARRE LATÉRALE DE CONNEXION ---
+# --- BARRE LATÉRALE ---
 if os.path.exists(CHEMIN_LOGO):
     str_app.sidebar.image(CHEMIN_LOGO, use_column_width=True)
 else:
@@ -177,9 +166,7 @@ else:
             cursor.execute("DELETE FROM etudes_metier")
             cursor.execute("DELETE FROM commentaires_etudes")
             cursor.execute("DELETE FROM cahiers_charges")
-            cursor.execute("DELETE FROM messages_coordination")
             cursor.execute("DELETE FROM messages_directs")
-            cursor.execute("DELETE FROM journaux_bord")
             cursor.execute("DELETE FROM logs_audit")
             conn.commit()
             conn.close()
@@ -233,7 +220,6 @@ if nb_notifs > 0:
     </div>
     """, unsafe_allow_html=True)
 
-# 🔒 RESTRICTION BUDGETAIRE : Visible uniquement par Finance (DEP13) et Fondateur (DG)
 if profil["type"] in ["finance", "fondateur"]:
     b_total = get_valeur_globale("budget_global")
     b_solde = get_valeur_globale("solde_restant")
@@ -244,42 +230,26 @@ if profil["type"] in ["finance", "fondateur"]:
 str_app.markdown("---")
 
 # ==========================================
-# 1. MODULE INGÉNIERIE & ÉTUDES MÉTIER (AVEC HISTORIQUE & TRAÇABILITÉ)
+# 1. MODULE INGÉNIERIE & ÉTUDES MÉTIER
 # ==========================================
 def afficher_module_specifique_metier(nom_departement, type_profil):
     str_app.subheader(f"⚙️ Centre d'Ingénierie & Traçabilité des Études — {nom_departement}")
-    
     tous_les_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
     
-    # Onglets d'ingénierie
     tab_creer, tab_consulter, tab_historique = str_app.tabs([
         "1. Nouvelle Étude & Partage", 
         "2. Études Reçues des Autres Départements",
         "3. 📜 Traçabilité & Historique de vos Études"
     ])
     
-    # 1. CRÉER UNE ÉTUDE
     with tab_creer:
         with str_app.form(f"form_etude_{nom_departement}", clear_on_submit=True):
             titre_etude = str_app.text_input("Intitulé de l'étude / Projet technique")
-            
             champs_specifiques = {}
             if nom_departement == "Agriculture":
                 champs_specifiques["culture"] = str_app.text_input("Type de culture / Spéculation")
                 champs_specifiques["surface"] = str_app.number_input("Surface prévisionnelle (ha)", min_value=0.0, step=10.0)
                 champs_specifiques["details"] = str_app.text_area("Paramètres pédologiques et contraintes climatiques")
-            elif nom_departement == "Élevage & Halieutique":
-                champs_specifiques["filiere"] = str_app.selectbox("Filière", ["Bovins", "Petits Ruminants", "Aviculture", "Aquaculture / Halieutique"])
-                champs_specifiques["effectif"] = str_app.number_input("Effectif cible / Volume", min_value=1, step=10)
-                champs_specifiques["details"] = str_app.text_area("Spécifications nutritionnelles et infrastructures")
-            elif nom_departement == "Ressources Humaines & RSE":
-                champs_specifiques["poste"] = str_app.text_input("Profils et compétences recherchés")
-                champs_specifiques["etp"] = str_app.number_input("Nombre d'ETP prévisionnels", min_value=1, step=1)
-                champs_specifiques["details"] = str_app.text_area("Plan d'intégration locale et critères RSE")
-            elif nom_departement == "Logistique":
-                champs_specifiques["article"] = str_app.text_input("Référence article / Stock ou matériel")
-                champs_specifiques["stock_actuel"] = str_app.number_input("Capacité / Stock initial", min_value=0.0, step=10.0)
-                champs_specifiques["details"] = str_app.text_area("Spécifications d'entreposage et flux")
             else:
                 champs_specifiques["details"] = str_app.text_area("Spécifications et notes d'ingénierie générale")
 
@@ -310,7 +280,6 @@ def afficher_module_specifique_metier(nom_departement, type_profil):
                 str_app.success("Étude enregistrée et diffusée avec succès !")
                 str_app.rerun()
 
-    # 2. ÉTUDES REÇUES
     with tab_consulter:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -318,11 +287,7 @@ def afficher_module_specifique_metier(nom_departement, type_profil):
         toutes_etudes = cursor.fetchall()
         conn.close()
         
-        etudes_recues = []
-        for e in toutes_etudes:
-            destinataires = json.loads(e[5]) if e[5] else []
-            if nom_departement in destinataires or type_profil == "fondateur":
-                etudes_recues.append(e)
+        etudes_recues = [e for e in toutes_etudes if nom_departement in (json.loads(e[5]) if e[5] else []) or type_profil == "fondateur"]
 
         if etudes_recues:
             for e in etudes_recues:
@@ -332,52 +297,21 @@ def afficher_module_specifique_metier(nom_departement, type_profil):
                 with str_app.expander(f"📁 [{e_dept}] {e_titre} ({e_date})"):
                     for k, v in data_dict.items():
                         str_app.write(f"**{k.capitalize()} :** {v}")
-                    
                     if e_fich:
                         chemin_f = os.path.join(DOSSIER_ETUDES, e_fich)
                         if os.path.exists(chemin_f):
                             with open(chemin_f, "rb") as file_download:
                                 str_app.download_button("📥 Télécharger le fichier technique joint", data=file_download, file_name=e_fich, key=f"dl_etude_recu_{e_id}")
-                    
-                    str_app.markdown("---")
-                    str_app.markdown("#### 💬 Avis techniques et commentaires")
-                    
-                    conn_c = get_db_connection()
-                    cursor_c = conn_c.cursor()
-                    cursor_c.execute("SELECT auteur, commentaire, date FROM commentaires_etudes WHERE etude_id = ? ORDER BY id ASC", (e_id,))
-                    commentaires_liste = cursor_c.fetchall()
-                    conn_c.close()
-                    
-                    if commentaires_liste:
-                        for comm in commentaires_liste:
-                            str_app.markdown(f"**{comm[0]}** ({comm[2]}) : {comm[1]}")
-                    
-                    with str_app.form(f"form_comm_{e_id}_{nom_departement}", clear_on_submit=True):
-                        nouveau_comm = str_app.text_input("Ajouter une observation")
-                        if str_app.form_submit_button("Publier l'avis") and nouveau_comm:
-                            conn_in = get_db_connection()
-                            cursor_in = conn_in.cursor()
-                            cursor_in.execute(
-                                "INSERT INTO commentaires_etudes (etude_id, auteur, commentaire, date) VALUES (?, ?, ?, ?)",
-                                (e_id, nom_departement, nouveau_comm, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                            )
-                            conn_in.commit()
-                            conn_in.close()
-                            str_app.rerun()
         else:
             str_app.info("Aucune étude partagée directement avec votre département.")
 
-    # 3. HISTORIQUE & TRAÇABILITÉ DES ÉTUDES ÉMISES
     with tab_historique:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # La DG a accès à TOUTES les études créées dans la boîte, les autres voient LEURS études créées
         if type_profil == "fondateur":
             cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date FROM etudes_metier ORDER BY id DESC")
         else:
             cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date FROM etudes_metier WHERE departement = ? ORDER BY id DESC", (nom_departement,))
-            
         mes_etudes = cursor.fetchall()
         conn.close()
 
@@ -386,48 +320,34 @@ def afficher_module_specifique_metier(nom_departement, type_profil):
                 e_id, e_dept, e_titre, e_json, e_fich, e_dest, e_date = e
                 data_dict = json.loads(e_json) if e_json else {}
                 dests_list = json.loads(e_dest) if e_dest else []
-                
                 prefixe_dept = f"[{e_dept}] " if type_profil == "fondateur" else ""
 
                 with str_app.expander(f"📜 {prefixe_dept}{e_titre} — Déposé le {e_date}"):
-                    str_app.markdown(f"**Partagé avec :** {', '.join(dests_list) if dests_list else 'Aucun département sélectionné'}")
-                    
-                    str_app.markdown("##### 📌 Détails du contenu :")
+                    str_app.markdown(f"**Partagé avec :** {', '.join(dests_list) if dests_list else 'Aucun'}")
                     for k, v in data_dict.items():
                         str_app.write(f"• **{k.capitalize()} :** {v}")
-                    
                     if e_fich:
                         chemin_f = os.path.join(DOSSIER_ETUDES, e_fich)
                         if os.path.exists(chemin_f):
                             with open(chemin_f, "rb") as file_download:
                                 str_app.download_button("📥 Télécharger le fichier original joint", data=file_download, file_name=e_fich, key=f"dl_etude_hist_{e_id}")
-                    
-                    str_app.markdown("---")
-                    str_app.markdown("##### 💬 Retours et avis reçus des départements :")
-                    
-                    conn_c = get_db_connection()
-                    cursor_c = conn_c.cursor()
-                    cursor_c.execute("SELECT auteur, commentaire, date FROM commentaires_etudes WHERE etude_id = ? ORDER BY id ASC", (e_id,))
-                    retours = cursor_c.fetchall()
-                    conn_c.close()
-                    
-                    if retours:
-                        for r in retours:
-                            str_app.markdown(f"💬 **{r[0]}** ({r[2]}) : *{r[1]}*")
-                    else:
-                        str_app.caption("Aucun commentaire ou avis reçu pour le moment.")
         else:
-            str_app.info("Aucune étude enregistrée dans l'historique pour l'instant.")
+            str_app.info("Aucune étude enregistrée dans l'historique.")
 
 # ==========================================
-# 2. MODULE CAHIERS DES CHARGES
+# 2. MODULE CAHIERS DES CHARGES (AVEC HISTORIQUE / TRAÇABILITÉ)
 # ==========================================
-def afficher_module_cahiers_charges(nom_departement):
+def afficher_module_cahiers_charges(nom_departement, type_profil):
     str_app.subheader("📋 Cahiers des Charges & Documents Partagés")
     tous_les_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
 
-    tab_nouveau, tab_consultation = str_app.tabs(["1. Créer / Déposer un Cahier des Charges", "2. Documents reçus pour avis"])
+    tab_nouveau, tab_consultation, tab_historique_cdc = str_app.tabs([
+        "1. Créer / Déposer un Cahier des Charges", 
+        "2. Documents reçus des autres pôles",
+        "3. 📜 Traçabilité des Cahiers des Charges Émis"
+    ])
 
+    # 1. NOUVEAU CDC
     with tab_nouveau:
         with str_app.form(f"form_cdc_{nom_departement}", clear_on_submit=True):
             titre_cdc = str_app.text_input("Intitulé du document / Cahier des charges")
@@ -457,6 +377,7 @@ def afficher_module_cahiers_charges(nom_departement):
                 str_app.success("Document enregistré et diffusé !")
                 str_app.rerun()
 
+    # 2. CDC REÇUS
     with tab_consultation:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -464,7 +385,7 @@ def afficher_module_cahiers_charges(nom_departement):
         tous_cdc = cursor.fetchall()
         conn.close()
 
-        cdc_recus = [c for c in tous_cdc if nom_departement in (json.loads(c[5]) if c[5] else [])]
+        cdc_recus = [c for c in tous_cdc if nom_departement in (json.loads(c[5]) if c[5] else []) or type_profil == "fondateur"]
 
         if cdc_recus:
             for c in cdc_recus:
@@ -479,17 +400,48 @@ def afficher_module_cahiers_charges(nom_departement):
                         chemin_f = os.path.join(DOSSIER_UPLOADS, fichier_joint)
                         if os.path.exists(chemin_f):
                             with open(chemin_f, "rb") as fj:
-                                str_app.download_button("📥 Télécharger la pièce jointe / devis", data=fj, file_name=fichier_joint, key=f"dl_cdc_{c_id}")
+                                str_app.download_button("📥 Télécharger la pièce jointe / devis", data=fj, file_name=fichier_joint, key=f"dl_cdc_recu_{c_id}")
         else:
             str_app.info("Aucun cahier des charges partagé avec votre département.")
 
+    # 3. AMÉLIORATION 1 : HISTORIQUE ET TRAÇABILITÉ DES CDC ÉMIS
+    with tab_historique_cdc:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if type_profil == "fondateur":
+            cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis FROM cahiers_charges ORDER BY id DESC")
+        else:
+            cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis FROM cahiers_charges WHERE departement = ? ORDER BY id DESC", (nom_departement,))
+        mes_cdc = cursor.fetchall()
+        conn.close()
+
+        if mes_cdc:
+            for c in mes_cdc:
+                c_id, c_dept, c_titre_complet, c_txt, c_date, c_dest = c
+                parts = c_titre_complet.split("||")
+                vrai_titre = parts[0]
+                fichier_joint = parts[1] if len(parts) > 1 else ""
+                dests_list = json.loads(c_dest) if c_dest else []
+                prefixe = f"[{c_dept}] " if type_profil == "fondateur" else ""
+
+                with str_app.expander(f"📜 {prefixe}{vrai_titre} — Diffusé le {c_date}"):
+                    str_app.markdown(f"**Envoyé à :** {', '.join(dests_list) if dests_list else 'Aucun'}")
+                    str_app.markdown("##### 📌 Contenu du document :")
+                    str_app.write(c_txt)
+                    if fichier_joint:
+                        chemin_f = os.path.join(DOSSIER_UPLOADS, fichier_joint)
+                        if os.path.exists(chemin_f):
+                            with open(chemin_f, "rb") as fj:
+                                str_app.download_button("📥 Télécharger le fichier joint original", data=fj, file_name=fichier_joint, key=f"dl_cdc_hist_{c_id}")
+        else:
+            str_app.info("Aucun cahier des charges émis pour le moment.")
+
 # ==========================================
-# 3. MODULE BESOINS & SUIVI (RESTREINT SELON RÔLE)
+# 3. MODULE BESOINS & SUIVI (AVEC WORKFLOW ACHATS DIRECT FINANCE & DÉTAILS VISIBLES)
 # ==========================================
 def afficher_module_besoins_et_suivi(nom_departement, type_profil):
     str_app.subheader("🛒 Gestion des Demandes d'Achat")
 
-    # 🔒 GESTION DYNAMIQUE DES SOUS-ONGLETS SELON RÔLE
     if type_profil in ["achats", "finance", "fondateur"]:
         tab_creer, tab_suivi, tab_validation = str_app.tabs([
             "1. Émettre une Demande d'Achat", 
@@ -503,14 +455,14 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
         ])
         tab_validation = None
 
-    # 1. ÉMETTRE DEMANDE
+    # 1. ÉMETTRE DEMANDE (AMÉLIORATION 3 : WORKFLOW DIRECT POUR LE DÉPARTEMENT ACHATS)
     with tab_creer:
         with str_app.form(f"form_demande_{nom_departement}", clear_on_submit=True):
             titre = str_app.text_input("Intitulé du besoin / équipement")
-            cahier_charges = str_app.text_area("Description synthétique de la demande")
+            cahier_charges = str_app.text_area("Description synthétique / Contenu de la demande")
             montant = str_app.number_input("Montant estimé ou devis (€)", min_value=0.0, step=100.0)
             fournisseur = str_app.text_input("Fournisseur pressenti (Optionnel)")
-            fichier_devis = str_app.file_uploader("📎 Devis officiel joint (PDF/Image)", type=["pdf", "png", "jpg", "jpeg", "xlsx"])
+            fichier_devis = str_app.file_uploader("📎 Devis officiel joint (PDF/Image/Excel)", type=["pdf", "png", "jpg", "jpeg", "xlsx"])
 
             if str_app.form_submit_button("🚀 Soumettre la demande d'achat") and titre and montant > 0:
                 nom_devis = ""
@@ -519,6 +471,17 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                     with open(os.path.join(DOSSIER_UPLOADS, nom_devis), "wb") as f:
                         f.write(fichier_devis.getbuffer())
 
+                # Détermination du circuit selon l'émetteur
+                if type_profil == "achats":
+                    # Si c'est le pôle Achats qui émet, il valide automatiquement son étape
+                    etape_initiale = "finance"
+                    statut_initial = "En attente validation Finance"
+                    avis_achats_init = "Auto-validé (Émis par Achats)"
+                else:
+                    etape_initiale = "achats"
+                    statut_initial = "En attente validation Achats"
+                    avis_achats_init = "En attente"
+
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -526,14 +489,17 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     nom_departement, titre, cahier_charges, montant, fournisseur,
-                    "En attente validation Achats", "achats", "En attente", "En attente", "",
+                    statut_initial, etape_initiale, avis_achats_init, "En attente", "",
                     datetime.now().strftime("%Y-%m-%d %H:%M"), nom_devis
                 ))
                 conn.commit()
                 conn.close()
 
                 ajouter_log("Demande Achat", nom_departement, f"Demande créée : {titre} - {montant}€")
-                str_app.success("Demande transmise au Service Achats !")
+                if type_profil == "achats":
+                    str_app.success("Demande créée et transmise DIRECTEMENT au Service Finance !")
+                else:
+                    str_app.success("Demande transmise au Service Achats !")
                 str_app.rerun()
 
     # 2. SUIVI DES DEMANDES
@@ -546,18 +512,37 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
             for _, row in df_demandes.iterrows():
                 with str_app.expander(f"📌 #{row['id']} - {row['titre']} ({row['montant']} €)"):
                     str_app.write(f"**Statut actuel :** {row['statut']}")
-                    str_app.write(f"**Description :** {row['cahier_charges']}")
+                    str_app.write(f"**Contenu / Description :** {row['cahier_charges']}")
+                    str_app.write(f"**Fournisseur :** {row['fournisseur']}")
                     str_app.write(f"**Avis Achats :** {row['avis_achats']} | **Avis Finance :** {row['avis_finance']}")
+                    if row['fichier_devis']:
+                        chemin_d = os.path.join(DOSSIER_UPLOADS, row['fichier_devis'])
+                        if os.path.exists(chemin_d):
+                            with open(chemin_d, "rb") as fd:
+                                str_app.download_button("📥 Consulter le devis joint", data=fd, file_name=row['fichier_devis'], key=f"dl_suivi_{row['id']}")
                     if row['motif_refus']:
                         str_app.error(f"Motif du refus : {row['motif_refus']}")
         else:
             str_app.info("Aucune demande d'achat enregistrée pour votre département.")
 
-    # 3. ESPACE DE VALIDATION (Uniquement pour Achats / Finance / DG)
+    # 3. ESPACE DE VALIDATION (AMÉLIORATION 2 : AFFICHAGE DU CONTENU DE LA DEMANDE)
     if tab_validation is not None:
         with tab_validation:
             conn = get_db_connection()
             cursor = conn.cursor()
+
+            def afficher_details_demande_et_devis(d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich):
+                str_app.markdown(f"#### 📄 Demande #{d_id} : {d_titre} — Montant : **{d_montant:,.2f} €**")
+                str_app.markdown(f"• **Département Émetteur :** {d_dept}")
+                str_app.markdown(f"• **Fournisseur pressenti :** {d_fourn if d_fourn else 'Non spécifié'}")
+                str_app.markdown("##### 📝 Contenu détaillé du besoin :")
+                str_app.info(d_cc if d_cc else "Aucune description complémentaire fournie.")
+                
+                if d_fich:
+                    chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
+                    if os.path.exists(chemin_f):
+                        with open(chemin_f, "rb") as fd:
+                            str_app.download_button("📥 Télécharger / Consulter la pièce jointe (Devis)", data=fd, file_name=d_fich, key=f"dl_val_{d_id}")
 
             if type_profil == "achats":
                 str_app.markdown("### 🛒 Validations Achats")
@@ -567,8 +552,9 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                 if demandes_achats:
                     for d in demandes_achats:
                         d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
-                        with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
-                            str_app.write(f"**Description :** {d_cc}")
+                        with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant:,.2f} €)"):
+                            afficher_details_demande_et_devis(d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich)
+                            str_app.markdown("---")
                             c1, c2 = str_app.columns(2)
                             with c1:
                                 if str_app.button(f"✅ Valider & transmettre Finance #{d_id}"):
@@ -592,7 +578,10 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                 if demandes_fin:
                     for d in demandes_fin:
                         d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
-                        with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
+                        with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant:,.2f} €)"):
+                            afficher_details_demande_et_devis(d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich)
+                            str_app.markdown(f"**Avis Achats :** `{d_achats}`")
+                            str_app.markdown("---")
                             if str_app.button(f"✅ Approuver Financement #{d_id}"):
                                 cursor.execute("UPDATE demandes SET avis_finance='Favorable', etape_actuelle='fondateur', statut='En attente arbitrage Direction' WHERE id=?", (d_id,))
                                 conn.commit()
@@ -608,7 +597,10 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                 if demandes_dg:
                     for d in demandes_dg:
                         d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
-                        with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
+                        with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant:,.2f} €)"):
+                            afficher_details_demande_et_devis(d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich)
+                            str_app.markdown(f"**Avis Achats :** `{d_achats}` | **Avis Finance :** `{d_fin}`")
+                            str_app.markdown("---")
                             if str_app.button(f"🎉 APPROUVER ET LIBÉRER FONDS #{d_id}"):
                                 solde = get_valeur_globale("solde_restant")
                                 set_valeur_globale("solde_restant", solde - d_montant)
@@ -622,7 +614,7 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
             conn.close()
 
 # ==========================================
-# 4. MODULE MESSAGERIE & CHAT TEAMS
+# 4. MODULE MESSAGERIE & CHAT
 # ==========================================
 def afficher_module_messagerie_directe(nom_departement):
     str_app.subheader("📬 Messagerie Directe & Discussion Privée")
@@ -712,7 +704,7 @@ with tabs_navigation[0]:
     afficher_module_specifique_metier(nom_dept, profil["type"])
 
 with tabs_navigation[1]:
-    afficher_module_cahiers_charges(nom_dept)
+    afficher_module_cahiers_charges(nom_dept, profil["type"])
 
 with tabs_navigation[2]:
     afficher_module_besoins_et_suivi(nom_dept, profil["type"])
