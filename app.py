@@ -21,7 +21,7 @@ os.makedirs(DOSSIER_ETUDES, exist_ok=True)
 
 CHEMIN_LOGO = "logo.png"
 
-# --- STYLE CSS DESIGN & CORPORATE ---
+# --- STYLE CSS DESIGN CORPORATE & TEAMS ---
 str_app.markdown("""
     <style>
     .stApp { background-color: #0e1117; }
@@ -37,6 +37,17 @@ str_app.markdown("""
     }
     div[data-testid="stMetricValue"] { font-size: 1.6rem; font-weight: 700; }
     .badge-notification { background-color: #f85149; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: bold; }
+    
+    /* TEAMS CHAT DESIGN STYLES */
+    .chat-bubble-me {
+        background-color: #5b5fc7; color: #ffffff; padding: 10px 14px; border-radius: 12px 12px 2px 12px; margin-bottom: 6px; max-width: 80%; display: inline-block;
+    }
+    .chat-bubble-other {
+        background-color: #292d3e; color: #e6edf3; padding: 10px 14px; border-radius: 12px 12px 12px 2px; margin-bottom: 6px; max-width: 80%; border: 1px solid #3b4252; display: inline-block;
+    }
+    .chat-avatar {
+        width: 32px; height: 32px; border-radius: 50%; background-color: #464b5d; color: white; text-align: center; line-height: 32px; font-weight: bold; margin-right: 8px; display: inline-block; font-size: 0.85rem;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -52,7 +63,7 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS demandes (
         id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, titre TEXT, cahier_charges TEXT,
         montant REAL, fournisseur TEXT, statut TEXT, etape_actuelle TEXT, avis_achats TEXT,
-        avis_finance TEXT, motif_refus TEXT, date TEXT, fichier_devis TEXT
+        avis_finance TEXT, motif_refus TEXT, date TEXT, fichier_devis TEXT, retour_remarque TEXT
     )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS etudes_metier (
         id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, titre TEXT, donnees_json TEXT,
@@ -65,7 +76,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, departement TEXT, titre TEXT, contenu TEXT, date TEXT, destinataires_avis TEXT
     )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_directs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, expediteur TEXT, destinataire TEXT, texte TEXT, date TEXT
+        id INTEGER PRIMARY KEY AUTOINCREMENT, expediteur TEXT, destinataire TEXT, texte TEXT, date TEXT, type_envoi TEXT DEFAULT 'direct'
     )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS logs_audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, acteur TEXT, action TEXT, details TEXT
@@ -206,7 +217,12 @@ def compter_notifications_actives(dept_nom, type_profil):
         cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'fondateur'")
         res_dg = cursor.fetchone()
         if res_dg: total_notifs += res_dg[0]
-        
+
+    # Notifications pour les retours/modifications adressés au département émetteur
+    cursor.execute("SELECT COUNT(*) FROM demandes WHERE departement = ? AND (etape_actuelle = 'emetteur_retour' OR etape_actuelle = 'achats_retour')", (dept_nom,))
+    res_retours = cursor.fetchone()
+    if res_retours: total_notifs += res_retours[0]
+
     conn.close()
     return total_notifs
 
@@ -335,7 +351,7 @@ def afficher_module_specifique_metier(nom_departement, type_profil):
             str_app.info("Aucune étude enregistrée dans l'historique.")
 
 # ==========================================
-# 2. MODULE CAHIERS DES CHARGES (AVEC HISTORIQUE / TRAÇABILITÉ)
+# 2. MODULE CAHIERS DES CHARGES
 # ==========================================
 def afficher_module_cahiers_charges(nom_departement, type_profil):
     str_app.subheader("📋 Cahiers des Charges & Documents Partagés")
@@ -347,7 +363,6 @@ def afficher_module_cahiers_charges(nom_departement, type_profil):
         "3. 📜 Traçabilité des Cahiers des Charges Émis"
     ])
 
-    # 1. NOUVEAU CDC
     with tab_nouveau:
         with str_app.form(f"form_cdc_{nom_departement}", clear_on_submit=True):
             titre_cdc = str_app.text_input("Intitulé du document / Cahier des charges")
@@ -377,7 +392,6 @@ def afficher_module_cahiers_charges(nom_departement, type_profil):
                 str_app.success("Document enregistré et diffusé !")
                 str_app.rerun()
 
-    # 2. CDC REÇUS
     with tab_consultation:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -404,7 +418,6 @@ def afficher_module_cahiers_charges(nom_departement, type_profil):
         else:
             str_app.info("Aucun cahier des charges partagé avec votre département.")
 
-    # 3. AMÉLIORATION 1 : HISTORIQUE ET TRAÇABILITÉ DES CDC ÉMIS
     with tab_historique_cdc:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -437,7 +450,7 @@ def afficher_module_cahiers_charges(nom_departement, type_profil):
             str_app.info("Aucun cahier des charges émis pour le moment.")
 
 # ==========================================
-# 3. MODULE BESOINS & SUIVI (AVEC WORKFLOW ACHATS DIRECT FINANCE & DÉTAILS VISIBLES)
+# 3. MODULE BESOINS & SUIVI (AVEC WORKFLOW COMPLET & RENVOI POUR MODIFICATION)
 # ==========================================
 def afficher_module_besoins_et_suivi(nom_departement, type_profil):
     str_app.subheader("🛒 Gestion des Demandes d'Achat")
@@ -455,8 +468,60 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
         ])
         tab_validation = None
 
-    # 1. ÉMETTRE DEMANDE (AMÉLIORATION 3 : WORKFLOW DIRECT POUR LE DÉPARTEMENT ACHATS)
+    # 1. ÉMETTRE OU MODIFIER UNE DEMANDE
     with tab_creer:
+        # Traitement spécial si des demandes sont renvoyées pour correction à cet émetteur ou aux achats
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if type_profil == "achats":
+            cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'achats_retour'")
+        else:
+            cursor.execute("SELECT * FROM demandes WHERE departement = ? AND etape_actuelle = 'emetteur_retour'", (nom_departement,))
+        demandes_a_corriger = cursor.fetchall()
+        conn.close()
+
+        if demandes_a_corriger:
+            str_app.warning("⚠️ Vous avez des demandes nécessitant une correction ou un ajustement suite à un retour de la Finance / DG !")
+            for d in demandes_a_corriger:
+                d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_ach, d_fin, d_refus, d_date, d_fich, d_retour = d
+                with str_app.expander(f"🔴 Action Requise sur Demande #{d_id} : {d_titre}", expanded=True):
+                    str_app.error(f"💬 Remarques du pôle de contrôle : {d_retour}")
+                    
+                    with str_app.form(f"form_corriger_{d_id}"):
+                        nouveau_titre = str_app.text_input("Titre", value=d_titre)
+                        nouveau_cc = str_app.text_area("Contenu révisé", value=d_cc)
+                        nouveau_montant = str_app.number_input("Montant ajusté (€)", value=float(d_montant))
+                        nouveau_fourn = str_app.text_input("Fournisseur", value=d_fourn if d_fourn else "")
+                        nouveau_devis = str_app.file_uploader("Nouveau Devis (Optionnel)", type=["pdf", "png", "jpg", "xlsx"])
+
+                        if str_app.form_submit_button("🔄 Renvoyer la demande corrigée"):
+                            nom_d_fich = d_fich
+                            if nouveau_devis is not None:
+                                nom_d_fich = f"devis_rev_{datetime.now().strftime('%Y%m%d%H%M%S')}_{nouveau_devis.name}"
+                                with open(os.path.join(DOSSIER_UPLOADS, nom_d_fich), "wb") as f:
+                                    f.write(nouveau_devis.getbuffer())
+
+                            conn_u = get_db_connection()
+                            cur_u = conn_u.cursor()
+                            
+                            # Si c'est renvoyé par l'émetteur -> repart chez Achats (ou directement Finance si émis par Achats)
+                            prochaine_etape = "finance" if type_profil == "achats" else "achats"
+                            nouveau_statut = "En attente validation Finance (Corrigé)" if type_profil == "achats" else "En attente validation Achats (Corrigé)"
+
+                            cur_u.execute("""
+                                UPDATE demandes SET titre=?, cahier_charges=?, montant=?, fournisseur=?, fichier_devis=?, etape_actuelle=?, statut=? WHERE id=?
+                            """, (nouveau_titre, nouveau_cc, nouveau_montant, nouveau_fourn, nom_d_fich, prochaine_etape, nouveau_statut, d_id))
+                            conn_u.commit()
+                            conn_u.close()
+                            
+                            ajouter_log("Correction Demande", nom_departement, f"Demande #{d_id} corrigée et renvoyée")
+                            str_app.success("Demande révisée et remise dans le circuit de validation !")
+                            str_app.rerun()
+
+            str_app.markdown("---")
+
+        str_app.markdown("### Émettre une nouvelle Demande d'Achat")
         with str_app.form(f"form_demande_{nom_departement}", clear_on_submit=True):
             titre = str_app.text_input("Intitulé du besoin / équipement")
             cahier_charges = str_app.text_area("Description synthétique / Contenu de la demande")
@@ -471,9 +536,7 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                     with open(os.path.join(DOSSIER_UPLOADS, nom_devis), "wb") as f:
                         f.write(fichier_devis.getbuffer())
 
-                # Détermination du circuit selon l'émetteur
                 if type_profil == "achats":
-                    # Si c'est le pôle Achats qui émet, il valide automatiquement son étape
                     etape_initiale = "finance"
                     statut_initial = "En attente validation Finance"
                     avis_achats_init = "Auto-validé (Émis par Achats)"
@@ -485,21 +548,18 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     nom_departement, titre, cahier_charges, montant, fournisseur,
                     statut_initial, etape_initiale, avis_achats_init, "En attente", "",
-                    datetime.now().strftime("%Y-%m-%d %H:%M"), nom_devis
+                    datetime.now().strftime("%Y-%m-%d %H:%M"), nom_devis, ""
                 ))
                 conn.commit()
                 conn.close()
 
                 ajouter_log("Demande Achat", nom_departement, f"Demande créée : {titre} - {montant}€")
-                if type_profil == "achats":
-                    str_app.success("Demande créée et transmise DIRECTEMENT au Service Finance !")
-                else:
-                    str_app.success("Demande transmise au Service Achats !")
+                str_app.success("Demande soumise avec succès !")
                 str_app.rerun()
 
     # 2. SUIVI DES DEMANDES
@@ -520,12 +580,14 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                         if os.path.exists(chemin_d):
                             with open(chemin_d, "rb") as fd:
                                 str_app.download_button("📥 Consulter le devis joint", data=fd, file_name=row['fichier_devis'], key=f"dl_suivi_{row['id']}")
+                    if row['retour_remarque']:
+                        str_app.warning(f"💬 Demande de modification reçue : {row['retour_remarque']}")
                     if row['motif_refus']:
-                        str_app.error(f"Motif du refus : {row['motif_refus']}")
+                        str_app.error(f"Motif du refus définitif : {row['motif_refus']}")
         else:
             str_app.info("Aucune demande d'achat enregistrée pour votre département.")
 
-    # 3. ESPACE DE VALIDATION (AMÉLIORATION 2 : AFFICHAGE DU CONTENU DE LA DEMANDE)
+    # 3. ESPACE DE VALIDATION (AVEC OPTION DE RENVOI / DEMANDE DE MODIFICATION)
     if tab_validation is not None:
         with tab_validation:
             conn = get_db_connection()
@@ -542,8 +604,9 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
                     chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
                     if os.path.exists(chemin_f):
                         with open(chemin_f, "rb") as fd:
-                            str_app.download_button("📥 Télécharger / Consulter la pièce jointe (Devis)", data=fd, file_name=d_fich, key=f"dl_val_{d_id}")
+                            str_app.download_button("📥 Télécharger / Consulter le Devis", data=fd, file_name=d_fich, key=f"dl_val_{d_id}")
 
+            # VALIDATION ACHATS
             if type_profil == "achats":
                 str_app.markdown("### 🛒 Validations Achats")
                 cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'achats'")
@@ -551,25 +614,32 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
 
                 if demandes_achats:
                     for d in demandes_achats:
-                        d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
+                        d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich, d_retour = d
                         with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant:,.2f} €)"):
                             afficher_details_demande_et_devis(d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich)
                             str_app.markdown("---")
-                            c1, c2 = str_app.columns(2)
+                            c1, c2, c3 = str_app.columns(3)
                             with c1:
-                                if str_app.button(f"✅ Valider & transmettre Finance #{d_id}"):
+                                if str_app.button(f"✅ Valider & Transmettre Finance #{d_id}"):
                                     cursor.execute("UPDATE demandes SET avis_achats='Favorable', etape_actuelle='finance', statut='En attente validation Finance' WHERE id=?", (d_id,))
                                     conn.commit()
                                     str_app.rerun()
                             with c2:
-                                motif = str_app.text_input(f"Motif refus #{d_id}")
-                                if str_app.button(f"❌ Refuser #{d_id}"):
+                                note_retour = str_app.text_input(f"Remarque modification #{d_id}", key=f"note_ach_{d_id}")
+                                if str_app.button(f"↩️ Renvoyer à l'émetteur #{d_id}"):
+                                    cursor.execute("UPDATE demandes SET statut='Demande modification (Achats)', etape_actuelle='emetteur_retour', retour_remarque=? WHERE id=?", (note_retour, d_id))
+                                    conn.commit()
+                                    str_app.rerun()
+                            with c3:
+                                motif = str_app.text_input(f"Motif refus #{d_id}", key=f"refus_ach_{d_id}")
+                                if str_app.button(f"❌ Refuser définitivement #{d_id}"):
                                     cursor.execute("UPDATE demandes SET statut='Refusé par Achats', avis_achats='Défavorable', motif_refus=? WHERE id=?", (motif, d_id))
                                     conn.commit()
                                     str_app.rerun()
                 else:
                     str_app.info("Aucune demande en attente côté Achats.")
 
+            # VALIDATION FINANCE
             elif type_profil == "finance":
                 str_app.markdown("### 💶 Validations Finance")
                 cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'finance'")
@@ -577,18 +647,36 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
 
                 if demandes_fin:
                     for d in demandes_fin:
-                        d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
+                        d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich, d_retour = d
                         with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant:,.2f} €)"):
                             afficher_details_demande_et_devis(d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich)
                             str_app.markdown(f"**Avis Achats :** `{d_achats}`")
                             str_app.markdown("---")
-                            if str_app.button(f"✅ Approuver Financement #{d_id}"):
-                                cursor.execute("UPDATE demandes SET avis_finance='Favorable', etape_actuelle='fondateur', statut='En attente arbitrage Direction' WHERE id=?", (d_id,))
-                                conn.commit()
-                                str_app.rerun()
+                            
+                            col_f1, col_f2, col_f3 = str_app.columns(3)
+                            with col_f1:
+                                if str_app.button(f"✅ Approuver Financement #{d_id}"):
+                                    cursor.execute("UPDATE demandes SET avis_finance='Favorable', etape_actuelle='fondateur', statut='En attente arbitrage Direction' WHERE id=?", (d_id,))
+                                    conn.commit()
+                                    str_app.rerun()
+                            with col_f2:
+                                dest_renvoi = str_app.radio(f"Renvoi pour modification #{d_id} à :", ["Émetteur", "Achats"], key=f"rad_fin_{d_id}")
+                                note_fin = str_app.text_input(f"Instructions de correction #{d_id}", key=f"note_fin_{d_id}")
+                                if str_app.button(f"↩️ Renvoyer pour correction #{d_id}"):
+                                    target_etape = "emetteur_retour" if dest_renvoi == "Émetteur" else "achats_retour"
+                                    cursor.execute("UPDATE demandes SET statut=?, etape_actuelle=?, retour_remarque=? WHERE id=?", (f"Demande modification par Finance ({dest_renvoi})", target_etape, note_fin, d_id))
+                                    conn.commit()
+                                    str_app.rerun()
+                            with col_f3:
+                                motif_f = str_app.text_input(f"Motif refus #{d_id}", key=f"refus_fin_{d_id}")
+                                if str_app.button(f"❌ Refuser #{d_id}"):
+                                    cursor.execute("UPDATE demandes SET statut='Refusé par Finance', avis_finance='Défavorable', motif_refus=? WHERE id=?", (motif_f, d_id))
+                                    conn.commit()
+                                    str_app.rerun()
                 else:
                     str_app.info("Aucune demande en attente côté Finance.")
 
+            # VALIDATION DIRECTION GÉNÉRALE
             elif type_profil == "fondateur":
                 str_app.markdown("### 👑 Validations Stratégiques Direction Générale")
                 cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'fondateur'")
@@ -596,99 +684,180 @@ def afficher_module_besoins_et_suivi(nom_departement, type_profil):
 
                 if demandes_dg:
                     for d in demandes_dg:
-                        d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich = d
+                        d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_refus, d_date, d_fich, d_retour = d
                         with str_app.expander(f"Demande #{d_id} - [{d_dept}] {d_titre} ({d_montant:,.2f} €)"):
                             afficher_details_demande_et_devis(d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_fich)
                             str_app.markdown(f"**Avis Achats :** `{d_achats}` | **Avis Finance :** `{d_fin}`")
                             str_app.markdown("---")
-                            if str_app.button(f"🎉 APPROUVER ET LIBÉRER FONDS #{d_id}"):
-                                solde = get_valeur_globale("solde_restant")
-                                set_valeur_globale("solde_restant", solde - d_montant)
-                                cursor.execute("UPDATE demandes SET statut='Validé & Financé', etape_actuelle='termine' WHERE id=?", (d_id,))
-                                conn.commit()
-                                ajouter_log("Validation DG", "Direction Générale", f"Validation finale demande #{d_id}")
-                                str_app.rerun()
+                            
+                            col_d1, col_d2 = str_app.columns(2)
+                            with col_d1:
+                                if str_app.button(f"🎉 APPROUVER ET LIBÉRER FONDS #{d_id}"):
+                                    solde = get_valeur_globale("solde_restant")
+                                    set_valeur_globale("solde_restant", solde - d_montant)
+                                    cursor.execute("UPDATE demandes SET statut='Validé & Financé', etape_actuelle='termine' WHERE id=?", (d_id,))
+                                    conn.commit()
+                                    ajouter_log("Validation DG", "Direction Générale", f"Validation finale demande #{d_id}")
+                                    str_app.rerun()
+                            with col_d2:
+                                dest_dg = str_app.radio(f"Renvoir DG #{d_id} à :", ["Émetteur", "Achats"], key=f"rad_dg_{d_id}")
+                                note_dg = str_app.text_input(f"Instructions DG #{d_id}", key=f"note_dg_{d_id}")
+                                if str_app.button(f"↩️ Renvoyer dossier #{d_id}"):
+                                    target_etape = "emetteur_retour" if dest_dg == "Émetteur" else "achats_retour"
+                                    cursor.execute("UPDATE demandes SET statut=?, etape_actuelle=?, retour_remarque=? WHERE id=?", (f"Arbitrage DG : Correction requise ({dest_dg})", target_etape, note_dg, d_id))
+                                    conn.commit()
+                                    str_app.rerun()
                 else:
                     str_app.info("Aucun arbitrage requis au niveau Direction.")
             
             conn.close()
 
 # ==========================================
-# 4. MODULE MESSAGERIE & CHAT
+# 4. MODULE MESSAGERIE & CHAT (INTERFACE STYLE TEAMS + TRAÇABILITÉ MULTI-DESTINATAIRES)
 # ==========================================
 def afficher_module_messagerie_directe(nom_departement):
-    str_app.subheader("📬 Messagerie Directe & Discussion Privée")
+    str_app.subheader("💬 Hub de Communication & Discussions (Style Microsoft Teams)")
+    
     tous_les_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
-    col_m1, col_m2 = str_app.columns([1, 1.2])
+    
+    tab_teams, tab_multi_tracabilite = str_app.tabs([
+        "💬 Salon de Chat & Canaux Privés",
+        "📢 Diffusion Multi-Destinataires & Historique"
+    ])
 
-    with col_m1:
-        str_app.markdown("### ✉️ Envoi Multi-Destinataires")
-        with str_app.form(f"form_msg_direct_{nom_departement}", clear_on_submit=True):
-            depts_choisis = str_app.multiselect("Sélectionner les départements cibles :", tous_les_depts)
-            texte_message = str_app.text_area("Contenu du message", height=100)
-            
-            if str_app.form_submit_button("🚀 Envoyer aux départements") and texte_message and depts_choisis:
+    # 1. INTERFACE DE CHAT STYLE TEAMS
+    with tab_teams:
+        col_sidebar_chat, col_canvas_chat = str_app.columns([1, 2.3])
+
+        with col_sidebar_chat:
+            str_app.markdown("#### 🗂️ Contacts & Canaux")
+            dept_selectionne = str_app.radio(
+                "Sélectionner une discussion :",
+                tous_les_depts,
+                key="teams_chat_dept_select"
+            )
+
+        with col_canvas_chat:
+            if dept_selectionne:
+                # Header du Chat Teams
+                str_app.markdown(f"""
+                <div style="background-color: #1f2430; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; border-bottom: 2px solid #5b5fc7;">
+                    <span style="font-size: 1.2rem;">💬</span> <b style="font-size: 1.1rem; color: #ffffff;">{dept_selectionne}</b>
+                    <small style="color: #8b949e; margin-left: 10px;">• Discussion directe sécurisée</small>
+                </div>
+                """, unsafe_allow_html=True)
+
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                for dest in depts_choisis:
-                    cursor.execute(
-                        "INSERT INTO messages_directs (expediteur, destinataire, texte, date) VALUES (?, ?, ?, ?)",
-                        (nom_departement, dest, texte_message, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                    )
-                conn.commit()
+                cursor.execute("""
+                    SELECT expediteur, destinataire, texte, date 
+                    FROM messages_directs 
+                    WHERE ((expediteur = ? AND destinataire = ?) OR (expediteur = ? AND destinataire = ?))
+                    AND type_envoi = 'direct'
+                    ORDER BY id ASC
+                """, (nom_departement, dept_selectionne, dept_selectionne, nom_departement))
+                chat_messages = cursor.fetchall()
                 conn.close()
-                str_app.success(f"Message transmis à : {', '.join(depts_choisis)}")
-                str_app.rerun()
 
-    with col_m2:
-        str_app.markdown("### 💬 Salon de Discussion (Style Teams)")
-        dept_chat = str_app.selectbox("Ouvrir le chat avec :", tous_les_depts, key="select_chat_private")
+                # Conteneur des messages de chat
+                chat_container = str_app.container(height=380)
+                with chat_container:
+                    if chat_messages:
+                        for msg in chat_messages:
+                            exp, _, txt, dt = msg
+                            is_me = (exp == nom_departement)
+                            initiales = exp[:2].upper()
 
-        if dept_chat:
+                            if is_me:
+                                str_app.markdown(f"""
+                                <div style="display: flex; justify-content: flex-end; align-items: flex-end; margin-bottom: 10px;">
+                                    <div class="chat-bubble-me">
+                                        <div style="font-size: 0.75rem; opacity: 0.8; margin-bottom: 4px;"><b>Vous</b> • {dt}</div>
+                                        <div>{txt}</div>
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                str_app.markdown(f"""
+                                <div style="display: flex; justify-content: flex-start; align-items: flex-start; margin-bottom: 10px;">
+                                    <div class="chat-avatar">{initiales}</div>
+                                    <div class="chat-bubble-other">
+                                        <div style="font-size: 0.75rem; color: #8b949e; margin-bottom: 4px;"><b>{exp}</b> • {dt}</div>
+                                        <div>{txt}</div>
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                    else:
+                        str_app.info(f"Aucun message échangé pour le moment avec {dept_selectionne}.")
+
+                # Zone de saisie moderne
+                with str_app.form(f"form_send_teams_{dept_selectionne}", clear_on_submit=True):
+                    c_txt, c_btn = str_app.columns([4, 1])
+                    with c_txt:
+                        msg_saisi = str_app.text_input("Tapez un message...", placeholder=f"Écrire à {dept_selectionne}...", label_visibility="collapsed")
+                    with c_btn:
+                        envoyer_msg = str_app.form_submit_button("Envoyer ✈️")
+
+                    if envoyer_msg and msg_saisi:
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "INSERT INTO messages_directs (expediteur, destinataire, texte, date, type_envoi) VALUES (?, ?, ?, ?, 'direct')",
+                            (nom_departement, dept_selectionne, msg_saisi, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                        )
+                        conn.commit()
+                        conn.close()
+                        str_app.rerun()
+
+    # 2. DIFFUSION MULTI-DESTINATAIRES & HISTORIQUE/TRAÇABILITÉ
+    with tab_multi_tracabilite:
+        col_m_send, col_m_hist = str_app.columns([1, 1.2])
+
+        with col_m_send:
+            str_app.markdown("### 📢 Nouvelle Diffusion Multi-Destinataires")
+            with str_app.form(f"form_multi_send_{nom_departement}", clear_on_submit=True):
+                depts_cibles = str_app.multiselect("Sélectionner les départements destinataires :", tous_les_depts)
+                objet_comm = str_app.text_input("Objet / Contenu de la communication")
+                
+                if str_app.form_submit_button("🚀 Publier la diffusion") and objet_comm and depts_cibles:
+                    target_str = ",".join(depts_cibles)
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    # On enregistre une entrée globale de diffusion avec le tag multi
+                    for dest in depts_cibles:
+                        cursor.execute(
+                            "INSERT INTO messages_directs (expediteur, destinataire, texte, date, type_envoi) VALUES (?, ?, ?, ?, ?)",
+                            (nom_departement, dest, objet_comm, datetime.now().strftime("%Y-%m-%d %H:%M"), f"multi:{target_str}")
+                        )
+                    conn.commit()
+                    conn.close()
+                    ajouter_log("Diffusion Multi", nom_departement, f"Message envoyé à : {target_str}")
+                    str_app.success(f"Diffusion transmise à {len(depts_cibles)} département(s) !")
+                    str_app.rerun()
+
+        with col_m_hist:
+            str_app.markdown("### 📜 Registre & Traçabilité des Envois Groupés")
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT expediteur, destinataire, texte, date 
+                SELECT DISTINCT texte, date, type_envoi 
                 FROM messages_directs 
-                WHERE (expediteur = ? AND destinataire = ?) OR (expediteur = ? AND destinataire = ?)
-                ORDER BY id ASC
-            """, (nom_departement, dept_chat, dept_chat, nom_departement))
-            chat_messages = cursor.fetchall()
+                WHERE expediteur = ? AND type_envoi LIKE 'multi:%'
+                ORDER BY id DESC
+            """, (nom_departement,))
+            envois_groupes = cursor.fetchall()
             conn.close()
 
-            chat_box = str_app.container(height=300)
-            with chat_box:
-                if chat_messages:
-                    for msg in chat_messages:
-                        exp, _, txt, dt = msg
-                        is_me = (exp == nom_departement)
-                        alignement = "flex-end" if is_me else "flex-start"
-                        couleur_bulle = "#1f6feb" if is_me else "#21262d"
-                        auteur_nom = "Vous" if is_me else exp
-
-                        str_app.markdown(f"""
-                        <div style="display: flex; justify-content: {alignement}; margin-bottom: 8px;">
-                            <div style="background-color: {couleur_bulle}; padding: 8px 12px; border-radius: 10px; max-width: 80%;">
-                                <small style="color: #8b949e;"><b>{auteur_nom}</b> • {dt}</small><br>
-                                <span style="color: #ffffff; white-space: pre-wrap;">{txt}</span>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                else:
-                    str_app.info(f"Aucune discussion encore entamée avec {dept_chat}.")
-
-            with str_app.form(f"chat_reply_{dept_chat}", clear_on_submit=True):
-                reponse = str_app.text_input("Écrire dans le chat...", placeholder="Votre message...")
-                if str_app.form_submit_button("Envoyer") and reponse:
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "INSERT INTO messages_directs (expediteur, destinataire, texte, date) VALUES (?, ?, ?, ?)",
-                        (nom_departement, dept_chat, reponse, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                    )
-                    conn.commit()
-                    conn.close()
-                    str_app.rerun()
+            if envois_groupes:
+                for eg in envois_groupes:
+                    txt, dt, t_envoi = eg
+                    dests_recup = t_envoi.replace("multi:", "").split(",")
+                    with str_app.expander(f"📢 Communication du {dt}"):
+                        str_app.markdown(f"**Destinataires cibles :** {', '.join(dests_recup)}")
+                        str_app.markdown("##### 📝 Message transmis :")
+                        str_app.info(txt)
+            else:
+                str_app.info("Aucun envoi multi-destinataires effectué par votre département.")
 
 # ==========================================
 # AGENCEMENT FINAL DES 4 ONGLETS PRINCIPAUX
