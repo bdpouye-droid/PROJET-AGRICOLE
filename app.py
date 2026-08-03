@@ -126,15 +126,35 @@ st.markdown("""
 # ==========================================
 # UTILITAIRES : EXPORT EXCEL / PDF
 # ==========================================
+def _lignes_texte(df: pd.DataFrame):
+    """Convertit un DataFrame en liste de listes de chaînes en passant par des dicts Python natifs.
+    Évite les opérations vectorisées pandas (.map, .astype(str) sur toute la colonne) qui peuvent
+    lever une TypeError selon la version de pandas et le backend de types installé (ex: PyArrow)."""
+    lignes = []
+    for enregistrement in df.to_dict(orient="records"):
+        lignes.append(["" if v is None else str(v) for v in enregistrement.values()])
+    return lignes
+
 def exporter_excel_bytes(df: pd.DataFrame, nom_feuille="Données"):
     """Retourne les bytes d'un fichier Excel généré à partir d'un DataFrame."""
     buffer = io.BytesIO()
+    feuille = nom_feuille[:31] or "Données"
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=nom_feuille[:31] or "Données")
-        worksheet = writer.sheets[nom_feuille[:31] or "Données"]
-        for i, col in enumerate(df.columns):
-            largeur = min(max(len(str(col)), df[col].astype(str).map(len).max() if len(df) else 10) + 2, 50)
-            worksheet.column_dimensions[worksheet.cell(row=1, column=i + 1).column_letter].width = largeur
+        df.to_excel(writer, index=False, sheet_name=feuille)
+        # La mise en forme (largeur de colonnes) est cosmétique : si elle échoue pour une raison
+        # quelconque, on ne doit jamais bloquer l'export lui-même.
+        try:
+            worksheet = writer.sheets[feuille]
+            lignes = _lignes_texte(df)
+            for i, col in enumerate(df.columns):
+                try:
+                    largeur_contenu = max((len(ligne[i]) for ligne in lignes), default=10) if lignes else 10
+                    largeur = min(max(len(str(col)), largeur_contenu) + 2, 50)
+                except Exception:
+                    largeur = 20
+                worksheet.column_dimensions[worksheet.cell(row=1, column=i + 1).column_letter].width = largeur
+        except Exception:
+            pass
     return buffer.getvalue()
 
 def exporter_pdf_bytes(df: pd.DataFrame, titre="Export", colonnes_max=8):
@@ -150,8 +170,8 @@ def exporter_pdf_bytes(df: pd.DataFrame, titre="Export", colonnes_max=8):
     if len(df_aff.columns) > colonnes_max:
         df_aff = df_aff.iloc[:, :colonnes_max]
 
-    df_aff = df_aff.astype(str)
-    data = [list(df_aff.columns)] + df_aff.values.tolist()
+    entetes = [str(c) for c in df_aff.columns]
+    data = [entetes] + _lignes_texte(df_aff)
 
     tableau = Table(data, repeatRows=1)
     tableau.setStyle(TableStyle([
@@ -170,22 +190,28 @@ def exporter_pdf_bytes(df: pd.DataFrame, titre="Export", colonnes_max=8):
     return buffer.getvalue()
 
 def afficher_boutons_export(df: pd.DataFrame, nom_base: str, titre_pdf: str = None, key_prefix: str = ""):
-    """Affiche côte à côte un bouton d'export Excel et un bouton d'export PDF pour un DataFrame."""
-    if df.empty:
+    """Affiche côte à côte un bouton d'export Excel et un bouton d'export PDF pour un DataFrame.
+    Ne doit JAMAIS faire planter la page : ces boutons sont accessoires par rapport à la fonctionnalité
+    principale de chaque écran."""
+    if df is None or df.empty:
+        return
+    try:
+        excel_bytes = exporter_excel_bytes(df, nom_base)
+        pdf_bytes = exporter_pdf_bytes(df, titre_pdf or nom_base)
+    except Exception:
+        st.caption("⚠️ Export momentanément indisponible pour cette liste.")
         return
     c1, c2 = st.columns(2)
     with c1:
         st.download_button(
-            "📊 Exporter en Excel",
-            data=exporter_excel_bytes(df, nom_base),
+            "📊 Exporter en Excel", data=excel_bytes,
             file_name=f"{nom_base}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"xlsx_{key_prefix}", use_container_width=True
         )
     with c2:
         st.download_button(
-            "📄 Exporter en PDF",
-            data=exporter_pdf_bytes(df, titre_pdf or nom_base),
+            "📄 Exporter en PDF", data=pdf_bytes,
             file_name=f"{nom_base}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
             mime="application/pdf",
             key=f"pdf_{key_prefix}", use_container_width=True
