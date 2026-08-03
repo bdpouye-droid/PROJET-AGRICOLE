@@ -12,7 +12,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
---- CONFIGURATION DE LA PAGE ---
+# --- CONFIGURATION DE LA PAGE ---
 
 st.set_page_config(
     page_title="Plateforme de Pilotage - Bureau d'Études",
@@ -20,7 +20,7 @@ st.set_page_config(
     layout="wide"
 )
 
---- DOSSIERS DE STOCKAGE ---
+# --- DOSSIERS DE STOCKAGE ---
 
 DOSSIER_UPLOADS = "uploads_devis"
 DOSSIER_ETUDES = "uploads_etudes"
@@ -28,7 +28,7 @@ os.makedirs(DOSSIER_UPLOADS, exist_ok=True)
 os.makedirs(DOSSIER_ETUDES, exist_ok=True)
 CHEMIN_LOGO = "logo.png"
 
---- STYLE CSS PERSONNALISÉ & DESIGN MODERNE ---
+# --- STYLE CSS PERSONNALISÉ & DESIGN MODERNE ---
 
 st.markdown("""
   <style>
@@ -57,7 +57,7 @@ st.markdown("""
   </style>
 """, unsafe_allow_html=True)
 
---- UTILITAIRES : EXPORT EXCEL / PDF ---
+# --- UTILITAIRES : EXPORT EXCEL / PDF ---
 
 def _lignes_texte(df: pd.DataFrame):
     lignes = []
@@ -154,7 +154,7 @@ def fournisseur_affiche(fournisseur_propose: str, fournisseur_retenu: str) -> st
         return f"{fournisseur_propose} (pressenti par l'émetteur, non confirmé)"
     return "Non renseigné"
 
---- INITIALISATION BASE DE DONNÉES ---
+# --- INITIALISATION BASE DE DONNÉES ---
 
 def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False)
@@ -261,7 +261,7 @@ def migrer_schema():
 init_db()
 migrer_schema()
 
---- UTILS DATABASE ---
+# --- UTILS DATABASE ---
 
 def get_db_connection():
     return sqlite3.connect("database.db", check_same_thread=False)
@@ -324,7 +324,7 @@ def proposer_telechargement(dossier, nom_fichier, libelle, key):
     except Exception:
         st.caption("📎 Impossible d'accéder à cette pièce jointe pour le moment.")
 
---- ROLES ET UTILISATEURS ---
+# --- ROLES ET UTILISATEURS ---
 
 UTILISATEURS = {
     "DEP1": {"nom": "Agriculture", "mdp": "DEP123", "type": "standard", "dept": "Agriculture"},
@@ -343,7 +343,7 @@ UTILISATEURS = {
     "fondateur": {"nom": "Direction Générale - Pilotage Stratégique", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
 }
 
---- GESTION DE LA SESSION ---
+# --- GESTION DE LA SESSION ---
 
 if 'user_connecte' not in st.session_state:
     st.session_state.user_connecte = None
@@ -352,7 +352,7 @@ if 'tab_actif' not in st.session_state:
 if 'discussion_active_id' not in st.session_state:
     st.session_state.discussion_active_id = None
 
---- AUTHENTIFICATION ---
+# --- AUTHENTIFICATION ---
 
 if os.path.exists(CHEMIN_LOGO):
     st.sidebar.image(CHEMIN_LOGO, use_column_width=True)
@@ -402,7 +402,7 @@ if profil["type"] in ["finance", "fondateur"]:
     c_b2.metric("Solde Restant Disponible", f"{b_solde:,.2f} €")
     st.markdown("---")
 
---- NAVIGATION ONGLES PRINCIPAUX ---
+# --- NAVIGATION ONGLET PRINCIPAUX ---
 
 onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "4. Messagerie & Chat", "📖 Journal de Bord", "🔍 Recherche Globale"]
 if profil["type"] in ["achats", "finance", "fondateur"]:
@@ -422,11 +422,9 @@ for idx, tab_nom in enumerate(onglets_possibles):
 
 st.markdown("---")
 
-==========================================
-
-3. MODULE BESOINS & ACHATS (SIMPLIFIÉ & ARCHIVABLE)
-
-==========================================
+# ==========================================
+# 3. MODULE BESOINS & ACHATS (SIMPLIFIÉ & ARCHIVABLE)
+# ==========================================
 
 def afficher_module_achats(nom_departement, type_profil):
     st.subheader("🛒 Gestion des Demandes d'Achat & Validations")
@@ -478,7 +476,6 @@ def afficher_module_achats(nom_departement, type_profil):
             for d in demandes:
                 did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu = d
                 
-                # Affichage sous forme de carte épurée et soft
                 with st.container():
                     st.markdown(f"""
                         <div class="stCard">
@@ -586,7 +583,7 @@ def afficher_module_achats(nom_departement, type_profil):
             st.dataframe(df_arch, use_container_width=True)
             afficher_boutons_export(df_arch, "archives_demandes", "Archives des Demandes d'Achat", "arch_dem")
 
---- MODULES SUPPLÉMENTAIRES (POUR COHÉRENCE GLOBALE) ---
+# --- MODULES SUPPLÉMENTAIRES ---
 
 def afficher_module_etudes(nom_departement, type_profil):
     st.subheader(f"⚙️ Centre d'Ingénierie & Traçabilité des Études — {nom_departement}")
@@ -616,7 +613,7 @@ def afficher_module_recherche_globale(nom_departement, type_profil):
 def afficher_module_statistiques():
     st.subheader("📈 Statistiques par Département")
 
---- ROUTAGE DYNAMIQUE DES VUES ---
+# --- ROUTAGE DYNAMIQUE DES VUES ---
 
 if st.session_state.tab_actif == "1. Études & Ingénierie":
     afficher_module_etudes(nom_dept, profil["type"])
