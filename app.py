@@ -204,6 +204,14 @@ def pill_statut(statut: str) -> str:
         classe = "pill-attente"
     return f'<span class="pill {classe}">{statut}</span>'
 
+def fournisseur_affiche(fournisseur_propose: str, fournisseur_retenu: str) -> str:
+    """Le fournisseur retenu par les Achats prévaut toujours sur la proposition de l'émetteur."""
+    if fournisseur_retenu:
+        return f"{fournisseur_retenu} ✅ (retenu par les Achats)"
+    elif fournisseur_propose:
+        return f"{fournisseur_propose} (pressenti par l'émetteur, non confirmé)"
+    return "Non renseigné"
+
 # --- INITIALISATION BASE DE DONNÉES ---
 def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False)
@@ -253,6 +261,7 @@ def migrer_schema():
         ("discussions", "archives_par", "TEXT DEFAULT '[]'"),
         ("etudes_metier", "vus_json", "TEXT DEFAULT '[]'"),
         ("cahiers_charges", "vus_par_json", "TEXT DEFAULT '[]'"),
+        ("demandes", "fournisseur_retenu", "TEXT DEFAULT ''"),
     ]
     for table, colonne, type_def in migrations:
         cursor.execute(f"PRAGMA table_info({table})")
@@ -402,7 +411,7 @@ def obtenir_toutes_notifications(nom_dept, type_profil):
     # --- Chat non lus (par discussion) ---
     for notif in notifs_chat_list:
         notifs.append({
-            "icone": "💬", "label": f"{notif['nom']} ({notif['count']} message(s) non lu(s))",
+            "icone": "💬", "label": f"Vous avez un message non lu dans « {notif['nom']} » ({notif['count']})",
             "cible_tab": "4. Messagerie & Chat", "cible_disc": notif["disc_id"], "key": f"chat_{notif['disc_id']}"
         })
 
@@ -413,7 +422,7 @@ def obtenir_toutes_notifications(nom_dept, type_profil):
         vus = json.loads(vus_j) if vus_j else []
         if nom_dept in dests and nom_dept not in vus:
             notifs.append({
-                "icone": "⚙️", "label": f"Nouvelle étude de [{e_dept}] : {e_titre}",
+                "icone": "⚙️", "label": f"Vous avez une nouvelle étude à consulter, envoyée par {e_dept} : « {e_titre} »",
                 "cible_tab": "1. Études & Ingénierie", "cible_disc": None, "key": f"etude_{e_id}"
             })
 
@@ -424,7 +433,7 @@ def obtenir_toutes_notifications(nom_dept, type_profil):
         vus = json.loads(vus_j) if vus_j else []
         if nom_dept in dests and nom_dept not in vus:
             notifs.append({
-                "icone": "📋", "label": f"Nouveau CDC de [{c_dept}] : {c_titre_raw.split('||')[0]}",
+                "icone": "📋", "label": f"Vous avez une demande d'avis sur un cahier des charges de {c_dept} : « {c_titre_raw.split('||')[0]} »",
                 "cible_tab": "2. Cahiers des Charges", "cible_disc": None, "key": f"cdc_{c_id}"
             })
 
@@ -432,14 +441,17 @@ def obtenir_toutes_notifications(nom_dept, type_profil):
     if type_profil in ["achats", "finance", "fondateur"]:
         if type_profil == "achats":
             cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'achats' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
+            libelle_role = "à sourcer / valider (Achats)"
         elif type_profil == "finance":
             cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'finance' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
+            libelle_role = "à contrôler (Finance)"
         else:
             cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'direction' OR statut LIKE 'En attente%'")
+            libelle_role = "à valider (Direction)"
         nb_a_valider = cursor.fetchone()[0]
         if nb_a_valider > 0:
             notifs.append({
-                "icone": "🛡️", "label": f"{nb_a_valider} dossier(s) en attente de votre validation",
+                "icone": "🛡️", "label": f"Vous avez {nb_a_valider} demande(s) d'achat {libelle_role}",
                 "cible_tab": "3. Besoins & Achats", "cible_disc": None, "key": "valid_achats"
             })
 
@@ -448,7 +460,7 @@ def obtenir_toutes_notifications(nom_dept, type_profil):
     nb_corrections = cursor.fetchone()[0]
     if nb_corrections > 0:
         notifs.append({
-            "icone": "✏️", "label": f"{nb_corrections} demande(s) à corriger suite à une remarque",
+            "icone": "✏️", "label": f"Vous avez {nb_corrections} demande(s) d'achat à corriger suite à une remarque",
             "cible_tab": "3. Besoins & Achats", "cible_disc": None, "key": "correction_emetteur"
         })
 
@@ -488,6 +500,21 @@ if st.sidebar.button("Se déconnecter"):
     st.rerun()
 
 st.title(f"Tableau de Bord - {profil['nom']}")
+
+if toutes_notifs:
+    with st.container(border=True):
+        st.markdown(f"##### 🔔 À faire — {len(toutes_notifs)} action(s) en attente")
+        for notif in toutes_notifs:
+            c_notif, c_bouton = st.columns([5, 1.3])
+            with c_notif:
+                st.write(f"{notif['icone']} {notif['label']}")
+            with c_bouton:
+                if st.button("👉 Y aller", key=f"banniere_{notif['key']}", use_container_width=True):
+                    if notif["cible_disc"] is not None:
+                        st.session_state.discussion_active_id = notif["cible_disc"]
+                    st.session_state.tab_actif = notif["cible_tab"]
+                    st.rerun()
+    st.markdown("<br>", unsafe_allow_html=True)
 
 if profil["type"] in ["finance", "fondateur"]:
     b_total = get_valeur_globale("budget_global")
@@ -543,6 +570,7 @@ def afficher_module_etudes(nom_departement, type_profil):
                 conn.commit()
                 conn.close()
                 ajouter_log("Étude Métier", nom_departement, f"Étude créée: {titre}")
+                st.toast("Étude diffusée avec succès !", icon="✅")
                 st.success("Étude diffusée !")
                 st.rerun()
 
@@ -648,7 +676,7 @@ def afficher_module_cdc(nom_departement, type_profil):
 
     t1, t2 = st.tabs(["1. Publier un Cahier des Charges", "2. Documents Reçus & Gestion"])
     with t1:
-        with st.form("form_cdc"):
+        with st.form("form_cdc", clear_on_submit=True):
             titre = st.text_input("Intitulé du document")
             contenu = st.text_area("Contenu détaillé")
             fich = st.file_uploader("📎 Pièce jointe", type=["pdf", "xlsx", "docx"])
@@ -662,6 +690,7 @@ def afficher_module_cdc(nom_departement, type_profil):
                 conn.commit()
                 conn.close()
                 ajouter_log("Cahier des Charges", nom_departement, f"CDC publié : {titre}")
+                st.toast("Document diffusé avec succès !", icon="✅")
                 st.success("Document diffusé avec succès.")
                 st.rerun()
 
@@ -757,7 +786,7 @@ def afficher_module_achats(nom_departement, type_profil):
             titre = st.text_input("Intitulé du besoin")
             desc = st.text_area("Description du besoin / Spécifications")
             montant = st.number_input("Montant estimé (€)", min_value=0.0, step=100.0)
-            fournisseur = st.text_input("Fournisseur proposé (Facultatif)")
+            fournisseur = st.text_input("Fournisseur pressenti (Facultatif — le choix final revient au département Achats)")
             devis = st.file_uploader("📎 Importer devis", type=["pdf", "png", "jpg", "xlsx"])
             
             if st.form_submit_button("Soumettre la Demande") and titre and montant > 0:
@@ -782,6 +811,7 @@ def afficher_module_achats(nom_departement, type_profil):
                 conn.commit()
                 conn.close()
                 ajouter_log("Demande d'Achat", nom_departement, f"Demande soumise : {titre} ({montant} €)")
+                st.toast("Demande envoyée avec succès !", icon="✅")
                 st.success("Demande enregistrée dans le circuit de validation.")
                 st.rerun()
 
@@ -813,7 +843,7 @@ def afficher_module_achats(nom_departement, type_profil):
                 df_filtre_dem = df_filtre_dem[df_filtre_dem["montant"] >= montant_min]
 
             afficher_boutons_export(
-                df_filtre_dem[["id", "date", "titre", "montant", "fournisseur", "statut", "etape_actuelle"]],
+                df_filtre_dem[["id", "date", "titre", "montant", "fournisseur", "fournisseur_retenu", "statut", "etape_actuelle"]],
                 "mes_demandes_achat", "Mes Demandes d'Achat", key_prefix="mes_demandes"
             )
 
@@ -821,6 +851,7 @@ def afficher_module_achats(nom_departement, type_profil):
                 with st.expander(f"📌 #{r['id']} - {r['titre']} ({r['montant']:,.2f} €) - Statut: {r['statut']}"):
                     st.markdown(pill_statut(r['statut']), unsafe_allow_html=True)
                     st.write(f"**Description :** {r['cahier_charges']}")
+                    st.write(f"**Fournisseur :** {fournisseur_affiche(r['fournisseur'], r.get('fournisseur_retenu', ''))}")
                     
                     c_del1, c_del2 = st.columns([4, 1])
                     with c_del2:
@@ -861,6 +892,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 ajouter_log("Correction Demande", nom_departement, f"Demande #{r['id']} corrigée et renvoyée")
+                                st.toast("Correction envoyée !", icon="✅")
                                 st.success("Demande corrigée et renvoyée en validation !")
                                 st.rerun()
         else:
@@ -886,18 +918,35 @@ def afficher_module_achats(nom_departement, type_profil):
                 df_a_traiter = pd.DataFrame(demandes_a_traiter, columns=[
                     "id", "departement", "titre", "cahier_charges", "montant", "fournisseur",
                     "statut", "etape_actuelle", "avis_achats", "avis_finance", "motif_refus",
-                    "date", "fichier_devis", "retour_remarque"
+                    "date", "fichier_devis", "retour_remarque", "fournisseur_retenu"
                 ])
                 afficher_boutons_export(
-                    df_a_traiter[["id", "date", "departement", "titre", "montant", "fournisseur", "statut"]],
+                    df_a_traiter[["id", "date", "departement", "titre", "montant", "fournisseur", "fournisseur_retenu", "statut"]],
                     "dossiers_a_valider", "Dossiers en Attente de Validation", key_prefix="validation"
                 )
                 for d in demandes_a_traiter:
-                    d_id, d_dept, d_titre, d_desc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_motif, d_date, d_fich, d_rem = d
+                    d_id, d_dept, d_titre, d_desc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_motif, d_date, d_fich, d_rem, d_fourn_retenu = d
                     
                     with st.expander(f"📥 Dossier #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
                         st.write(f"**Description :** {d_desc}")
-                        st.write(f"**Fournisseur :** {d_fourn}")
+                        st.write(f"**Fournisseur :** {fournisseur_affiche(d_fourn, d_fourn_retenu)}")
+
+                        if type_profil == "achats":
+                            with st.form(f"form_fournisseur_{d_id}"):
+                                st.markdown("##### 🏷️ Sourcing — Fournisseur retenu (décision Achats)")
+                                nouveau_fournisseur = st.text_input(
+                                    "Fournisseur retenu", value=d_fourn_retenu or d_fourn or "",
+                                    key=f"input_fourn_{d_id}"
+                                )
+                                if st.form_submit_button("💾 Enregistrer le fournisseur retenu"):
+                                    conn = get_db_connection()
+                                    cursor = conn.cursor()
+                                    cursor.execute("UPDATE demandes SET fournisseur_retenu=? WHERE id=?", (nouveau_fournisseur, d_id))
+                                    conn.commit()
+                                    conn.close()
+                                    ajouter_log("Sourcing Fournisseur", nom_departement, f"Dossier #{d_id} : fournisseur retenu = {nouveau_fournisseur}")
+                                    st.toast("Fournisseur enregistré !", icon="🏷️")
+                                    st.rerun()
                         
                         col_v1, col_v2, col_v3 = st.columns(3)
                         
@@ -1168,6 +1217,7 @@ def afficher_module_journal_bord(nom_departement):
                 """, (nom_departement, auteur_nom, note_texte, str(date_selectionnee), heure_actuelle))
                 conn.commit()
                 conn.close()
+                st.toast("Note ajoutée !", icon="📘")
                 st.success("Note ajoutée au journal de bord !")
                 st.rerun()
 
@@ -1276,7 +1326,7 @@ def afficher_module_suivi_global_controle():
     if montant_min_g > 0:
         df_filtré = df_filtré[df_filtré['montant'] >= montant_min_g]
 
-    colonnes_affichees = ['id', 'date', 'departement', 'titre', 'montant', 'fournisseur', 'statut', 'etape_actuelle', 'avis_achats', 'avis_finance']
+    colonnes_affichees = ['id', 'date', 'departement', 'titre', 'montant', 'fournisseur', 'fournisseur_retenu', 'statut', 'etape_actuelle', 'avis_achats', 'avis_finance']
     afficher_boutons_export(df_filtré[colonnes_affichees], "suivi_global_demandes", "Suivi Global des Demandes d'Achat", key_prefix="suivi_global")
 
     st.dataframe(
