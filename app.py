@@ -1,866 +1,681 @@
-# app.py
-# PROJET-AGRICOLE - Streamlit app (updated)
-# - Téléportation "Y aller"
-# - UI modernisée et épurée
-# - Montant estimé optionnel
-# - Boîte de réception simple (remplacement du rappel)
-# - Circuit de validation strict (Achats -> Finance -> DG en suivi)
-# - Catégories / tags & ticket #TICK-XXXX
-#
-# NOTE: Tester localement : `streamlit run app.py`
-# Assure-toi d'avoir sqlite3 et Streamlit installés.
-
-import streamlit as st
-import sqlite3
-from datetime import datetime
-import json
-import os
-import re
-
-# --- Configuration / Utilitaires ---
-DB_PATH = os.path.join(os.path.dirname(__file__), "app_data.db")
-
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    # demandes table: one row per ticket
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS demandes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_id TEXT UNIQUE,
-        emitter TEXT,
-        department TEXT,
-        title TEXT,
-        description TEXT,
-        tags TEXT,
-        estimated_amount REAL,
-        fournisseur_pressenti TEXT,
-        fournisseur_retenu TEXT,
-        status TEXT,
-        motif_refus TEXT,
-        created_at TEXT,
-        updated_at TEXT
-    )""")
-    # inbox entries: simple actionable items (legacy inbox)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS inbox_entries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user TEXT,
-        ticket_id TEXT,
-        message TEXT,
-        target_tab TEXT,
-        target_sub TEXT,
-        created_at TEXT,
-        read INTEGER DEFAULT 0
-    )""")
-    # notifications table (modern inbox) - created to avoid SQL errors when referenced
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_dept TEXT,
-        ticket TEXT,
-        message TEXT,
-        target_tab TEXT,
-        target_disc INTEGER,
-        created_at TEXT,
-        read INTEGER DEFAULT 0
-    )""")
-    # logs audit
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS logs_audit (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticket_id TEXT,
-        user TEXT,
-        action TEXT,
-        details TEXT,
-        created_at TEXT
-    )""")
-    # metadata for ticket sequence
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS metadata (
-        key TEXT PRIMARY KEY,
-        value TEXT
-    )""")
-    # connections / pointage (login/logout events)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS connections (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user TEXT,
-        event TEXT,
-        created_at TEXT
-    )""")
-    # init ticket counter if missing
-    cur.execute("INSERT OR IGNORE INTO metadata (key, value) VALUES ('ticket_counter', '0')")
-    conn.commit()
-    conn.close()
-
-def next_ticket_id():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT value FROM metadata WHERE key='ticket_counter'")
-    row = cur.fetchone()
-    counter = int(row['value'])
-    counter += 1
-    ticket = f"#TICK-{counter:04d}"
-    cur.execute("UPDATE metadata SET value = ? WHERE key='ticket_counter'", (str(counter),))
-    conn.commit()
-    conn.close()
-    return ticket
-
-def add_demande(emitter, department, title, description, tags_list, estimated_amount, fournisseur_pressenti):
-    ticket = next_ticket_id()
-    tags_str = ",".join([t.strip() for t in tags_list if t.strip()])
-    now = datetime.utcnow().isoformat()
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-      INSERT INTO demandes (ticket_id, emitter, department, title, description, tags, estimated_amount, fournisseur_pressenti, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (ticket, emitter, department, title, description, tags_str, estimated_amount, fournisseur_pressenti, "Soumis", now, now))
-    conn.commit()
-    conn.close()
-    # create inbox entries for roles involved: Achats & Finance for workflow
-    # Achats should act first for sourcing
-    add_inbox_entry("Achats", ticket, f"Nouvelle demande à sourcer: {title}", target_tab="Achats", target_sub="validation_achats")
-    add_inbox_entry("Finance", ticket, f"Demande en attente de traitement financier après Achats", target_tab="Finance", target_sub="en_attente")
-    # DG gets only a global follow (read-only) when fully validated later
-    add_log(ticket, emitter, "Soumission", f"Demande soumise par {emitter}")
-    return ticket
-
-def add_inbox_entry(user, ticket_id, message, target_tab=None, target_sub=None):
-    conn = get_conn()
-    cur = conn.cursor()
-    now = datetime.utcnow().isoformat()
-    cur.execute("""
-      INSERT INTO inbox_entries (user, ticket_id, message, target_tab, target_sub, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    """, (user, ticket_id, message, target_tab, target_sub, now))
-    conn.commit()
-    conn.close()
-
-def mark_inbox_read(entry_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("UPDATE inbox_entries SET read=1 WHERE id=?", (entry_id,))
-    conn.commit()
-    conn.close()
-
-
-def ensure_notifications_table():
-    """Ensure the legacy/modern notifications table exists. Safe to call repeatedly."""
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_dept TEXT,
-        ticket TEXT,
-        message TEXT,
-        target_tab TEXT,
-        target_disc INTEGER,
-        created_at TEXT,
-        read INTEGER DEFAULT 0
-    )""")
-    conn.commit()
-    conn.close()
-
-
-def add_notification(user_dept, ticket, message, target_tab=None, target_disc=None):
-    """Insert a notification into the notifications table. If the table is missing or insertion fails,
-    fall back to adding an inbox_entries row so callers still get a deliverable notification.
-    """
-    # Ensure table exists (defensive - handles older DB without notifications table)
-    try:
-        ensure_notifications_table()
-    except Exception:
-        # If creation fails, fall back silently to inbox entry
-        add_inbox_entry(user_dept, ticket, message, target_tab=target_tab, target_sub=None)
-        return
-
-    conn = None
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        now = datetime.utcnow().isoformat()
-        cur.execute(
-            "INSERT INTO notifications (user_dept, ticket, message, target_tab, target_disc, created_at, read) VALUES (?, ?, ?, ?, ?, ?, 0)",
-            (user_dept, ticket, message, target_tab, target_disc, now)
-        )
-        conn.commit()
-    except sqlite3.OperationalError:
-        # Table might still not exist in some DB copies; gracefully fallback to inbox_entries
-        try:
-            add_inbox_entry(user_dept, ticket, message, target_tab=target_tab, target_sub=None)
-        except Exception:
-            pass
-    finally:
-        if conn:
-            conn.close()
-
-def add_log(ticket_id, user, action, details):
-    conn = get_conn()
-    cur = conn.cursor()
-    now = datetime.utcnow().isoformat()
-    cur.execute("""
-      INSERT INTO logs_audit (ticket_id, user, action, details, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    """, (ticket_id, user, action, details, now))
-    conn.commit()
-    conn.close()
-
-
-def add_connection_event(user, event):
-    """Record a connection/login/logout event for basic pointage.
-    Call this when a user changes session identity (simple approximation).
-    """
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        now = datetime.utcnow().isoformat()
-        cur.execute("INSERT INTO connections (user, event, created_at) VALUES (?, ?, ?)", (user, event, now))
-        conn.commit()
-    except Exception:
-        pass
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-
-def delete_demande(ticket_id):
-    """Delete a demande and related entries (inbox, logs, notifications) — irreversible.
-    Use with caution (Admin/emetteur action only).
-    """
-    conn = get_conn()
-    cur = conn.cursor()
-    # remove related inbox_entries
-    cur.execute("DELETE FROM inbox_entries WHERE ticket_id=?", (ticket_id,))
-    # remove notifications if present
-    try:
-        cur.execute("DELETE FROM notifications WHERE ticket=?", (ticket_id,))
-    except Exception:
-        # notifications table may not exist
-        pass
-    # remove logs
-    cur.execute("DELETE FROM logs_audit WHERE ticket_id=?", (ticket_id,))
-    # remove the demande itself
-    cur.execute("DELETE FROM demandes WHERE ticket_id=?", (ticket_id,))
-    conn.commit()
-    conn.close()
-
-
-def export_stats_excel(stats_dict):
-    """Export given stats (dict of sheets -> list of dict rows) to an Excel file in-memory.
-    Falls back to CSV if pandas/openpyxl not available.
-    Returns bytes and filename.
-    """
-    import io
-    try:
-        import pandas as pd
-    except Exception:
-        # fallback: serialize first sheet to CSV
-        first_sheet = next(iter(stats_dict.keys()))
-        rows = stats_dict[first_sheet]
-        buf = io.BytesIO()
-        if rows:
-            # write CSV header
-            header = ','.join(rows[0].keys()) + '\n'
-            buf.write(header.encode('utf-8'))
-            for r in rows:
-                line = ','.join([str(r.get(k, '')) for k in r.keys()]) + '\n'
-                buf.write(line.encode('utf-8'))
-        filename = 'stats_export.csv'
-        return buf.getvalue(), filename
-
-    # Use pandas ExcelWriter
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        for sheet, rows in stats_dict.items():
-            df = pd.DataFrame(rows)
-            df.to_excel(writer, sheet_name=sheet[:31], index=False)
-    filename = 'stats_export.xlsx'
-    return buf.getvalue(), filename
-
-
-def get_inbox_for(user):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM inbox_entries WHERE user=? ORDER BY created_at DESC", (user,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-def get_demande_by_ticket(ticket_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM demandes WHERE ticket_id=?", (ticket_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-def update_demande(ticket_id, **kwargs):
-    # kwargs: keys matching columns to update
-    if not kwargs:
-        return
-    conn = get_conn()
-    cur = conn.cursor()
-    set_clause = ", ".join([f"{k}=?" for k in kwargs.keys()])
-    params = list(kwargs.values()) + [ticket_id]
-    cur.execute(f"UPDATE demandes SET {set_clause}, updated_at=? WHERE ticket_id=?", params[:-1] + [datetime.utcnow().isoformat(), ticket_id])
-    conn.commit()
-    conn.close()
-
-def list_demandes(filter_by=None):
-    conn = get_conn()
-    cur = conn.cursor()
-    sql = "SELECT * FROM demandes"
-    params = ()
-    if filter_by:
-        clauses = []
-        for k, v in filter_by.items():
-            clauses.append(f"{k}=?")
-            params += (v,)
-        sql += " WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY created_at DESC"
-    cur.execute(sql, params)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-def search_by_tag(tag):
-    conn = get_conn()
-    cur = conn.cursor()
-    like = f"%{tag}%"
-    cur.execute("SELECT * FROM demandes WHERE tags LIKE ? ORDER BY created_at DESC", (like,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-# --- UI helpers & navigation ---
-def navigate_to(tab_name, sub=None, ticket_id=None):
-    st.session_state['main_tab'] = tab_name
-    st.session_state['sub_view'] = sub
-    st.session_state['selected_ticket'] = ticket_id
-
-def ensure_session_state():
-    if 'main_tab' not in st.session_state:
-        st.session_state['main_tab'] = "Accueil"
-    if 'sub_view' not in st.session_state:
-        st.session_state['sub_view'] = None
-    if 'current_user' not in st.session_state:
-        # default demo user; in production replace with auth
-        st.session_state['current_user'] = "Utilisateur"
-    if 'selected_ticket' not in st.session_state:
-        st.session_state['selected_ticket'] = None
-
-# Minimal modern CSS
-def inject_css():
-    st.markdown("""
-    <style>
-      :root { --accent:#0d6efd; --muted:#6c757d; --bg:#f8f9fa; --card:#ffffff; --text:#0b1b2b; }
-      .stApp { background: var(--bg); font-family: "Inter", "Segoe UI", sans-serif; color:var(--text); }
-      .topbar { padding: 10px 0; display:flex; align-items:center; gap:12px; }
-      .brand { font-weight:700; color:var(--accent); font-size:20px; }
-      .subtitle { color:var(--muted); font-size:12px; }
-      .card { background: var(--card); padding:14px; border-radius:8px; box-shadow:0 1px 4px rgba(16,24,40,0.08); color:var(--text); }
-      .small { font-size:13px; color:var(--muted); }
-      .ticket { font-weight:600; color:#0b5ed7; }
-      .pill { padding:4px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; }
-      button.stButton>button { border-radius: 6px; }
-      /* Ensure tables and text are readable (fix red/contrast regressions) */
-      table, th, td { color:var(--text) !important; }
-      .stAlert, .stError { color: #7a1f1f !important; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- Initialize DB ---
-init_db()
-ensure_session_state()
-inject_css()
-
-# --- Header / Top layout ---
-st.sidebar.markdown("## Navigation")
-# allow selecting current user (simple impersonation for testing)
-user_choice = st.sidebar.selectbox("Vous êtes", ["Utilisateur", "Achats", "Finance", "Direction Générale", "Admin"], index=["Utilisateur","Achats","Finance","Direction Générale","Admin"].index(st.session_state.get('current_user','Utilisateur')) if st.session_state.get('current_user') in ["Utilisateur","Achats","Finance","Direction Générale","Admin"] else 0)
-# record a simple connection event when the selected user changes (approx. login)
-prev_user = st.session_state.get('current_user')
-st.session_state['current_user'] = user_choice
-if prev_user != user_choice:
-    try:
-        add_connection_event(user_choice, 'login')
-    except Exception:
-        pass
-    st.session_state['last_user'] = user_choice
-
-# Sidebar inbox (clean, no remind button)
-st.sidebar.markdown("### Boîte de réception")
-inbox_rows = get_inbox_for(st.session_state['current_user'])
-if not inbox_rows:
-    st.sidebar.info("Aucun élément en attente.")
-else:
-    for row in inbox_rows:
-        with st.sidebar.container():
-            read_mark = " (lu)" if row['read'] else ""
-            st.markdown(f"- **{row['ticket_id']}** {read_mark}")
-            st.caption(row['message'])
-            cols = st.columns([1,1,1])
-            if cols[0].button("Y aller", key=f"go_{row['id']}"):
-                # Teleport: set main tab/sub and select ticket
-                navigate_to(row['target_tab'] or "Accueil", row['target_sub'], row['ticket_id'])
-                # mark read
-                mark_inbox_read(row['id'])
-                st.experimental_rerun()
-            if cols[1].button("Marquer lu", key=f"read_{row['id']}"):
-                mark_inbox_read(row['id'])
-                st.experimental_rerun()
-            if cols[2].button("Voir", key=f"view_{row['id']}"):
-                navigate_to("Détail", None, row['ticket_id'])
-                mark_inbox_read(row['id'])
-                st.experimental_rerun()
-
-st.sidebar.markdown("---")
-main_nav = st.sidebar.radio("Sections", ["Accueil", "Soumettre", "Achats", "Finance", "Direction", "Études", "Audit", "Détail", "Paramètres"], index=["Accueil","Soumettre","Achats","Finance","Direction","Études","Audit","Détail","Paramètres"].index(st.session_state['main_tab']) if st.session_state['main_tab'] in ["Accueil","Soumettre","Achats","Finance","Direction","Études","Audit","Détail","Paramètres"] else 0)
-st.session_state['main_tab'] = main_nav
-
-# --- Main content ---
-st.markdown('<div class="topbar"><div class="brand">PROJET-AGRICOLE</div><div class="subtitle">Gestion des demandes & workflow</div></div>', unsafe_allow_html=True)
-
-def page_accueil():
-    st.markdown("### Accueil")
-    st.markdown("Bienvenue — utilisez la barre latérale pour naviguer. La boîte de réception indique clairement les actions à faire selon votre rôle.")
-    # quick stats
-    rows = list_demandes()
-    total = len(rows)
-    st.markdown(f"- Total demandes : **{total}**")
-    st.markdown(f"- Utilisateur actif : **{st.session_state['current_user']}**")
-
-def page_soumettre():
-    st.markdown("### Émettre une demande")
-    st.markdown("Formulaire simple et épuré — le montant estimé est optionnel.")
-    with st.form("form_soumettre", clear_on_submit=False):
-        emitter = st.session_state['current_user']
-        department = st.selectbox("Département émetteur", ["Achats", "Finance", "Direction Générale", "Ingénierie", "Opérations", "Autre"])
-        title = st.text_input("Titre de la demande", max_chars=120)
-        description = st.text_area("Description / Cahier des charges", height=160)
-        tags = st.text_input("Étiquettes (séparées par des virgules)", placeholder="ex: matériel, urgent, 2026")
-        fournisseur_pressenti = st.text_input("Fournisseur pressenti (optionnel)")
-        # Estimated amount optional
-        est_amt = st.number_input("Montant estimé (optionnel)", min_value=0.0, step=1.0, format="%.2f")
-        if est_amt == 0.0:
-            estimated_amount = None
+expander_title = f"📋 [{c_dept}] {c_titre} ({c_date})"
+                if nom_departement in dests and nom_departement not in avis_dict:
+                    expander_title += " ⚠️ [Avis requis]"
+                with st.expander(expander_title):
+                    st.write(f"**Contenu :**\n{c_contenu}")
+                    st.markdown("---")
+                    st.write("**Avis recueillis :**")
+                    if avis_dict:
+                        for d_nom, avi_txt in avis_dict.items():
+                            st.write(f"- **{d_nom}** : {avi_txt}")
+                    else:
+                        st.info("Aucun avis émis pour le moment.")
+                    
+                    if nom_departement in dests:
+                        with st.form(f"form_avis_{c_id}_{nom_departement}"):
+                            mon_avis = st.text_area("Votre avis / remarque technique", value=avis_dict.get(nom_departement, ""))
+                            if st.form_submit_button("Soumettre mon avis"):
+                                avis_dict[nom_departement] = mon_avis
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE cahiers_charges SET avis_recueillis = ? WHERE id = ?", (json.dumps(avis_dict), c_id))
+                                conn.commit()
+                                conn.close()
+                                ajouter_log("Avis CDC", nom_departement, f"Avis donné sur CDC ID {c_id}")
+                                add_notification(c_dept, None, f"Avis de {nom_departement} sur votre CDC: {c_titre}", target_tab="2. Cahiers des Charges")
+                                st.success("Avis enregistré avec succès !")
+                                st.rerun()
+                    
+                    if nom_departement == c_dept or type_profil == "fondateur":
+                        if st.button("🗑️ Supprimer ce CDC", key=f"del_cdc_{c_id}"):
+                            archiver_dans_corbeille(c_dept, "Cahier des Charges", c_titre, {"contenu": c_contenu, "date": c_date})
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM cahiers_charges WHERE id = ?", (c_id,))
+                            conn.commit()
+                            conn.close()
+                            ajouter_log("Suppression CDC", c_dept, f"CDC supprimé : {c_titre}")
+                            st.success("Cahier des charges supprimé et archivé.")
+                            st.rerun()
         else:
-            estimated_amount = float(est_amt)
-        submitted = st.form_submit_button("Soumettre la demande")
-        if submitted:
-            if not title or not description:
-                st.error("Le titre et la description sont requis.")
-            else:
-                tags_list = [t.strip() for t in tags.split(",")] if tags else []
-                ticket = add_demande(emitter, department, title, description, tags_list, estimated_amount, fournisseur_pressenti)
-                st.success(f"Demande envoyée — {ticket}")
-                st.balloons()
-                # add a confirmation inbox entry for the emitter so the notification is visible in inbox
-                try:
-                    add_inbox_entry(st.session_state['current_user'], ticket, f"Demande {ticket} soumise avec succès.", target_tab="Détail")
-                except Exception:
-                    pass
-                # clear the form fields by resetting widget states
-                st.experimental_rerun()
+            st.info("Aucun cahier des charges disponible.")
 
-def render_demande_card(row, show_actions=False):
-    ticket = row['ticket_id']
-    st.markdown(f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center;'>"
-                f"<div><span class='ticket'>{ticket}</span> — <strong>{row['title']}</strong><div class='small'>{row['description'][:160]}{'...' if len(row['description'])>160 else ''}</div></div>"
-                f"<div style='text-align:right'><div class='pill'>{row['status']}</div><div class='small'>Créé: {row['created_at'][:10]}</div></div></div></div>", unsafe_allow_html=True)
-    if show_actions:
-        cols = st.columns([1,1,1,1])
-        if cols[0].button("Voir Détail", key=f"view_{ticket}"):
-            navigate_to("Détail", None, ticket)
-            st.experimental_rerun()
-
-def page_achats():
-    st.markdown("### Espace Achats (Validation et sourcing)")
-    # Sub-navigation handled programmatically
-    sub = st.radio("Vue Achats", ["Demandes à sourcer", "Demandes validées Achats", "Historique"], index=0 if st.session_state['sub_view'] is None else (["Demandes à sourcer","Demandes validées Achats","Historique"].index(st.session_state['sub_view']) if st.session_state['sub_view'] in ["Demandes à sourcer","Demandes validées Achats","Historique"] else 0))
-    st.session_state['sub_view'] = sub
-    if sub == "Demandes à sourcer":
-        st.markdown("Demandes assignées aux Achats pour sourcing.")
-        # list demandes with status Soumis or En attente Achats
-        rows = list_demandes()
-        actionable = [r for r in rows if r['status'] in ("Soumis", "En attente Achats")]
-        if not actionable:
-            st.info("Aucune demande à sourcer.")
-        for row in actionable:
-            render_demande_card(row, show_actions=True)
-            if st.button("Ouvrir " + row['ticket_id'], key=f"open_src_{row['ticket_id']}"):
-                navigate_to("Détail", "achats", row['ticket_id'])
-                st.experimental_rerun()
-
-    elif sub == "Demandes validées Achats":
-        st.markdown("Demandes que les Achats ont sourcées et validées (prêtes pour Finance).")
-        rows = list_demandes()
-        validated = [r for r in rows if r['status'] == "Approuvé Achats"]
-        if not validated:
-            st.info("Aucune demande validée par les Achats.")
-        for row in validated:
-            render_demande_card(row, show_actions=True)
-
-    else:  # Historique
-        st.markdown("Historique Achats")
-        rows = list_demandes()
-        for row in rows:
-            render_demande_card(row, show_actions=True)
-
-def page_finance():
-    st.markdown("### Espace Finance (Contrôles & Vérifications)")
-    rows = list_demandes()
-    awaiting = [r for r in rows if r['status'] in ("Approuvé Achats", "Soumis", "En attente Finance")]
-    if not awaiting:
-        st.info("Aucune demande à contrôler.")
-    for r in awaiting:
-        render_demande_card(r, show_actions=True)
-        if st.button("Ouvrir " + r['ticket_id'], key=f"open_fin_{r['ticket_id']}"):
-            navigate_to("Détail", "finance", r['ticket_id'])
-            st.experimental_rerun()
-
-def page_direction():
-    st.markdown("### Tableau Direction Générale — Suivi global")
-    st.markdown("La Direction ne validera pas directement : elle a un accès de suivi global et pourra demander un point ou un verrouillage final.")
-    rows = list_demandes()
-    # DG sees all but cannot change states from here
-    for r in rows:
-        cols = st.columns([4,1])
-        with cols[0]:
-            st.markdown(f"**{r['ticket_id']}** — {r['title']}")
-            st.markdown(f"- Émetteur: **{r['emitter']}** | Département: **{r['department']}**")
-            st.markdown(f"- Statut: **{r['status']}**")
-            st.markdown(f"- Motif de refus: {r['motif_refus'] or '—'}")
-            st.markdown(f"- Fournisseur retenu: {r['fournisseur_retenu'] or '—'}")
-            if r['tags']:
-                st.markdown(f"- Étiquettes: {r['tags']}")
-            if st.button("Voir la chaîne de vie", key=f"trace_{r['ticket_id']}"):
-                # open detail view but DG only read-only
-                navigate_to("Détail", "dg_view", r['ticket_id'])
-                st.experimental_rerun()
-
-def page_etudes():
-    st.markdown("### Études & Cahiers des charges - Historique")
-    # For simplicity, use demandes that are "Étude" tagged or all études entries
-    rows = list_demandes()
-    for r in rows:
-        # expanders to read content fully
-        with st.expander(f"{r['ticket_id']} — {r['title']}"):
-            st.markdown(f"**Émetteur:** {r['emitter']} — **Département:** {r['department']}")
-            st.markdown(f"**Description complète:**\n\n{r['description']}")
-            if r['tags']:
-                st.markdown(f"**Étiquettes:** {r['tags']}")
-            st.markdown(f"**Statut:** {r['status']}")
-            if st.button("Ouvrir le dossier", key=f"open_etude_{r['ticket_id']}"):
-                navigate_to("Détail", "etude", r['ticket_id'])
-                st.experimental_rerun()
-
-def page_audit():
-    st.markdown("### Audit & Traçabilité")
-    tabs = st.tabs(["Journal des actions", "Connexions & Statistiques"])
-
-    # Journal des actions (logs)
-    with tabs[0]:
-        st.markdown("Journal des actions — qui a fait quoi et quand.")
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM logs_audit ORDER BY created_at DESC LIMIT 500")
-        logs = cur.fetchall()
-        if not logs:
-            st.info("Aucun événement enregistré.")
+# ---------- Module Besoins & Achats ----------
+def afficher_module_achats(nom_departement, type_profil):
+    st.subheader(f"🛒 Gestion des Besoins, Demandes d'Achat & Workflow — {nom_departement}")
+    
+    # Gestion du ticket sélectionné depuis la sidebar ou la navigation globale
+    selected_ticket = st.session_state.get('selected_ticket', None)
+    
+    t1, t2 = st.tabs(["1. Nouvelle Demande d'Achat", "2. Suivi & Validation des Demandes"])
+    with t1:
+        if type_profil in ["achats", "finance", "fondateur"]:
+            st.info("Les départements Achats, Finance et Direction Générale pilotent et valident les demandes. Créez une demande depuis votre propre département opérationnel si nécessaire.")
         else:
-            for log in logs:
-                st.markdown(f"- [{log['created_at'][:19]}] **{log['ticket_id']}** — {log['action']} par {log['user']} — {log['details']}")
+            with st.form(f"form_achat_{nom_departement}", clear_on_submit=True):
+                titre = st.text_input("Intitulé du besoin / Achat")
+                cahier_charges = st.text_area("Justification et spécifications techniques")
+                montant = st.number_input("Montant estimé (€)", min_value=0.0, step=100.0)
+                fournisseur = st.text_input("Fournisseur pressenti (optionnel)")
+                fich_devis = st.file_uploader("📥 Joindre un devis / proforma", type=["pdf", "png", "jpg", "xlsx"])
+                
+                if st.form_submit_button("🚀 Soumettre la Demande d'Achat") and titre:
+                    nom_f = enregistrer_fichier_securise(DOSSIER_UPLOADS, fich_devis)
+                    
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE metadata SET value = CAST(value AS INTEGER) + 1 WHERE key = 'ticket_counter'")
+                    cursor.execute("SELECT value FROM metadata WHERE key = 'ticket_counter'")
+                    counter_row = cursor.fetchone()
+                    ticket_num = f"#TICK-{int(counter_row[0]):04d}" if counter_row else f"#TICK-{uuid.uuid4().hex[:4].upper()}"
+                    
+                    cursor.execute("""
+                        INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, numero_ticket)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        nom_departement, titre, cahier_charges, montant, fournisseur,
+                        "En attente (Achats)", "Achats", "En attente", "En attente", "",
+                        datetime.now().strftime("%Y-%m-%d %H:%M"), nom_f, "", "", ticket_num
+                    ))
+                    conn.commit()
+                    conn.close()
+                    
+                    ajouter_log("Demande d'Achat", nom_departement, f"Demande créée {ticket_num} : {titre}")
+                    add_notification("Achats & Approvisionnements", ticket_num, f"Nouvelle demande d'achat soumise par {nom_departement} : {titre}", target_tab="3. Besoins & Achats")
+                    
+                    st.success(f"✅ Demande soumise avec succès ! Numéro de ticket attribué : **{ticket_num}**")
+                    st.rerun()
+                    
+    with t2:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, numero_ticket FROM demandes ORDER BY id DESC")
+        demandes = cursor.fetchall()
+        conn.close()
+        
+        if demandes:
+            # Filtres
+            st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer les demandes</div>', unsafe_allow_html=True)
+            c_f1, c_f2, c_f3 = st.columns(3)
+            with c_f1:
+                f_statut = st.selectbox("Statut", ["Tous", "En attente", "Validé", "Refusé", "Modification requise"], key="filtre_statut_achats")
+            with c_f2:
+                f_dept = st.selectbox("Département", ["Tous"] + sorted(list(set(d[1] for d in demandes))), key="filtre_dept_achats")
+            with c_f3:
+                f_rech = st.text_input("Recherche texte / ticket", value=selected_ticket or "", key="filtre_rech_achats")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            demandes_filtrees = []
+            for d in demandes:
+                d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_motif, d_date, d_fich, d_rem, d_retenu, d_ticket = d
+                
+                # Appliquer filtres
+                if f_statut != "Tous" and f_statut.lower() not in d_statut.lower():
+                    continue
+                if f_dept != "Tous" and d_dept != f_dept:
+                    continue
+                if f_rech and f_rech.lower() not in f"{d_ticket} {d_titre} {d_dept} {d_cc}".lower():
+                    continue
+                demandes_filtrees.append(d)
+            
+            # Export dataframe
+            df_exp = pd.DataFrame([{
+                "Ticket": d[15], "Date": d[11], "Département": d[1], "Titre": d[2],
+                "Montant estimé": d[4], "Fournisseur pressenti": d[5], "Fournisseur retenu": d[14],
+                "Statut": d[6], "Étape": d[7], "Avis Achats": d[8], "Avis Finance": d[9]
+            } for d in demandes_filtrees])
+            afficher_boutons_export(df_exp, "suivi_demandes_achats", "Suivi des Demandes d'Achat", key_prefix="achats_suivi")
+            
+            for d in demandes_filtrees:
+                d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_motif, d_date, d_fich, d_rem, d_retenu, d_ticket = d
+                
+                titre_expander = f"{d_ticket or f'#ID-{d_id}'} | [{d_dept}] {d_titre} ({d_montant:,.2f} €) — Statut : {d_statut}"
+                with st.expander(titre_expander):
+                    c_info1, c_info2 = st.columns(2)
+                    with c_info1:
+                        st.markdown(f"**Ticket :** {d_ticket}")
+                        st.markdown(f"**Émetteur :** {d_dept}")
+                        st.markdown(f"**Date de soumission :** {d_date}")
+                        st.markdown(f"**Montant estimé :** {d_montant:,.2f} €")
+                        st.markdown(f"**Fournisseur pressenti :** {d_fourn or 'Aucun'}")
+                        if d_retenu:
+                            st.markdown(f"**Fournisseur retenu (Achats) :** **{d_retenu}** ✅")
+                    with c_info2:
+                        st.markdown(f"**Statut actuel :** {pill_statut(d_statut)}", unsafe_allow_html=True)
+                        st.markdown(f"**Étape du workflow :** {d_etape}")
+                        st.markdown(f"**Avis Achats :** {d_achats}")
+                        st.markdown(f"**Avis Finance :** {d_fin}")
+                    
+                    st.markdown(f"**Spécifications / Cahier des charges :**\n{d_cc}")
+                    
+                    if d_fich:
+                        chemin_f = os.path.join(DOSSIER_UPLOADS, d_fich)
+                        if os.path.exists(chemin_f):
+                            with open(chemin_f, "rb") as f_b:
+                                st.download_button("📥 Télécharger le Devis / Fichier Joint", data=f_b.read(), file_name=d_fich, key=f"dl_devis_{d_id}")
+                    
+                    if d_rem:
+                        st.warning(q := f"Remarques / Historique des modifications : {d_rem}")
+                    if d_motif and "refusé" in d_statut.lower():
+                        st.error(f"Motif du refus : {d_motif}")
+                        
+                    st.markdown("---")
+                    
+                    # --- ACTIONS SELON LE RÔLE ---
+                    # 1. Émetteur peut modifier / annuler / supprimer sa demande si elle est en attente ou rejetée/demandée en modif
+                    is_owner = (nom_departement == d_dept)
+                    if is_owner and ("en attente" in d_statut.lower() or "modification" in d_statut.lower() or "refusé" in d_statut.lower()):
+                        st.markdown("#### ✏️ Actions Émetteur")
+                        col_m1, col_m2 = st.columns(2)
+                        with col_m1:
+                            if st.button("🔄 Modifier / Mettre à jour la demande", key=f"btn_modif_em_{d_id}"):
+                                st.session_state[f"edition_active_{d_id}"] = True
+                        with col_m2:
+                            if st.button("❌ Annuler / Supprimer la demande", key=f"btn_annul_em_{d_id}"):
+                                archiver_dans_corbeille(d_dept, "Demande d'Achat", f"{d_ticket} - {d_titre}", {"montant": d_montant, "statut": d_statut})
+                                conn = get_db_connection()
+                                cur = conn.cursor()
+                                cur.execute("DELETE FROM demandes WHERE id = ?", (d_id,))
+                                conn.commit()
+                                conn.close()
+                                ajouter_log("Annulation Demande", d_dept, f"Demande {d_ticket} annulée et supprimée par l'émetteur")
+                                st.success("Demande annulée et supprimée.")
+                                st.rerun()
+                                
+                        if st.session_state.get(f"edition_active_{d_id}", False):
+                            with st.form(f"form_edit_demande_{d_id}"):
+                                nv_titre = st.text_input("Titre", value=d_titre)
+                                nv_cc = st.text_area("Cahier des charges", value=d_cc)
+                                nv_montant = st.number_input("Montant (€)", value=d_montant)
+                                nv_fourn = st.text_input("Fournisseur pressenti", value=d_fourn)
+                                if st.form_submit_button("Enregistrer les modifications"):
+                                    conn = get_db_connection()
+                                    cur = conn.cursor()
+                                    cur.execute("""
+                                        UPDATE demandes SET titre=?, cahier_charges=?, montant=?, fournisseur=?, statut='En attente (Achats)', etape_actuelle='Achats', motif_refus=''
+                                        WHERE id=?
+                                    """, (nv_titre, nv_cc, nv_montant, nv_fourn, d_id))
+                                    conn.commit()
+                                    conn.close()
+                                    st.session_state[f"edition_active_{d_id}"] = False
+                                    ajouter_log("Modification Demande", d_dept, f"Demande {d_ticket} modifiée par l'émetteur")
+                                    add_notification("Achats & Approvisionnements", d_ticket, f"La demande {d_ticket} a été modifiée par {d_dept} et est soumise à nouveau.", target_tab="3. Besoins & Achats")
+                                    st.success("Demande mise à jour et renvoyée aux Achats !")
+                                    st.rerun()
+
+                    # 2. Rôle Achats (DEP12 ou fondateur)
+                    if profil["type"] in ["achats", "fondateur"] and d_etape == "Achats":
+                        st.markdown("#### ⚙️ Validation Achats & Fixation Fournisseur / Prix")
+                        with st.form(f"form_val_achats_{d_id}"):
+                            avis_ach = st.selectbox("Avis Achats", ["Favorable", "Défavorable (Refus)", "Demande de modification"], key=f"av_ach_{d_id}")
+                            fourn_retenu = st.text_input("Fournisseur retenu (Définitif)", value=d_retenu or d_fourn)
+                            montant_final = st.number_input("Montant définitif négocié (€)", min_value=0.0, value=d_montant)
+                            remarques_ach = st.text_area("Commentaires / Conditions d'achat")
+                            
+                            if st.form_submit_button("Transmettre à la Finance"):
+                                nouveau_statut = "En attente (Finance)" if avis_ach == "Favorable" else ("Refusé par les Achats" if avis_ach == "Défavorable (Refus)" else "Modification requise par les Achats")
+                                nouvelle_etape = "Finance" if avis_ach == "Favorable" else "Clôturé"
+                                
+                                conn = get_db_connection()
+                                cur = conn.cursor()
+                                cur.execute("""
+                                    UPDATE demandes SET statut=?, etape_actuelle=?, avis_achats=?, fournisseur_retenu=?, montant=?, retour_remarque=?, motif_refus=?
+                                    WHERE id=?
+                                """, (
+                                    nouveau_statut, nouvelle_etape, avis_ach, fourn_retenu, montant_final, remarques_ach,
+                                    remarques_ach if avis_ach != "Favorable" else "", d_id
+                                ))
+                                conn.commit()
+                                conn.close()
+                                
+                                ajouter_log("Validation Achats", profil["nom"], f"Demande {d_ticket} traitée par les Achats: {avis_ach}")
+                                if avis_ach == "Favorable":
+                                    add_notification("Finance & Comptabilité", d_ticket, f"Demande {d_ticket} validée par les Achats, en attente d'avis financier.", target_tab="3. Besoins & Achats")
+                                else:
+                                    add_notification(d_dept, d_ticket, f"Votre demande {d_ticket} a reçu un retour des Achats: {avis_ach}", target_tab="3. Besoins & Achats")
+                                
+                                st.success("Validation Achats enregistrée et transmise !")
+                                st.rerun()
+
+                    # 3. Rôle Finance (DEP13 ou fondateur)
+                    if profil["type"] in ["finance", "fondateur"] and d_etape == "Finance":
+                        st.markdown("#### 💰 Validation Financière & Budgétaire")
+                        with st.form(f"form_val_finance_{d_id}"):
+                            avis_fin = st.selectbox("Avis Finance", ["Favorable (Financé)", "Défavorable (Refus budgétaire)", "Demande de modification"], key=f"av_fin_{d_id}")
+                            remarques_fin = st.text_area("Commentaires financiers")
+                            
+                            if st.form_submit_button("Transmettre à la Direction Générale"):
+                                nouveau_statut = "En attente (Direction)" if avis_fin.startswith("Favorable") else ("Refusé par la Finance" if "Défavorable" in avis_fin else "Modification requise par la Finance")
+                                nouvelle_etape = "Direction" if avis_fin.startswith("Favorable") else "Clôturé"
+                                
+                                conn = get_db_connection()
+                                cur = conn.cursor()
+                                cur.execute("""
+                                    UPDATE demandes SET statut=?, etape_actuelle=?, avis_finance=?, retour_remarque=?, motif_refus=?
+                                    WHERE id=?
+                                """, (
+                                    nouveau_statut, nouvelle_etape, avis_fin, remarques_fin,
+                                    remarques_fin if not avis_fin.startswith("Favorable") else "", d_id
+                                ))
+                                conn.commit()
+                                conn.close()
+                                
+                                ajouter_log("Validation Finance", profil["nom"], f"Demande {d_ticket} traitée par la Finance: {avis_fin}")
+                                if avis_fin.startswith("Favorable"):
+                                    add_notification("Direction Générale", d_ticket, f"Demande {d_ticket} validée par la Finance, en attente d'approbation de la Direction.", target_tab="3. Besoins & Achats")
+                                else:
+                                    add_notification(d_dept, d_ticket, f"Votre demande {d_ticket} a reçu un retour financier: {avis_fin}", target_tab="3. Besoins & Achats")
+                                
+                                st.success("Avis financier enregistré et transmis à la Direction !")
+                                st.rerun()
+
+                    # 4. Rôle Fondateur / Direction Générale
+                    if profil["type"] == "fondateur" and d_etape == "Direction":
+                        st.markdown("#### 🏢 Approbation Définitive - Direction Générale")
+                        with st.form(f"form_val_direction_{d_id}"):
+                            decision_dir = st.selectbox("Décision Direction", ["Approuvé & Financé définitivement", "Refusé par la Direction", "Demande de modification"], key=f"dec_dir_{d_id}")
+                            motif_dir = st.text_area("Commentaires / Instructions de la Direction")
+                            
+                            if st.form_submit_button("Valider la décision finale"):
+                                nouveau_statut = "Validé / Approuvé" if "Approuvé" in decision_dir else ("Refusé" if "Refusé" in decision_dir else "Modification requise par la Direction")
+                                
+                                # Si validé définitivement, déduire du budget global
+                                if "Approuvé" in decision_dir:
+                                    b_total = get_valeur_globale("budget_global")
+                                    b_solde = get_valeur_globale("solde_restant")
+                                    nouveau_solde = max(0.0, b_solde - d_montant)
+                                    set_valeur_globale("solde_restant", nouveau_solde)
+                                
+                                conn = get_db_connection()
+                                cur = conn.cursor()
+                                cur.execute("""
+                                    UPDATE demandes SET statut=?, etape_actuelle='Clôturé', retour_remarque=?, motif_refus=?
+                                    WHERE id=?
+                                """, (
+                                    nouveau_statut, motif_dir, motif_dir if "Approuvé" not in decision_dir else "", d_id
+                                ))
+                                conn.commit()
+                                conn.close()
+                                
+                                ajouter_log("Approbation Direction", profil["nom"], f"Demande {d_ticket} : {decision_dir}")
+                                add_notification(d_dept, d_ticket, f"Votre demande {d_ticket} a été traitée par la Direction : {decision_dir}", target_tab="3. Besoins & Achats")
+                                
+                                st.success("Décision de la Direction enregistrée avec succès !")
+                                st.rerun()
+        else:
+            st.info("Aucune demande d'achat enregistrée.")
+
+# ---------- Module Messagerie & Chat ----------
+def afficher_module_messagerie(nom_departement, type_profil):
+    st.subheader(f"💬 Messagerie Inter-Départements & Groupes — {nom_departement}")
+    
+    t1, t2 = st.tabs(["1. Discussions Actives", "2. Créer un Nouveau Groupe / Salon"])
+    with t1:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nom_groupe, membres_json, createur, date_creation, archives_par FROM discussions ORDER BY id DESC")
+        discussions = cursor.fetchall()
+        conn.close()
+        
+        disc_accessibles = []
+        for disc in discussions:
+            d_id, d_nom, d_membres_j, d_createur, d_date, d_arch_j = disc
+            membres = json.loads(d_membres_j) if d_membres_j else []
+            archives = json.loads(d_arch_j) if d_arch_j else []
+            if nom_departement in membres or type_profil == "fondateur":
+                if nom_departement not in archives:
+                    disc_accessibles.append(disc)
+        
+        if disc_accessibles:
+            noms_disc = {f"[{d[1]}] Créé par {d[3]} ({d[4]})": d[0] for d in disc_accessibles}
+            choix_label = st.selectbox("Sélectionner un salon de discussion", list(noms_disc.keys()), key="select_salon_chat")
+            active_id = noms_disc[choix_label]
+            st.session_state.discussion_active_id = active_id
+            
+            st.markdown("---")
+            # Afficher les messages
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, expediteur, texte, date FROM messages_chat WHERE discussion_id = ? ORDER BY id ASC", (active_id,))
+            messages = cursor.fetchall()
+            conn.close()
+            
+            chat_container = st.container()
+            with chat_container:
+                if messages:
+                    for m in messages:
+                        m_id, m_exp, m_txt, m_date = m
+                        is_me = (m_exp == nom_departement)
+                        align = "right" if is_me else "left"
+                        bg_color = "#e6f4ea" if is_me else "#f1f3f4"
+                        st.markdown(f"""
+                            <div style="text-align: {align}; margin-bottom: 10px;">
+                                <div style="display: inline-block; background-color: {bg_color}; padding: 8px 12px; border-radius: 10px; max-width: 70%; text-align: left; border: 1px solid #dcdcdc;">
+                                    <small style="color: #555; font-weight: bold;">{m_exp} - {m_date}</small><br>
+                                    <span>{m_txt}</span>
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                else:
+                    st.info("Aucun message dans ce salon pour l'instant. Démarrez la conversation !")
+            
+            with st.form(f"form_msg_{active_id}", clear_on_submit=True):
+                nouveau_msg = st.text_input("Votre message...")
+                c_s1, c_s2 = st.columns([1, 5])
+                with c_s1:
+                    submit_msg = st.form_submit_button("Envoyer")
+                with c_s2:
+                    archiver_salon = st.form_submit_button("Archiver ce salon pour moi")
+                
+                if submit_msg and nouveau_msg:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT INTO messages_chat (discussion_id, expediteur, texte, date, lus_json)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (active_id, nom_departement, nouveau_msg, datetime.now().strftime("%d/%m %H:%M"), json.dumps([])))
+                    conn.commit()
+                    conn.close()
+                    
+                    # Notifier les autres membres du groupe
+                    cursor = conn = get_db_connection()
+                    cursor.execute("SELECT membres_json FROM discussions WHERE id = ?", (active_id,))
+                    row_m = cursor.fetchone()
+                    conn.close()
+                    if row_m:
+                        mems = json.loads(row_m[0]) if row_m[0] else []
+                        for mem in mems:
+                            if mem != nom_departement:
+                                add_notification(mem, None, f"Nouveau message de {nom_departement} dans le salon", target_tab="4. Messagerie & Chat", target_disc=active_id)
+                    
+                    st.rerun()
+                
+                if archiver_salon:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT archives_par FROM discussions WHERE id = ?", (active_id,))
+                    r_arch = cursor.fetchone()
+                    archives = json.loads(r_arch[0]) if r_arch and r_arch[0] else []
+                    if nom_departement not in archives:
+                        archives.append(nom_departement)
+                        cursor.execute("UPDATE discussions SET archives_par = ? WHERE id = ?", (json.dumps(archives), active_id))
+                        conn.commit()
+                    conn.close()
+                    st.success("Salon archivé pour votre département.")
+                    st.rerun()
+        else:
+            st.info("Aucune discussion active ou disponible.")
+            
+    with t2:
+        tous_depts = [u["dept"] for u in UTILISATEURS.values()]
+        with st.form("form_nouveau_groupe", clear_on_submit=True):
+            nom_groupe = st.text_input("Nom du salon / sujet de discussion")
+            membres_choisis = st.multiselect("Sélectionner les départements participants", tous_depts, default=[nom_departement])
+            premier_message = st.text_area("Message initial (optionnel)")
+            
+            if st.form_submit_button("Créer le salon de discussion") and nom_groupe:
+                if nom_departement not in membres_choisis:
+                    membres_choisis.append(nom_departement)
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO discussions (nom_groupe, membres_json, createur, date_creation, archives_par)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (nom_groupe, json.dumps(membres_choisis), nom_departement, datetime.now().strftime("%Y-%m-%d %H:%M"), json.dumps([])))
+                disc_id = cursor.lastrowid
+                
+                if premier_message:
+                    cursor.execute("""
+                        INSERT INTO messages_chat (discussion_id, expediteur, texte, date, lus_json)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (disc_id, nom_departement, premier_message, datetime.now().strftime("%d/%m %H:%M"), json.dumps([])))
+                
+                conn.commit()
+                conn.close()
+                
+                ajouter_log("Création Salon", nom_departement, f"Salon créé : {nom_groupe}")
+                for mem in membres_choisis:
+                    if mem != nom_departement:
+                        add_notification(mem, None, f"Vous avez été ajouté au salon : {nom_groupe}", target_tab="4. Messagerie & Chat", target_disc=disc_id)
+                
+                st.success("Salon de discussion créé avec succès !")
+                st.rerun()
+
+# ---------- Module Journal de Bord ----------
+def afficher_module_journal(nom_departement, type_profil):
+    st.subheader(f"📖 Journal de Bord & Notes de Service — {nom_departement}")
+    t1, t2 = st.tabs(["1. Rédiger une Note", "2. Consulter le Journal Global"])
+    with t1:
+        with st.form(f"form_journal_{nom_departement}", clear_on_submit=True):
+            note = st.text_area("Note de service, événement marquant ou compte-rendu")
+            if st.form_submit_button("Enregistrer dans le journal") and note:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO journal_bord (departement, auteur, note, date_note, heure_note)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (nom_departement, profil["nom"], note, datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%H:%M")))
+                conn.commit()
+                conn.close()
+                ajouter_log("Journal de Bord", nom_departement, "Nouvelle note enregistrée")
+                st.success("Note enregistrée dans le journal de bord !")
+                st.rerun()
+    with t2:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, departement, auteur, note, date_note, heure_note FROM journal_bord ORDER BY id DESC")
+        notes = cursor.fetchall()
+        conn.close()
+        
+        if notes:
+            df_j = pd.DataFrame([{
+                "ID": n[0], "Département": n[1], "Auteur": n[2], "Date": f"{n[4]} à {n[5]}", "Note": n[3]
+            } for n in notes])
+            afficher_boutons_export(df_j, "journal_de_bord", "Journal de Bord", key_prefix="journal_bord")
+            
+            for n in notes:
+                n_id, n_dept, n_auteur, n_note, n_date, n_heure = n
+                with st.expander(f"📝 [{n_dept}] Note de {n_auteur} ({n_date} à {n_heure})"):
+                    st.write(n_note)
+                    if n_dept == nom_departement or type_profil == "fondateur":
+                        if st.button("🗑️ Supprimer cette note", key=f"del_note_{n_id}"):
+                            archiver_dans_corbeille(n_dept, "Note Journal", n_note[:50], {"auteur": n_auteur, "date": n_date})
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM journal_bord WHERE id = ?", (n_id,))
+                            conn.commit()
+                            conn.close()
+                            ajouter_log("Suppression Note", n_dept, "Note de journal supprimée")
+                            st.success("Note supprimée et archivée.")
+                            st.rerun()
+        else:
+            st.info("Aucune note dans le journal de bord.")
+
+# ---------- Module Recherche Globale ----------
+def afficher_module_recherche(nom_departement, type_profil):
+    st.subheader("🔍 Moteur de Recherche Global & Unifié")
+    terme = st.text_input("Rechercher dans tout le système (Études, CDC, Demandes, Journal)...")
+    if terme:
+        t_low = terme.lower()
+        st.markdown(f"### Résultats pour : *{terme}*")
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Études
+        cursor.execute("SELECT departement, titre, date FROM etudes_metier WHERE LOWER(titre) LIKE ? OR LOWER(donnees_json) LIKE ?", (f"%{t_low}%", f"%{t_low}%"))
+        res_etudes = cursor.fetchall()
+        
+        # CDC
+        cursor.execute("SELECT departement, titre, date FROM cahiers_charges WHERE LOWER(titre) LIKE ? OR LOWER(contenu) LIKE ?", (f"%{t_low}%", f"%{t_low}%"))
+        res_cdcs = cursor.fetchall()
+        
+        # Demandes
+        cursor.execute("SELECT numero_ticket, departement, titre, statut FROM demandes WHERE LOWER(numero_ticket) LIKE ? OR LOWER(titre) LIKE ? OR LOWER(cahier_charges) LIKE ?", (f"%{t_low}%", f"%{t_low}%", f"%{t_low}%"))
+        res_dem = cursor.fetchall()
+        
+        conn.close()
+        
+        if res_etudes:
+            st.markdown("#### ⚙️ Études techniques correspondantes")
+            for e in res_etudes:
+                st.write(f"- **[{e[0]}]** {e[1]} ({e[2]})")
+        if res_cdcs:
+            st.markdown("#### 📋 Cahiers des charges correspondants")
+            for c in res_cdcs:
+                st.write(f"- **[{c[0]}]** {c[1]} ({c[2]})")
+        if res_dem:
+            st.markdown("#### 🛒 Demandes d'achat correspondantes")
+            for d in res_dem:
+                st.write(f"- **{d[0]}** [{d[1]}] {d[2]} — *Statut : {d[3]}*")
+                
+        if not res_etudes and not res_cdcs and not res_dem:
+            st.info("Aucun résultat trouvé pour cette recherche.")
+
+# ---------- Pôle de Contrôle (Suivi Global) ----------
+def afficher_module_controle(nom_departement, type_profil):
+    st.subheader("📊 Pôle de Contrôle & Suivi Global de l'Activité")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT numero_ticket, departement, titre, montant, statut, etape_actuelle, date FROM demandes ORDER BY id DESC")
+    toutes_demandes = cursor.fetchall()
+    conn.close()
+    
+    if toutes_demandes:
+        df_ctrl = pd.DataFrame([{
+            "Ticket": d[0], "Département": d[1], "Intitulé": d[2],
+            "Montant (€)": d[3], "Statut": d[4], "Étape": d[5], "Date": d[6]
+        } for d in toutes_demandes])
+        
+        afficher_boutons_export(df_ctrl, "controle_global_achats", "Suivi Global des Achats", key_prefix="ctrl_global")
+        
         st.markdown("---")
-        st.markdown("Recherche avancée de la chaîne de vie d'un ticket")
-        ticket_search = st.text_input("Ticket (#TICK-0001)", value=st.session_state.get('selected_ticket') or "", key='audit_ticket_search')
-        if st.button("Afficher la chaîne", key='audit_show'):
-            cur.execute("SELECT * FROM logs_audit WHERE ticket_id=? ORDER BY created_at ASC", (ticket_search,))
-            rows = cur.fetchall()
-            if not rows:
-                st.info("Aucun log pour ce ticket.")
-            else:
-                for r in rows:
-                    st.markdown(f"- [{r['created_at'][:19]}] {r['action']} — {r['details']} (par {r['user']})")
-
-    # Connexions & Statistiques (pointage)
-    with tabs[1]:
-        st.markdown("Suivi des connexions et activité par utilisateur.")
-        conn = get_conn()
-        cur = conn.cursor()
-        # total connections per user
-        try:
-            cur.execute("SELECT user, COUNT(*) as cnt FROM connections GROUP BY user ORDER BY cnt DESC")
-            conn_rows = cur.fetchall()
-        except Exception:
-            conn_rows = []
-        stats = []
-        for cr in conn_rows:
-            stats.append({"user": cr['user'], "connections_total": cr['cnt']})
-        st.table(stats if stats else [])
-
-        # summary KPIs
-        cur = get_conn().cursor()
-        cur.execute("SELECT COUNT(*) as total FROM demandes")
-        total_demandes = cur.fetchone()['total']
-        cur.execute("SELECT status, COUNT(*) as cnt FROM demandes GROUP BY status")
-        status_rows = cur.fetchall()
-        kpi = {"total_demandes": total_demandes}
-        st.markdown(f"- Total demandes: **{total_demandes}**")
-        st.markdown("**Par statut:**")
-        for s in status_rows:
-            st.markdown(f"- {s['status']}: **{s['cnt']}**")
-
-        # Export KPIs / stats to Excel
-        if st.button("Exporter les statistiques (Excel)"):
-            # build sheets
-            sheets = {}
-            sheets['Connections'] = stats
-            sheets['Demandes_par_statut'] = [{ 'status': r['status'], 'count': r['cnt'] } for r in status_rows]
-            sheets['KPI'] = [kpi]
-            data_bytes, filename = export_stats_excel(sheets)
-            st.download_button("Télécharger les statistiques", data=data_bytes, file_name=filename, mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-
-def page_detail():
-    ticket = st.session_state.get('selected_ticket')
-    if not ticket:
-        st.info("Aucun ticket sélectionné. Utilisez la boîte de réception ou recherchez un ticket.")
-        return
-    r = get_demande_by_ticket(ticket)
-    if not r:
-        st.error("Ticket introuvable.")
-        return
-    st.header(f"{r['ticket_id']} — {r['title']}")
-    st.markdown(f"**Émetteur:** {r['emitter']} — **Département:** {r['department']}")
-    st.markdown(f"**Description:**\n\n{r['description']}")
-    st.markdown(f"**Étiquettes:** {r['tags'] or '—'}")
-    st.markdown(f"**Montant estimé:** {r['estimated_amount'] if r['estimated_amount'] is not None else 'Non renseigné'}")
-    st.markdown(f"**Fournisseur pressenti:** {r['fournisseur_pressenti'] or '—'}")
-    st.markdown(f"**Fournisseur retenu:** {r['fournisseur_retenu'] or '—'}")
-    st.markdown(f"**Statut:** {r['status']}")
-    if r['motif_refus']:
-        st.markdown(f"**Motif de refus:** {r['motif_refus']}")
-
-    # show audit logs for this ticket
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM logs_audit WHERE ticket_id=? ORDER BY created_at ASC", (ticket,))
-    logs = cur.fetchall()
-    st.markdown("#### Journal d'activité")
-    for l in logs:
-        st.markdown(f"- [{l['created_at'][:19]}] **{l['action']}** — {l['details']} (par {l['user']})")
-
-    # Actions depend on role and strict pipeline
-    role = st.session_state['current_user']
-    if role == "Achats":
-        st.markdown("##### Actions Achats")
-        with st.form("form_achats_action"):
-            # Allow Achats to set final supplier and final amount (they have final say on price)
-            fournisseur_retenu = st.text_input("Fournisseur retenu / à confirmer", value=r['fournisseur_retenu'] or r['fournisseur_pressenti'] or "")
-            montant_definitif = st.number_input("Montant définitif (Décidé par Achats) - 0 = inchangé", min_value=0.0, step=1.0, value=float(r['estimated_amount']) if r['estimated_amount'] is not None else 0.0)
-            action = st.selectbox("Action", ["Sourcer & proposer fournisseur", "Approuver et envoyer à Finance", "Demander modification à l'émetteur", "Refuser (nécessite motif)"])
-            motif = st.text_area("Motif (requis si refus)", height=80)
-            sub = st.form_submit_button("Valider action Achats")
-            if sub:
-                # perform strict updates
-                # compute amount to save: None if user left 0.0 and original was None
-                montant_to_save = None
-                try:
-                    if montant_definitif and float(montant_definitif) > 0.0:
-                        montant_to_save = float(montant_definitif)
-                except Exception:
-                    montant_to_save = None
-
-                if action == "Refuser (nécessite motif)":
-                    if not motif.strip():
-                        st.error("Le motif est requis pour un refus.")
-                    else:
-                        # set status and motif, keep fournisseur if provided
-                        update_kwargs = {"status": "Refusé Achats", "motif_refus": motif, "fournisseur_retenu": fournisseur_retenu or None}
-                        if montant_to_save is not None:
-                            update_kwargs["estimated_amount"] = montant_to_save
-                        update_demande(ticket, **update_kwargs)
-                        add_log(ticket, role, "Refus Achats", motif)
-                        st.success("Demande refusée et motif enregistré.")
-                        # notify emitter
-                        add_inbox_entry(r['emitter'], ticket, f"Votre demande {ticket} a été refusée par Achats: {motif}", target_tab="Détail", target_sub=None)
-                        st.experimental_rerun()
-                elif action == "Approuver et envoyer à Finance":
-                    # Set fournisseur, final amount if provided, and mark as approved
-                    update_kwargs = {"status": "Approuvé Achats", "fournisseur_retenu": fournisseur_retenu or None}
-                    if montant_to_save is not None:
-                        update_kwargs["estimated_amount"] = montant_to_save
-                    update_demande(ticket, **update_kwargs)
-                    add_log(ticket, role, "Approuvé Achats", f"Fournisseur retenu: {fournisseur_retenu or '—'} | Montant: {montant_to_save if montant_to_save is not None else '—'}")
-                    # Notify Finance via inbox
-                    add_inbox_entry("Finance", ticket, f"Demande {ticket} prête pour contrôle financier.", target_tab="Finance", target_sub="en_attente")
-                    st.success("Demande approuvée et envoyée à Finance.")
-                    st.experimental_rerun()
-                elif action == "Demander modification à l'émetteur":
-                    update_kwargs = {"status": "Demande Correction - Achats"}
-                    if montant_to_save is not None:
-                        update_kwargs["estimated_amount"] = montant_to_save
-                    if fournisseur_retenu:
-                        update_kwargs["fournisseur_retenu"] = fournisseur_retenu
-                    update_demande(ticket, **update_kwargs)
-                    add_log(ticket, role, "Demande modification", "Soumis retour à l'émetteur pour correction")
-                    add_inbox_entry(r['emitter'], ticket, f"Veuillez modifier votre demande {ticket} suite au retour des Achats.", target_tab="Détail")
-                    st.success("Demande renvoyée à l'émetteur pour modification.")
-                    st.experimental_rerun()
-                else:
-                    # propose supplier but not finalize
-                    update_kwargs = {"fournisseur_retenu": fournisseur_retenu or None}
-                    if montant_to_save is not None:
-                        update_kwargs["estimated_amount"] = montant_to_save
-                    update_demande(ticket, **update_kwargs)
-                    add_log(ticket, role, "Proposition fournisseur", f"Proposition: {fournisseur_retenu or '—'} | Montant proposition: {montant_to_save if montant_to_save is not None else '—'}")
-                    st.success("Proposition enregistrée (non validée).")
-                    st.experimental_rerun()
-
-    elif role == "Finance":
-        st.markdown("##### Actions Finance")
-        # Finance can approve to move to DG follow (but per spec DG is follow-only)
-        with st.form("form_finance_action"):
-            action = st.selectbox("Action", ["Effectuer contrôle & approuver vers suivi DG", "Demander correction", "Refuser (motif)"])
-            motif = st.text_area("Motif (requis si refus)", height=80)
-            sub = st.form_submit_button("Valider action Finance")
-            if sub:
-                if action == "Refuser (motif)":
-                    if not motif.strip():
-                        st.error("Motif requis pour refus.")
-                    else:
-                        update_demande(ticket, status="Refusé Finance", motif_refus=motif)
-                        add_log(ticket, role, "Refus Finance", motif)
-                        add_inbox_entry(r['emitter'], ticket, f"Votre demande {ticket} a été refusée par Finance: {motif}", target_tab="Détail")
-                        st.success("Demande refusée.")
-                        st.experimental_rerun()
-                elif action == "Demander correction":
-                    update_demande(ticket, status="Demande Correction - Finance")
-                    add_log(ticket, role, "Demande correction finance", "Retour à l'émetteur")
-                    add_inbox_entry(r['emitter'], ticket, f"Veuillez corriger la demande {ticket} suite au contrôle Finance.", target_tab="Détail")
-                    st.success("Demande renvoyée à l'émetteur.")
-                    st.experimental_rerun()
-                else:
-                    # Approve and mark as ready for DG follow (but not DG approval)
-                    update_demande(ticket, status="Validé Finance - Prêt suivi DG")
-                    add_log(ticket, role, "Validé Finance", "Prête pour suivi DG")
-                    # Notify DG in inbox but DG won't be able to change status (read-only follow)
-                    add_inbox_entry("Direction Générale", ticket, f"Demande {ticket} validée et disponible pour suivi.", target_tab="Direction", target_sub=None)
-                    st.success("Demande validée par Finance; DG notifié pour suivi.")
-                    st.experimental_rerun()
-
-    elif role == "Direction Générale":
-        st.markdown("##### Vue DG (Actions: Suivi, Commentaires & Décisions)")
-        st.info("La DG suit la chaîne; elle peut aussi ajouter un point, demander une correction ou refuser une demande si nécessaire.")
-        with st.form("form_dg_action"):
-            dg_action = st.selectbox("Action DG", ["Commenter", "Demander correction", "Refuser (motif)", "Annuler la demande"]) 
-            dg_motif = st.text_area("Motif / commentaire (requis pour refus)")
-            dg_submit = st.form_submit_button("Valider action DG")
-            if dg_submit:
-                if dg_action == "Commenter":
-                    if dg_motif.strip():
-                        add_log(ticket, role, "Commentaire DG", dg_motif)
-                        st.success("Commentaire ajouté au journal.")
-                        st.experimental_rerun()
-                    else:
-                        st.error("Le commentaire ne peut pas être vide.")
-                elif dg_action == "Demander correction":
-                    update_demande(ticket, status="Demande Correction - DG")
-                    add_log(ticket, role, "Demande correction DG", "Retour à l'émetteur pour modification")
-                    add_inbox_entry(r['emitter'], ticket, f"La DG demande une modification pour {ticket}.", target_tab="Détail")
-                    st.success("Demande renvoyée à l'émetteur pour correction.")
-                    st.experimental_rerun()
-                elif dg_action == "Refuser (motif)":
-                    if not dg_motif.strip():
-                        st.error("Motif requis pour un refus.")
-                    else:
-                        update_demande(ticket, status="Refusé DG", motif_refus=dg_motif)
-                        add_log(ticket, role, "Refus DG", dg_motif)
-                        add_inbox_entry(r['emitter'], ticket, f"Votre demande {ticket} a été refusée par la Direction Générale: {dg_motif}", target_tab="Détail")
-                        st.success("Demande refusée par la DG.")
-                        st.experimental_rerun()
-                else:
-                    # Annuler la demande
-                    update_demande(ticket, status="Annulé par DG")
-                    add_log(ticket, role, "Annulation DG", "Demande annulée par Direction Générale")
-                    add_inbox_entry(r['emitter'], ticket, f"Votre demande {ticket} a été annulée par la Direction Générale.", target_tab="Détail")
-                    st.success("Demande annulée.")
-                    st.experimental_rerun()
-
+        st.markdown("#### Tableau synthétique de pilotage")
+        st.dataframe(df_ctrl, use_container_width=True)
     else:
-        # regular user / emitter
-        st.markdown("##### Actions émetteur")
-        if st.session_state['current_user'] == r['emitter'] or st.session_state['current_user'] == "Admin":
-            # Emetteur can update description if in correction statuses
-            if r['status'] in ("Demande Correction - Achats", "Demande Correction - Finance", "Demande Correction - DG"):
-                with st.form("form_emetteur_correction"):
-                    new_desc = st.text_area("Modifier la description", value=r['description'])
-                    submit_c = st.form_submit_button("Envoyer modifications")
-                    if submit_c:
-                        update_demande(ticket, description=new_desc, status="Soumis")
-                        add_log(ticket, st.session_state['current_user'], "Modification émetteur", "Description modifiée et resoumise")
-                        add_inbox_entry("Achats", ticket, f"Demande {ticket} resoumise après correction.", target_tab="Achats", target_sub="validation_achats")
-                        st.success("Modifications envoyées.")
-                        st.experimental_rerun()
-            # Allow deletion by Admin or emitter
-            if st.button("Supprimer la demande (irréversible)"):
-                if st.session_state['current_user'] == "Admin" or st.session_state['current_user'] == r['emitter']:
-                    delete_demande(ticket)
-                    add_log(ticket, st.session_state['current_user'], "Suppression", "Demande supprimée")
-                    st.success("Demande supprimée.")
-                    st.experimental_rerun()
-                else:
-                    st.error("Vous n'êtes pas autorisé à supprimer cette demande.")
+        st.info("Aucune donnée de suivi global disponible.")
 
-def page_params():
-    st.markdown("### Paramètres & Administration")
-    if st.session_state['current_user'] != "Admin":
-        st.info("Seul Admin peut gérer ces options.")
+# ---------- Module Statistiques ----------
+def afficher_module_stats(nom_departement, type_profil):
+    st.subheader("📈 Statistiques & Indicateurs Clés de Performance (KPI)")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT departement, montant, statut FROM demandes")
+    data_dem = cursor.fetchall()
+    conn.close()
+    
+    if data_dem:
+        df_stats = pd.DataFrame(data_dem, columns=["Département", "Montant", "Statut"])
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Nombre total de demandes", len(df_stats))
+        c2.metric("Montant total demandé", f"{df_stats['Montant'].sum():,.2f} €")
+        c3.metric("Montant moyen par demande", f"{df_stats['Montant'].mean():,.2f} €" if len(df_stats) > 0 else "0.00 €")
+        
+        st.markdown("---")
+        st.markdown("#### Répartition des montants par département")
+        pivot_dept = df_stats.groupby("Département")["Montant"].sum().reset_index()
+        st.bar_chart(pivot_dept.set_index("Département"))
+        
+        st.markdown("---")
+        afficher_boutons_export(pivot_dept, "statistiques_kpi", "Rapport Statistiques et KPI", key_prefix="stats_kpi")
     else:
-        st.markdown("Purger la base / Débogage")
-        if st.button("Réinitialiser compteur tickets (danger)"):
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("UPDATE metadata SET value='0' WHERE key='ticket_counter'")
-            conn.commit()
-            conn.close()
-            st.success("Compteur réinitialisé.")
-        if st.button("Purger les inbox_entries (danger)"):
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("DELETE FROM inbox_entries")
-            conn.commit()
-            conn.close()
-            st.success("Inbox vidée.")
+        st.info("Données insuffisantes pour générer les statistiques.")
 
-# Dispatcher
-if st.session_state['main_tab'] == "Accueil":
-    page_accueil()
-elif st.session_state['main_tab'] == "Soumettre":
-    page_soumettre()
-elif st.session_state['main_tab'] == "Achats":
-    page_achats()
-elif st.session_state['main_tab'] == "Finance":
-    page_finance()
-elif st.session_state['main_tab'] == "Direction":
-    page_direction()
-elif st.session_state['main_tab'] == "Études":
-    page_etudes()
-elif st.session_state['main_tab'] == "Audit":
-    page_audit()
-elif st.session_state['main_tab'] == "Détail":
-    page_detail()
-elif st.session_state['main_tab'] == "Paramètres":
-    page_params()
-else:
-    st.info("Section inconnue — sélectionnez une section dans la barre latérale.")
+# ---------- Module Audit & Traçabilité ----------
+def afficher_module_audit(nom_departement, type_profil):
+    st.subheader("🕵️ Audit, Traçabilité & Suivi des Connexions")
+    
+    t1, t2 = st.tabs(["1. Journal des Actions (Logs)", "2. Système de Pointage & Connexions Utilisateurs"])
+    with t1:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, date, acteur, action, details FROM logs_audit ORDER BY id DESC LIMIT 200")
+        logs = cursor.fetchall()
+        conn.close()
+        
+        if logs:
+            df_logs = pd.DataFrame(logs, columns=["ID", "Date", "Acteur", "Action", "Détails"])
+            afficher_boutons_export(df_logs, "journal_audit_actions", "Journal d'Audit et Traçabilité", key_prefix="audit_logs")
+            st.dataframe(df_logs, use_container_width=True)
+        else:
+            st.info("Aucun log d'audit enregistré.")
+            
+    with t2:
+        st.markdown("#### Suivi de l'activité et des connexions des collaborateurs")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT date, acteur, action, details FROM logs_audit WHERE action = 'Connexion' ORDER BY id DESC")
+        conn_logs = cursor.fetchall()
+        conn.close()
+        
+        if conn_logs:
+            df_conn = pd.DataFrame(conn_logs, columns=["Date / Heure", "Collaborateur", "Action", "Détails"])
+            # Calcul du nombre de connexions par utilisateur
+            stats_conn = df_conn.groupby("Collaborateur").size().reset_index(name="Nombre de connexions")
+            afficher_boutons_export(stats_conn, "pointage_connexions", "Rapport de Pointage et Activité", key_prefix="pointage_conn")
+            st.dataframe(stats_conn, use_container_width=True)
+            st.markdown("##### Historique détaillé des connexions")
+            st.dataframe(df_conn, use_container_width=True)
+        else:
+            st.info("Aucune donnée de connexion enregistrée.")
+
+# ---------- Module Corbeille ----------
+def afficher_module_corbeille(nom_departement, type_profil):
+    st.subheader("🗑️ Corbeille & Éléments Archivés / Supprimés")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, departement_auteur, type_element, resume, details_json, date_suppression FROM corbeille_archives ORDER BY id DESC")
+    archives = cursor.fetchall()
+    conn.close()
+    
+    if archives:
+        df_corb = pd.DataFrame([{
+            "ID": a[0], "Département": a[1], "Type": a[2], "Résumé": a[3], "Date suppression": a[5]
+        } for a in archives])
+        afficher_boutons_export(df_corb, "corbeille_archives", "Archives et Suppressions", key_prefix="corbeille_exp")
+        
+        for a in archives:
+            a_id, a_dept, a_type, a_res, a_json, a_date = a
+            with st.expander(f"🗑️ [{a_type}] {a_res} (Supprimé par {a_dept} le {a_date})"):
+                st.json(json.loads(a_json) if a_json else {})
+                if type_profil == "fondateur":
+                    if st.button("🗑️ Supprimer définitivement", key=f"perma_del_{a_id}"):
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM corbeille_archives WHERE id = ?", (a_id,))
+                        conn.commit()
+                        conn.close()
+                        st.success("Élément supprimé définitivement.")
+                        st.rerun()
+    else:
+        st.info("La corbeille est vide.")
+
+# ==========================================
+# ROUTAGE DE L'ONGLET ACTIF
+# ==========================================
+tab_courant = st.session_state.tab_actif
+
+if tab_courant == "1. Études & Ingénierie":
+    afficher_module_etudes(nom_dept, profil["type"])
+elif tab_courant == "2. Cahiers des Charges":
+    afficher_module_cahiers_charges(nom_dept, profil["type"])
+elif tab_courant == "3. Besoins & Achats":
+    afficher_module_achats(nom_dept, profil["type"])
+elif tab_courant == "4. Messagerie & Chat":
+    afficher_module_messagerie(nom_dept, profil["type"])
+elif tab_courant == "📖 Journal de Bord":
+    afficher_module_journal(nom_dept, profil["type"])
+elif tab_courant == "🔍 Recherche Globale":
+    afficher_module_recherche(nom_dept, profil["type"])
+elif tab_courant == "📊 Pôle de Contrôle (Suivi Global)":
+    afficher_module_controle(nom_dept, profil["type"])
+elif tab_courant == "📈 Statistiques":
+    afficher_module_stats(nom_dept, profil["type"])
+elif tab_courant == "🕵️ Audit & Traçabilité":
+    afficher_module_audit(nom_dept, profil["type"])
+elif tab_courant == "🗑️ Corbeille & Historique Suppressions":
+    afficher_module_corbeille(nom_dept, profil["type"])
