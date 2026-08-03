@@ -1,4 +1,451 @@
-expander_title = f"📋 [{c_dept}] {c_titre} ({c_date})"
+import streamlit as st
+import pandas as pd
+import sqlite3
+from datetime import datetime
+import json
+import os
+import uuid
+import io
+
+# ==========================================
+# CONFIGURATION DE LA PAGE & STYLES CSS
+# ==========================================
+st.set_page_config(
+    page_title="Plateforme de Pilotage - Projet Agricole",
+    page_icon="🌱",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.markdown("""
+    <style>
+    .main { background-color: #f9fbfd; }
+    .stButton>button { border-radius: 6px; font-weight: 500; }
+    .filter-bar { background-color: #f1f3f4; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+    .filter-bar-title { font-weight: bold; margin-bottom: 10px; color: #333; }
+    </style>
+""", unsafe_allow_html=True)
+
+DOSSIER_UPLOADS = "uploads"
+if not os.path.exists(DOSSIER_UPLOADS):
+    os.makedirs(DOSSIER_UPLOADS)
+
+# ==========================================
+# INITIALISATION DE LA BASE DE DONNÉES SQLITE
+# ==========================================
+DB_NAME = "projet_agricole.db"
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_NAME, timeout=10)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Tables principales
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS etudes_metier (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            departement TEXT,
+            titre TEXT,
+            donnees_json TEXT,
+            date TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cahiers_charges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            departement TEXT,
+            titre TEXT,
+            contenu TEXT,
+            destinataires_json TEXT,
+            avis_recueillis TEXT,
+            date TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS demandes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            departement TEXT,
+            titre TEXT,
+            cahier_charges TEXT,
+            montant REAL,
+            fournisseur TEXT,
+            statut TEXT,
+            etape_actuelle TEXT,
+            avis_achats TEXT,
+            avis_finance TEXT,
+            motif_refus TEXT,
+            date TEXT,
+            fichier_devis TEXT,
+            retour_remarque TEXT,
+            fournisseur_retenu TEXT,
+            numero_ticket TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS discussions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nom_groupe TEXT,
+            membres_json TEXT,
+            createur TEXT,
+            date_creation TEXT,
+            archives_par TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS messages_chat (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discussion_id INTEGER,
+            expediteur TEXT,
+            texte TEXT,
+            date TEXT,
+            lus_json TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS journal_bord (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            departement TEXT,
+            auteur TEXT,
+            note TEXT,
+            date_note TEXT,
+            heure_note TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            destinataire TEXT,
+            ticket_ref TEXT,
+            message TEXT,
+            lu INTEGER DEFAULT 0,
+            date TEXT,
+            target_tab TEXT,
+            target_disc INTEGER
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS logs_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT,
+            acteur TEXT,
+            action TEXT,
+            details TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS corbeille_archives (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            departement_auteur TEXT,
+            type_element TEXT,
+            resume TEXT,
+            details_json TEXT,
+            date_suppression TEXT
+        )
+    """)
+    
+    # Valeurs par défaut métadonnées
+    cursor.execute("INSERT OR IGNORE INTO metadata (key, value) VALUES ('budget_global', '500000.0')")
+    cursor.execute("INSERT OR IGNORE INTO metadata (key, value) VALUES ('solde_restant', '500000.0')")
+    cursor.execute("INSERT OR IGNORE INTO metadata (key, value) VALUES ('ticket_counter', '0')")
+    
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ==========================================
+# UTILITAIRES & FONCTIONS GLOBALES
+# ==========================================
+def ajouter_log(action, acteur, details):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO logs_audit (date, acteur, action, details) VALUES (?, ?, ?, ?)",
+                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), acteur, action, details))
+    conn.commit()
+    conn.close()
+
+def add_notification(destinataire, ticket_ref, message, target_tab=None, target_disc=None):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO notifications (destinataire, ticket_ref, message, lu, date, target_tab, target_disc)
+        VALUES (?, ?, ?, 0, ?, ?, ?)
+    """, (destinataire, ticket_ref, message, datetime.now().strftime("%Y-%m-%d %H:%M"), target_tab, target_disc))
+    conn.commit()
+    conn.close()
+
+def archiver_dans_corbeille(departement, type_element, resume, details_dict):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO corbeille_archives (departement_auteur, type_element, resume, details_json, date_suppression)
+        VALUES (?, ?, ?, ?, ?)
+    """, (departement, type_element, resume, json.dumps(details_dict), datetime.now().strftime("%Y-%m-%d %H:%M")))
+    conn.commit()
+    conn.close()
+
+def get_valeur_globale(key):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM metadata WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return float(row[0]) if row else 0.0
+
+def set_valeur_globale(key, val):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE metadata SET value = ? WHERE key = ?", (str(val), key))
+    conn.commit()
+    conn.close()
+
+def enregistrer_fichier_securise(dossier, uploaded_file):
+    if uploaded_file is not None:
+        filename = f"{uuid.uuid4().hex[:8]}_{uploaded_file.name}"
+        path = os.path.join(dossier, filename)
+        with open(path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return filename
+    return ""
+
+def afficher_boutons_export(df, nom_fichier_base, titre_export, key_prefix="exp"):
+    col1, col2 = st.columns(2)
+    with col1:
+        csv_data = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label=f"📥 Exporter {titre_export} (CSV)",
+            data=csv_data,
+            file_name=f"{nom_fichier_base}_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            key=f"{key_prefix}_csv"
+        )
+    with col2:
+        try:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Donnees')
+            excel_data = output.getvalue()
+            st.download_button(
+                label=f"📊 Exporter {titre_export} (Excel)",
+                data=excel_data,
+                file_name=f"{nom_fichier_base}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"{key_prefix}_excel"
+            )
+        except Exception:
+            pass
+
+def pill_statut(statut):
+    if "validé" in statut.lower() or "approuvé" in statut.lower():
+        return f'<span style="background-color: #d4edda; color: #155724; padding: 3px 8px; border-radius: 4px; font-weight: bold;">{statut}</span>'
+    elif "refusé" in statut.lower() or "défavorable" in statut.lower():
+        return f'<span style="background-color: #f8d7da; color: #721c24; padding: 3px 8px; border-radius: 4px; font-weight: bold;">{statut}</span>'
+    elif "modification" in statut.lower():
+        return f'<span style="background-color: #fff3cd; color: #856404; padding: 3px 8px; border-radius: 4px; font-weight: bold;">{statut}</span>'
+    else:
+        return f'<span style="background-color: #cce5ff; color: #004085; padding: 3px 8px; border-radius: 4px; font-weight: bold;">{statut}</span>'
+
+# ==========================================
+# UTILISATEURS & AUTHENTIFICATION
+# ==========================================
+UTILISATEURS = {
+    "Fondateur / DG": {"dept": "Direction Générale", "type": "fondateur", "pin": "0000"},
+    "Achats & Appro": {"dept": "Achats & Approvisionnements", "type": "achats", "pin": "1234"},
+    "Finance & Comptabilité": {"dept": "Finance & Comptabilité", "type": "finance", "pin": "5678"},
+    "Production Agricole": {"dept": "Production Agricole", "type": "standard", "pin": "1111"},
+    "Ressources Humaines": {"dept": "Ressources Humaines", "type": "standard", "pin": "2222"},
+    "Maintenance & Matériel": {"dept": "Maintenance & Matériel", "type": "standard", "pin": "3333"},
+}
+
+if 'user_role' not in st.session_state:
+    st.session_state.user_role = "Fondateur / DG"
+if 'tab_actif' not in st.session_state:
+    st.session_state.tab_actif = "1. Études & Ingénierie"
+
+# Sidebar d'authentification et de navigation
+with st.sidebar:
+    st.image("logo.png" if os.path.exists("logo.png") else "https://via.placeholder.com/150", width=100)
+    st.title("🌱 Projet Agricole")
+    st.markdown("---")
+    
+    role_choisi = st.selectbox("Sélectionner votre profil", list(UTILISATEURS.keys()), index=list(UTILISATEURS.keys()).index(st.session_state.user_role))
+    
+    if role_choisi != st.session_state.user_role:
+        st.session_state.user_role = role_choisi
+        profil_act = UTILISATEURS[role_choisi]
+        ajouter_log("Connexion", profil_act["dept"], f"Connexion réussie en tant que {role_choisi}")
+        st.rerun()
+        
+    profil = UTILISATEURS[st.session_state.user_role]
+    nom_dept = profil["dept"]
+    
+    st.info(f"📍 **Département :** {nom_dept}")
+    
+    st.markdown("---")
+    st.markdown("### 📌 Navigation Principale")
+    
+    liste_onglets = [
+        "1. Études & Ingénierie",
+        "2. Cahiers des Charges",
+        "3. Besoins & Achats",
+        "4. Messagerie & Chat",
+        "📖 Journal de Bord",
+        "🔍 Recherche Globale",
+        "📊 Pôle de Contrôle (Suivi Global)",
+        "📈 Statistiques",
+        "🕵️ Audit & Traçabilité",
+        "🗑️ Corbeille & Historique Suppressions"
+    ]
+    
+    choix_menu = st.radio("Aller vers :", liste_onglets, index=liste_onglets.index(st.session_state.tab_actif) if st.session_state.tab_actif in liste_onglets else 0)
+    if choix_menu != st.session_state.tab_actif:
+        st.session_state.tab_actif = choix_menu
+        st.rerun()
+        
+    st.markdown("---")
+    # Gestion des notifications non lues
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, ticket_ref, message, target_tab, target_disc FROM notifications WHERE destinataire = ? AND lu = 0", (nom_dept,))
+    notifs = cursor.fetchall()
+    conn.close()
+    
+    if notifs:
+        st.markdown(f"🔔 **Notifications ({len(notifs)})**")
+        for n in notifs:
+            n_id, n_tick, n_msg, n_tab, n_disc = n
+            if st.button(f"{n_tick or 'Info'} : {n_msg[:30]}...", key=f"notif_{n_id}"):
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("UPDATE notifications SET lu = 1 WHERE id = ?", (n_id,))
+                conn.commit()
+                conn.close()
+                if n_tab:
+                    st.session_state.tab_actif = n_tab
+                if n_disc:
+                    st.session_state.selected_ticket = n_tick
+                st.rerun()
+
+# ==========================================
+# MODULES MÉTIER
+# ==========================================
+
+# ---------- Module Études & Ingénierie ----------
+def afficher_module_etudes(nom_departement, type_profil):
+    st.subheader(f"⚙️ Études & Ingénierie — {nom_departement}")
+    t1, t2 = st.tabs(["1. Nouvelle Étude", "2. Consulter les Études"])
+    with t1:
+        with st.form(f"form_etude_{nom_departement}", clear_on_submit=True):
+            titre = st.text_input("Titre de l'étude technique")
+            description = st.text_area("Description, hypothèses et paramètres techniques")
+            if st.form_submit_button("Enregistrer l'Étude") and titre:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO etudes_metier (departement, titre, donnees_json, date)
+                    VALUES (?, ?, ?, ?)
+                """, (nom_departement, titre, json.dumps({"description": description}), datetime.now().strftime("%Y-%m-%d %H:%M")))
+                conn.commit()
+                conn.close()
+                ajouter_log("Création Étude", nom_departement, f"Étude enregistrée : {titre}")
+                st.success("Étude enregistrée avec succès !")
+                st.rerun()
+    with t2:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, departement, titre, donnees_json, date FROM etudes_metier ORDER BY id DESC")
+        etudes = cursor.fetchall()
+        conn.close()
+        
+        if etudes:
+            df_e = pd.DataFrame([{
+                "ID": e[0], "Département": e[1], "Titre": e[2], "Date": e[4],
+                "Description": json.loads(e[3]).get("description", "")
+            } for e in etudes])
+            afficher_boutons_export(df_e, "etudes_ingenierie", "Études et Ingénierie", key_prefix="etudes_exp")
+            
+            for e in etudes:
+                e_id, e_dept, e_titre, e_json, e_date = e
+                data = json.loads(e_json)
+                with st.expander(f"⚙️ [{e_dept}] {e_titre} ({e_date})"):
+                    st.write(f"**Description :**\n{data.get('description', '')}")
+                    if e_dept == nom_departement or type_profil == "fondateur":
+                        if st.button("🗑️ Supprimer cette étude", key=f"del_etude_{e_id}"):
+                            archiver_dans_corbeille(e_dept, "Étude Technique", e_titre, data)
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM etudes_metier WHERE id = ?", (e_id,))
+                            conn.commit()
+                            conn.close()
+                            ajouter_log("Suppression Étude", e_dept, f"Étude supprimée : {e_titre}")
+                            st.success("Étude supprimée et archivée.")
+                            st.rerun()
+        else:
+            st.info("Aucune étude enregistrée.")
+
+# ---------- Module Cahiers des Charges ----------
+def afficher_module_cahiers_charges(nom_departement, type_profil):
+    st.subheader(f"📋 Cahiers des Charges & Validation Technique — {nom_departement}")
+    
+    t1, t2 = st.tabs(["1. Rédaction d'un Cahier des Charges", "2. Suivi & Avis Techniques"])
+    with t1:
+        with st.form(f"form_cdc_{nom_departement}", clear_on_submit=True):
+            c_titre = st.text_input("Titre du Cahier des Charges")
+            c_dept = nom_departement
+            c_contenu = st.text_area("Contenu détaillé, spécifications et livrables")
+            
+            tous_depts = [u["dept"] for u in UTILISATEURS.values()]
+            dests = st.multiselect("Départements devant émettre un avis technique", tous_depts, default=[])
+            
+            if st.form_submit_button("Publier le Cahier des Charges") and c_titre:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO cahiers_charges (departement, titre, contenu, destinataires_json, avis_recueillis, date)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    c_dept, c_titre, c_contenu, json.dumps(dests), json.dumps({}),
+                    datetime.now().strftime("%Y-%m-%d %H:%M")
+                ))
+                conn.commit()
+                conn.close()
+                
+                ajouter_log("Création CDC", nom_departement, f"CDC publié : {c_titre}")
+                for d in dests:
+                    add_notification(d, None, f"Avis requis sur le nouveau CDC de {c_dept}: {c_titre}", target_tab="2. Cahiers des Charges")
+                
+                st.success("Cahier des charges publié avec succès !")
+                st.rerun()
+                
+    with t2:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, departement, titre, contenu, destinataires_json, avis_recueillis, date FROM cahiers_charges ORDER BY id DESC")
+        cdcs = cursor.fetchall()
+        conn.close()
+        
+        if cdcs:
+            df_cdc = pd.DataFrame([{
+                "ID": c[0], "Département": c[1], "Titre": c[2], "Date": c[6], "Contenu": c[3]
+            } for c in cdcs])
+            afficher_boutons_export(df_cdc, "cahiers_des_charges", "Cahiers des Charges", key_prefix="cdc_exp")
+            
+            for c in cdcs:
+                c_id, c_dept, c_titre, c_contenu, c_dests_j, c_avis_j, c_date = c
+                dests = json.loads(c_dests_j) if c_dests_j else []
+                avis_dict = json.loads(c_avis_j) if c_avis_j else {}
+                
+                expander_title = f"📋 [{c_dept}] {c_titre} ({c_date})"
                 if nom_departement in dests and nom_departement not in avis_dict:
                     expander_title += " ⚠️ [Avis requis]"
                 with st.expander(expander_title):
@@ -44,7 +491,6 @@ expander_title = f"📋 [{c_dept}] {c_titre} ({c_date})"
 def afficher_module_achats(nom_departement, type_profil):
     st.subheader(f"🛒 Gestion des Besoins, Demandes d'Achat & Workflow — {nom_departement}")
     
-    # Gestion du ticket sélectionné depuis la sidebar ou la navigation globale
     selected_ticket = st.session_state.get('selected_ticket', None)
     
     t1, t2 = st.tabs(["1. Nouvelle Demande d'Achat", "2. Suivi & Validation des Demandes"])
@@ -94,7 +540,6 @@ def afficher_module_achats(nom_departement, type_profil):
         conn.close()
         
         if demandes:
-            # Filtres
             st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer les demandes</div>', unsafe_allow_html=True)
             c_f1, c_f2, c_f3 = st.columns(3)
             with c_f1:
@@ -109,7 +554,6 @@ def afficher_module_achats(nom_departement, type_profil):
             for d in demandes:
                 d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_motif, d_date, d_fich, d_rem, d_retenu, d_ticket = d
                 
-                # Appliquer filtres
                 if f_statut != "Tous" and f_statut.lower() not in d_statut.lower():
                     continue
                 if f_dept != "Tous" and d_dept != f_dept:
@@ -118,7 +562,6 @@ def afficher_module_achats(nom_departement, type_profil):
                     continue
                 demandes_filtrees.append(d)
             
-            # Export dataframe
             df_exp = pd.DataFrame([{
                 "Ticket": d[15], "Date": d[11], "Département": d[1], "Titre": d[2],
                 "Montant estimé": d[4], "Fournisseur pressenti": d[5], "Fournisseur retenu": d[14],
@@ -155,14 +598,12 @@ def afficher_module_achats(nom_departement, type_profil):
                                 st.download_button("📥 Télécharger le Devis / Fichier Joint", data=f_b.read(), file_name=d_fich, key=f"dl_devis_{d_id}")
                     
                     if d_rem:
-                        st.warning(q := f"Remarques / Historique des modifications : {d_rem}")
+                        st.warning(f"Remarques / Historique des modifications : {d_rem}")
                     if d_motif and "refusé" in d_statut.lower():
                         st.error(f"Motif du refus : {d_motif}")
                         
                     st.markdown("---")
                     
-                    # --- ACTIONS SELON LE RÔLE ---
-                    # 1. Émetteur peut modifier / annuler / supprimer sa demande si elle est en attente ou rejetée/demandée en modif
                     is_owner = (nom_departement == d_dept)
                     if is_owner and ("en attente" in d_statut.lower() or "modification" in d_statut.lower() or "refusé" in d_statut.lower()):
                         st.markdown("#### ✏️ Actions Émetteur")
@@ -203,7 +644,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                     st.success("Demande mise à jour et renvoyée aux Achats !")
                                     st.rerun()
 
-                    # 2. Rôle Achats (DEP12 ou fondateur)
                     if profil["type"] in ["achats", "fondateur"] and d_etape == "Achats":
                         st.markdown("#### ⚙️ Validation Achats & Fixation Fournisseur / Prix")
                         with st.form(f"form_val_achats_{d_id}"):
@@ -228,7 +668,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 
-                                ajouter_log("Validation Achats", profil["nom"], f"Demande {d_ticket} traitée par les Achats: {avis_ach}")
+                                ajouter_log("Validation Achats", profil["nom"] if "nom" in profil else profil["dept"], f"Demande {d_ticket} traitée par les Achats: {avis_ach}")
                                 if avis_ach == "Favorable":
                                     add_notification("Finance & Comptabilité", d_ticket, f"Demande {d_ticket} validée par les Achats, en attente d'avis financier.", target_tab="3. Besoins & Achats")
                                 else:
@@ -237,7 +677,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 st.success("Validation Achats enregistrée et transmise !")
                                 st.rerun()
 
-                    # 3. Rôle Finance (DEP13 ou fondateur)
                     if profil["type"] in ["finance", "fondateur"] and d_etape == "Finance":
                         st.markdown("#### 💰 Validation Financière & Budgétaire")
                         with st.form(f"form_val_finance_{d_id}"):
@@ -260,7 +699,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 
-                                ajouter_log("Validation Finance", profil["nom"], f"Demande {d_ticket} traitée par la Finance: {avis_fin}")
+                                ajouter_log("Validation Finance", profil["nom"] if "nom" in profil else profil["dept"], f"Demande {d_ticket} traitée par la Finance: {avis_fin}")
                                 if avis_fin.startswith("Favorable"):
                                     add_notification("Direction Générale", d_ticket, f"Demande {d_ticket} validée par la Finance, en attente d'approbation de la Direction.", target_tab="3. Besoins & Achats")
                                 else:
@@ -269,7 +708,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 st.success("Avis financier enregistré et transmis à la Direction !")
                                 st.rerun()
 
-                    # 4. Rôle Fondateur / Direction Générale
                     if profil["type"] == "fondateur" and d_etape == "Direction":
                         st.markdown("#### 🏢 Approbation Définitive - Direction Générale")
                         with st.form(f"form_val_direction_{d_id}"):
@@ -279,9 +717,7 @@ def afficher_module_achats(nom_departement, type_profil):
                             if st.form_submit_button("Valider la décision finale"):
                                 nouveau_statut = "Validé / Approuvé" if "Approuvé" in decision_dir else ("Refusé" if "Refusé" in decision_dir else "Modification requise par la Direction")
                                 
-                                # Si validé définitivement, déduire du budget global
                                 if "Approuvé" in decision_dir:
-                                    b_total = get_valeur_globale("budget_global")
                                     b_solde = get_valeur_globale("solde_restant")
                                     nouveau_solde = max(0.0, b_solde - d_montant)
                                     set_valeur_globale("solde_restant", nouveau_solde)
@@ -297,7 +733,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 
-                                ajouter_log("Approbation Direction", profil["nom"], f"Demande {d_ticket} : {decision_dir}")
+                                ajouter_log("Approbation Direction", profil["nom"] if "nom" in profil else profil["dept"], f"Demande {d_ticket} : {decision_dir}")
                                 add_notification(d_dept, d_ticket, f"Votre demande {d_ticket} a été traitée par la Direction : {decision_dir}", target_tab="3. Besoins & Achats")
                                 
                                 st.success("Décision de la Direction enregistrée avec succès !")
@@ -333,7 +769,6 @@ def afficher_module_messagerie(nom_departement, type_profil):
             st.session_state.discussion_active_id = active_id
             
             st.markdown("---")
-            # Afficher les messages
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT id, expediteur, texte, date FROM messages_chat WHERE discussion_id = ? ORDER BY id ASC", (active_id,))
@@ -377,11 +812,11 @@ def afficher_module_messagerie(nom_departement, type_profil):
                     conn.commit()
                     conn.close()
                     
-                    # Notifier les autres membres du groupe
-                    cursor = conn = get_db_connection()
-                    cursor.execute("SELECT membres_json FROM discussions WHERE id = ?", (active_id,))
-                    row_m = cursor.fetchone()
-                    conn.close()
+                    conn_notif = get_db_connection()
+                    cur_notif = conn_notif.cursor()
+                    cur_notif.execute("SELECT membres_json FROM discussions WHERE id = ?", (active_id,))
+                    row_m = cur_notif.fetchone()
+                    conn_notif.close()
                     if row_m:
                         mems = json.loads(row_m[0]) if row_m[0] else []
                         for mem in mems:
@@ -455,7 +890,7 @@ def afficher_module_journal(nom_departement, type_profil):
                 cursor.execute("""
                     INSERT INTO journal_bord (departement, auteur, note, date_note, heure_note)
                     VALUES (?, ?, ?, ?, ?)
-                """, (nom_departement, profil["nom"], note, datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%H:%M")))
+                """, (nom_departement, profil["dept"], note, datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%H:%M")))
                 conn.commit()
                 conn.close()
                 ajouter_log("Journal de Bord", nom_departement, "Nouvelle note enregistrée")
@@ -503,15 +938,12 @@ def afficher_module_recherche(nom_departement, type_profil):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Études
         cursor.execute("SELECT departement, titre, date FROM etudes_metier WHERE LOWER(titre) LIKE ? OR LOWER(donnees_json) LIKE ?", (f"%{t_low}%", f"%{t_low}%"))
         res_etudes = cursor.fetchall()
         
-        # CDC
         cursor.execute("SELECT departement, titre, date FROM cahiers_charges WHERE LOWER(titre) LIKE ? OR LOWER(contenu) LIKE ?", (f"%{t_low}%", f"%{t_low}%"))
         res_cdcs = cursor.fetchall()
         
-        # Demandes
         cursor.execute("SELECT numero_ticket, departement, titre, statut FROM demandes WHERE LOWER(numero_ticket) LIKE ? OR LOWER(titre) LIKE ? OR LOWER(cahier_charges) LIKE ?", (f"%{t_low}%", f"%{t_low}%", f"%{t_low}%"))
         res_dem = cursor.fetchall()
         
@@ -614,7 +1046,6 @@ def afficher_module_audit(nom_departement, type_profil):
         
         if conn_logs:
             df_conn = pd.DataFrame(conn_logs, columns=["Date / Heure", "Collaborateur", "Action", "Détails"])
-            # Calcul du nombre de connexions par utilisateur
             stats_conn = df_conn.groupby("Collaborateur").size().reset_index(name="Nombre de connexions")
             afficher_boutons_export(stats_conn, "pointage_connexions", "Rapport de Pointage et Activité", key_prefix="pointage_conn")
             st.dataframe(stats_conn, use_container_width=True)
