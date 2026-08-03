@@ -115,7 +115,7 @@ st.markdown("""
     .pill-modif { background: rgba(91,141,239,0.15); color: #79b8ff; border: 1px solid rgba(91,141,239,0.4); }
 
     /* Onglets natifs st.tabs */
-    st.write(f"- **[{r[1]}] {r[2]}** ({r[3]})")
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; }
     .stTabs [data-baseweb="tab"] {
         border-radius: 8px 8px 0 0; background-color: var(--bg-card-2); padding: 8px 16px;
     }
@@ -525,7 +525,7 @@ if profil["type"] in ["finance", "fondateur"]:
 
 st.markdown("---")
 
-# --- NAVIGATION ONGLET PRINCIPAL ---
+# --- NAVIGATION ONGLES PRINCIPAUX (AVEC MODULE DIRECTION CORBEILLE SI FONDATEUR) ---
 onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "4. Messagerie & Chat", "📖 Journal de Bord", "🔍 Recherche Globale"]
 if profil["type"] in ["achats", "finance", "fondateur"]:
     onglets_possibles.append("📊 Pôle de Contrôle (Suivi Global)")
@@ -581,6 +581,7 @@ def afficher_module_etudes(nom_departement, type_profil):
         etudes = cursor.fetchall()
         recus = [e for e in etudes if nom_departement in (json.loads(e[5]) if e[5] else []) or type_profil == "fondateur"]
 
+        # Marquer comme vues par ce département (pour désactiver la notification correspondante)
         for e in recus:
             vus = json.loads(e[7]) if e[7] else []
             if nom_departement not in vus:
@@ -666,31 +667,31 @@ def afficher_module_etudes(nom_departement, type_profil):
         else:
             st.info("Aucune étude enregistrée.")
 
-
 # ==========================================
 # 2. MODULE CAHIERS DES CHARGES
 # ==========================================
 def afficher_module_cdc(nom_departement, type_profil):
-    st.subheader(f"📋 Rédaction & Avis sur les Cahiers des Charges — {nom_departement}")
+    st.subheader("📋 Cahiers des Charges & Documents Partagés")
     tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
-    t1, t2 = st.tabs(["1. Rédiger & Diffuser", "2. Cahiers Reçus & Avis"])
 
+    t1, t2 = st.tabs(["1. Publier un Cahier des Charges", "2. Documents Reçus & Gestion"])
     with t1:
         with st.form("form_cdc", clear_on_submit=True):
-            titre = st.text_input("Titre du Cahier des Charges")
-            contenu = st.text_area("Contenu détaillé / Spécifications fonctionnelles")
-            destinataires = st.multiselect("Demander l'avis de :", tous_depts)
-            if st.form_submit_button("Publier et solliciter") and titre:
+            titre = st.text_input("Intitulé du document")
+            contenu = st.text_area("Contenu détaillé")
+            fich = st.file_uploader("📎 Pièce jointe", type=["pdf", "xlsx", "docx"])
+            dest = st.multiselect("Partager pour consultation :", tous_depts)
+            if st.form_submit_button("Diffuser Document") and titre:
+                f_name = enregistrer_fichier_securise(DOSSIER_UPLOADS, fich)
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO cahiers_charges (departement, titre, contenu, date, destinataires_avis)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (nom_departement, titre, contenu, datetime.now().strftime("%Y-%m-%d %H:%M"), json.dumps(destinataires)))
+                cursor.execute("INSERT INTO cahiers_charges (departement, titre, contenu, date, destinataires_avis) VALUES (?, ?, ?, ?, ?)",
+                               (nom_departement, f"{titre}||{f_name}", contenu, datetime.now().strftime("%Y-%m-%d %H:%M"), json.dumps(dest)))
                 conn.commit()
                 conn.close()
-                ajouter_log("Cahier des Charges", nom_departement, f"CDC créé: {titre}")
-                st.success("Cahier des charges publié !")
+                ajouter_log("Cahier des Charges", nom_departement, f"CDC publié : {titre}")
+                st.toast("Document diffusé avec succès !", icon="✅")
+                st.success("Document diffusé avec succès.")
                 st.rerun()
 
     with t2:
@@ -699,551 +700,920 @@ def afficher_module_cdc(nom_departement, type_profil):
         cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis, vus_par_json FROM cahiers_charges ORDER BY id DESC")
         cdcs = cursor.fetchall()
 
-        recus = [c for c in cdcs if nom_departement in (json.loads(c[5]) if c[5] else []) or type_profil == "fondateur" or c[1] == nom_departement]
-
-        for c in recus:
-            if c[1] != nom_departement:
-                vus = json.loads(c[6]) if c[6] else []
-                if nom_departement not in vus:
-                    vus.append(nom_departement)
-                    cursor.execute("UPDATE cahiers_charges SET vus_par_json = ? WHERE id = ?", (json.dumps(vus), c[0]))
+        cdcs_visibles = []
+        for c in cdcs:
+            c_id, c_dept, c_titre_raw, c_txt, c_date, c_dest_raw, c_vus_raw = c
+            dests = json.loads(c_dest_raw) if c_dest_raw else []
+            if nom_departement in dests or c_dept == nom_departement or type_profil == "fondateur":
+                cdcs_visibles.append(c)
+                if c_dept != nom_departement:
+                    vus = json.loads(c_vus_raw) if c_vus_raw else []
+                    if nom_departement not in vus:
+                        vus.append(nom_departement)
+                        cursor.execute("UPDATE cahiers_charges SET vus_par_json = ? WHERE id = ?", (json.dumps(vus), c_id))
         conn.commit()
         conn.close()
 
-        if recus:
+        if cdcs_visibles:
+            depts_dispo_cdc = ["Tous"] + sorted(set(c[1] for c in cdcs_visibles))
+            st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer</div>', unsafe_allow_html=True)
+            cf1, cf2 = st.columns([2, 1])
+            with cf1:
+                recherche_cdc = st.text_input("Rechercher (titre ou contenu)", key="recherche_cdc")
+            with cf2:
+                dept_cdc = st.selectbox("Département émetteur", depts_dispo_cdc, key="dept_cdc")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            def _match_cdc(c):
+                titre_seul = c[2].split("||")[0]
+                texte = f"{titre_seul} {c[3]}".lower()
+                ok_recherche = recherche_cdc.lower() in texte if recherche_cdc else True
+                ok_dept = (dept_cdc == "Tous") or (c[1] == dept_cdc)
+                return ok_recherche and ok_dept
+
+            cdcs_filtres = [c for c in cdcs_visibles if _match_cdc(c)]
+
             df_export_cdc = pd.DataFrame([{
-                "ID": c[0], "Émetteur": c[1], "Titre": c[2].split('||')[0],
-                "Contenu": c[3][:100], "Date": c[4]
-            } for c in recus])
-            afficher_boutons_export(df_export_cdc, "cahiers_charges", "Cahiers des Charges", key_prefix="cdc")
-
-            for c in recus:
-                c_id, c_dept, c_titre_raw, c_contenu, c_date, _, _ = c
-                parties = c_titre_raw.split("||")
-                titre_net = parties[0]
-                avis_precedents = parties[1:]
-
-                with st.expander(f"📌 [{c_dept}] {titre_net} ({c_date})"):
-                    st.write(f"**Contenu :**\n{c_contenu}")
-                    if avis_precedents:
-                        st.markdown("---")
-                        st.markdown("**Avis émis par les départements :**")
-                        for av in avis_precedents:
-                            st.markdown(f"- {av}")
-                    
-                    if c_dept != nom_departement:
-                        with st.form(f"form_avis_{c_id}"):
-                            commentaire_avis = st.text_area("Rédiger votre avis / remarque technique :", key=f"comm_avis_{c_id}")
-                            if st.form_submit_button("Envoyer l'avis") and commentaire_avis:
-                                nouveau_morceau = f"{nom_departement} : {commentaire_avis}"
-                                nouveaux_parties = parties + [nouveau_morceau]
-                                nouveau_titre_stock = "||".join(nouveaux_parties)
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE cahiers_charges SET titre = ? WHERE id = ?", (nouveau_titre_stock, c_id))
-                                conn.commit()
-                                conn.close()
-                                ajouter_log("Avis CDC", nom_departement, f"Avis donné sur CDC #{c_id}")
-                                st.success("Avis enregistré avec succès !")
-                                st.rerun()
+                "ID": c[0], "Département": c[1], "Titre": c[2].split("||")[0],
+                "Contenu": c[3], "Date": c[4]
+            } for c in cdcs_filtres])
+            afficher_boutons_export(df_export_cdc, "cahiers_des_charges", "Cahiers des Charges", key_prefix="cdc")
         else:
-            st.info("Aucun cahier des charges disponible.")
+            cdcs_filtres = []
 
+        for c in cdcs_filtres:
+            c_id, c_dept, c_titre_raw, c_txt, c_date, c_dest_raw, c_vus_raw = c
+            parts = c_titre_raw.split("||")
+            t_titre = parts[0]
+            t_fich = parts[1] if len(parts) > 1 else ""
+
+            with st.expander(f"📄 [{c_dept}] {t_titre} ({c_date})"):
+                st.write(c_txt)
+                if t_fich:
+                    ch = os.path.join(DOSSIER_UPLOADS, t_fich)
+                    if os.path.exists(ch):
+                        with open(ch, "rb") as f:
+                            st.download_button("📥 Télécharger pièce jointe", f, file_name=t_fich, key=f"dl_cdc_{c_id}")
+
+                if c_dept == nom_departement or type_profil == "fondateur":
+                    if st.button("🗑️ Supprimer ce Cahier des Charges", key=f"del_cdc_{c_id}"):
+                        archiver_dans_corbeille(c_dept, "Cahier des Charges", t_titre, {"contenu": c_txt, "date": c_date})
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM cahiers_charges WHERE id = ?", (c_id,))
+                        conn.commit()
+                        conn.close()
+                        ajouter_log("Suppression CDC", c_dept, f"CDC supprimé : {t_titre}")
+                        st.success("Cahier des charges supprimé et archivé.")
+                        st.rerun()
 
 # ==========================================
 # 3. MODULE BESOINS & ACHATS
 # ==========================================
 def afficher_module_achats(nom_departement, type_profil):
-    st.subheader(f"🛒 Expression des Besoins & Workflow d'Achats — {nom_departement}")
-    t1, t2 = st.tabs(["1. Nouvelle Demande d'Achat", "2. Suivi & Traitement des Demandes"])
-
-    with t1:
-        with st.form("form_demande", clear_on_submit=True):
-            titre = st.text_input("Intitulé du besoin / Achat")
-            cahier_charges = st.text_area("Description et justification technique")
+    st.subheader("🛒 Gestion des Demandes d'Achat & Validations")
+    
+    est_controleur = type_profil in ["achats", "finance", "fondateur"]
+    titres_sous_tabs = ["1. Émettre une Demande", "2. Suivi de mes Demandes & Corrections"]
+    if est_controleur:
+        titres_sous_tabs.append("3. 🛡️ Espace de Validation")
+        
+    sub_tabs = st.tabs(titres_sous_tabs)
+    
+    # 1. ÉMISSION
+    with sub_tabs[0]:
+        with st.form("form_demande_achat", clear_on_submit=True):
+            titre = st.text_input("Intitulé du besoin")
+            desc = st.text_area("Description du besoin / Spécifications")
             montant = st.number_input("Montant estimé (€)", min_value=0.0, step=100.0)
-            fournisseur_prop = st.text_input("Fournisseur pressenti (optionnel)")
-            fich = st.file_uploader("📥 Devis / Fichier justificatif", type=["pdf", "png", "jpg", "xlsx"])
+            fournisseur = st.text_input("Fournisseur pressenti (Facultatif — le choix final revient au département Achats)")
+            devis = st.file_uploader("📎 Importer devis", type=["pdf", "png", "jpg", "xlsx"])
+            
+            if st.form_submit_button("Soumettre la Demande") and titre and montant > 0:
+                f_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, devis)
+                
+                if type_profil == "finance":
+                    etape = "achats"
+                    statut = "En attente validation Achats"
+                elif type_profil == "achats":
+                    etape = "finance"
+                    statut = "En attente validation Finance"
+                else:
+                    etape = "achats"
+                    statut = "En attente validation Achats"
 
-            if st.form_submit_button("Soumettre la demande") and titre:
-                nom_f = enregistrer_fichier_securise(DOSSIER_UPLOADS, fich)
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (nom_departement, titre, cahier_charges, montant, fournisseur_prop, "En attente Achats", "achats", "", "", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_f, "", ""))
+                    INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (nom_departement, titre, desc, montant, fournisseur, statut, etape, "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), f_devis, ""))
                 conn.commit()
                 conn.close()
-                ajouter_log("Demande d'Achat", nom_departement, f"Demande créée: {titre} ({montant} €)")
-                st.success("Demande transmise au pôle Achats !")
+                ajouter_log("Demande d'Achat", nom_departement, f"Demande soumise : {titre} ({montant} €)")
+                st.toast("Demande envoyée avec succès !", icon="✅")
+                st.success("Demande enregistrée dans le circuit de validation.")
                 st.rerun()
 
-    with t2:
+    # 2. SUIVI ET FORMULAIRE DE RESSOUMISSION
+    with sub_tabs[1]:
         conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu FROM demandes ORDER BY id DESC")
-        demandes = cursor.fetchall()
+        df = pd.read_sql_query("SELECT * FROM demandes WHERE departement = ? ORDER BY id DESC", conn, params=(nom_departement,))
         conn.close()
+        
+        if not df.empty:
+            st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer mes demandes</div>', unsafe_allow_html=True)
+            fc1, fc2, fc3 = st.columns([2, 1.2, 1.2])
+            with fc1:
+                recherche_dem = st.text_input("Rechercher (titre/description)", key="recherche_mes_demandes")
+            with fc2:
+                statuts_dispo_dem = ["Tous"] + sorted(df["statut"].unique().tolist())
+                statut_dem_filtre = st.selectbox("Statut", statuts_dispo_dem, key="statut_mes_demandes")
+            with fc3:
+                montant_min = st.number_input("Montant minimum (€)", min_value=0.0, step=100.0, key="montant_min_mes_demandes")
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        if type_profil not in ["achats", "finance", "fondateur"]:
-            demandes = [d for d in demandes if d[1] == nom_departement]
+            df_filtre_dem = df.copy()
+            if recherche_dem:
+                masque = df_filtre_dem["titre"].str.contains(recherche_dem, case=False, na=False) | df_filtre_dem["cahier_charges"].str.contains(recherche_dem, case=False, na=False)
+                df_filtre_dem = df_filtre_dem[masque]
+            if statut_dem_filtre != "Tous":
+                df_filtre_dem = df_filtre_dem[df_filtre_dem["statut"] == statut_dem_filtre]
+            if montant_min > 0:
+                df_filtre_dem = df_filtre_dem[df_filtre_dem["montant"] >= montant_min]
 
-        if demandes:
-            df_export_achats = pd.DataFrame([{
-                "ID": d[0], "Département": d[1], "Titre": d[2], "Montant": d[4],
-                "Fournisseur": fournisseur_affiche(d[5], d[14]), "Statut": d[6], "Étape": d[7], "Date": d[11]
-            } for d in demandes])
-            afficher_boutons_export(df_export_achats, "demandes_achats", "Suivi des Achats", key_prefix="achats")
+            afficher_boutons_export(
+                df_filtre_dem[["id", "date", "titre", "montant", "fournisseur", "fournisseur_retenu", "statut", "etape_actuelle"]],
+                "mes_demandes_achat", "Mes Demandes d'Achat", key_prefix="mes_demandes"
+            )
 
-            for d in demandes:
-                d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_av_achats, d_av_fin, d_motif, d_date, d_fich, d_remarque, d_fourn_retenu = d
-                
-                with st.expander(f"📦 [{d_dept}] {d_titre} — {d_montant:,.2f} € | Statut : {d_statut}"):
-                    c_d1, c_d2 = st.columns(2)
-                    with c_d1:
-                        st.write(f"**Description :** {d_cc}")
-                        st.write(f"**Fournisseur proposé :** {d_fourn or 'Aucun'}")
-                        if d_fourn_retenu:
-                            st.write(f"**Fournisseur validé (Achats) :** {d_fourn_retenu} ✅")
-                        st.write(f"**Date de soumission :** {d_date}")
-                        st.markdown(f"**Statut actuel :** {pill_statut(d_statut)}", unsafe_allow_html=True)
-                        if d_remarque:
-                            st.warning(f"**Remarque / Motif de modification :** {d_remarque}")
-                    with c_d2:
-                        if d_fich:
-                            chemin = os.path.join(DOSSIER_UPLOADS, d_fich)
-                            if os.path.exists(chemin):
-                                with open(chemin, "rb") as f:
-                                    st.download_button("📥 Télécharger Devis / Pièce", f, file_name=d_fich, key=f"dl_dem_{d_id}")
+            for _, r in df_filtre_dem.iterrows():
+                with st.expander(f"📌 #{r['id']} - {r['titre']} ({r['montant']:,.2f} €) - Statut: {r['statut']}"):
+                    st.markdown(pill_statut(r['statut']), unsafe_allow_html=True)
+                    st.write(f"**Description :** {r['cahier_charges']}")
+                    st.write(f"**Fournisseur :** {fournisseur_affiche(r['fournisseur'], r.get('fournisseur_retenu', ''))}")
+                    
+                    c_del1, c_del2 = st.columns([4, 1])
+                    with c_del2:
+                        if st.button("🗑️ Supprimer", key=f"del_dem_{r['id']}"):
+                            archiver_dans_corbeille(nom_departement, "Demande d'Achat", f"#{r['id']} - {r['titre']} ({r['montant']} €)", {"statut": r['statut']})
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM demandes WHERE id = ?", (r['id'],))
+                            conn.commit()
+                            conn.close()
+                            ajouter_log("Suppression Demande", nom_departement, f"Demande #{r['id']} supprimée : {r['titre']}")
+                            st.success("Demande supprimée et archivée.")
+                            st.rerun()
 
-                    # Workflow actions
-                    if type_profil == "achats" and d_etape == "achats":
-                        st.markdown("---")
-                        st.markdown("🛡️ **Validation Pôle Achats & Sourcing**")
-                        with st.form(f"form_achats_{d_id}"):
-                            fournisseur_valide = st.text_input("Fournisseur retenu (définitif)", value=d_fourn_retenu or d_fourn)
-                            action_achats = st.selectbox("Action Achats", ["Valider et transmettre à la Finance", "Demander une modification", "Refuser"])
-                            commentaire_achats = st.text_area("Commentaire / Motif")
-                            if st.form_submit_button("Soumettre la décision Achats"):
+                    if "Modification" in str(r['statut']):
+                        st.warning(f"💬 Remarque du contrôleur : {r['retour_remarque']}")
+                        st.markdown("##### ✏️ Soumettre la version corrigée")
+                        
+                        with st.form(f"form_corriger_{r['id']}"):
+                            c_titre = st.text_input("Titre corrigé", value=r['titre'])
+                            c_desc = st.text_area("Description corrigée", value=r['cahier_charges'])
+                            c_montant = st.number_input("Nouveau montant (€)", value=float(r['montant']))
+                            c_devis = st.file_uploader("Nouveau devis (laisser vide si inchangé)", type=["pdf", "png", "jpg", "xlsx"])
+                            
+                            if st.form_submit_button("Envoyer la correction"):
+                                nom_f = r['fichier_devis']
+                                if c_devis is not None:
+                                    nom_f = enregistrer_fichier_securise(DOSSIER_UPLOADS, c_devis)
+                                
+                                nouv_etape = "achats" if type_profil != "achats" else "finance"
+                                nouv_statut = f"En attente validation {nouv_etape.capitalize()} (Après correction)"
+                                
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
-                                if action_achats.startswith("Valider"):
-                                    cursor.execute("UPDATE demandes SET etape_actuelle = 'finance', statut = 'En attente Finance', avis_achats = ?, fournisseur_retenu = ? WHERE id = ?", (commentaire_achats, fournisseur_valide, d_id))
-                                elif action_achats.startswith("Demander"):
-                                    cursor.execute("UPDATE demandes SET statut = 'Demande de Modification', retour_remarque = ?, fournisseur_retenu = ? WHERE id = ?", (commentaire_achats, fournisseur_valide, d_id))
-                                else:
-                                    cursor.execute("UPDATE demandes SET statut = 'Refusé par Achats', motif_refus = ?, fournisseur_retenu = ? WHERE id = ?", (commentaire_achats, fournisseur_valide, d_id))
+                                cursor.execute("""
+                                    UPDATE demandes SET titre=?, cahier_charges=?, montant=?, fichier_devis=?, statut=?, etape_actuelle=?, retour_remarque='' WHERE id=?
+                                """, (c_titre, c_desc, c_montant, nom_f, nouv_statut, nouv_etape, r['id']))
                                 conn.commit()
                                 conn.close()
-                                ajouter_log("Action Achats", nom_departement, f"Demande #{d_id} traitée par Achats")
-                                st.success("Décision enregistrée !")
-                                st.rerun()
-
-                    elif type_profil == "finance" and d_etape == "finance":
-                        st.markdown("---")
-                        st.markdown("💰 **Validation Pôle Finance & Contrôle Budgétaire**")
-                        with st.form(f"form_finance_{d_id}"):
-                            action_fin = st.selectbox("Action Finance", ["Valider et approuver le décaissement", "Demander une modification", "Refuser"])
-                            commentaire_fin = st.text_area("Commentaire budgétaire")
-                            if st.form_submit_button("Soumettre la décision Finance"):
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                if action_fin.startswith("Valider"):
-                                    # Déduction du solde global
-                                    b_solde = get_valeur_globale("solde_restant")
-                                    nouveau_solde = b_solde - d_montant
-                                    set_valeur_globale("solde_restant", max(0.0, nouveau_solde))
-
-                                    cursor.execute("UPDATE demandes SET etape_actuelle = 'termine', statut = 'Validé & Financé', avis_finance = ? WHERE id = ?", (commentaire_fin, d_id))
-                                elif action_fin.startswith("Demander"):
-                                    cursor.execute("UPDATE demandes SET statut = 'Demande de Modification', retour_remarque = ? WHERE id = ?", (commentaire_fin, d_id))
-                                else:
-                                    cursor.execute("UPDATE demandes SET statut = 'Refusé par Finance', motif_refus = ? WHERE id = ?", (commentaire_fin, d_id))
-                                conn.commit()
-                                conn.close()
-                                ajouter_log("Action Finance", nom_departement, f"Demande #{d_id} validée/financée")
-                                st.success("Décision financière enregistrée !")
-                                st.rerun()
-
-                    # Correction demandée à l'émetteur
-                    if d_dept == nom_departement and d_statut == "Demande de Modification":
-                        st.markdown("---")
-                        st.markdown("✏️ **Modifier votre demande suite aux remarques**")
-                        with st.form(f"form_corr_{d_id}"):
-                            nouveau_titre = st.text_input("Titre", value=d_titre)
-                            nouveau_cc = st.text_area("Description", value=d_cc)
-                            nouveau_montant = st.number_input("Montant (€)", value=d_montant)
-                            if st.form_submit_button("Renvoyer pour validation"):
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE demandes SET titre = ?, cahier_charges = ?, montant = ?, statut = 'En attente Achats', etape_actuelle = 'achats', retour_remarque = '' WHERE id = ?", (nouveau_titre, nouveau_cc, nouveau_montant, d_id))
-                                conn.commit()
-                                conn.close()
-                                ajouter_log("Correction Demande", nom_departement, f"Demande #{d_id} modifiée et renvoyée")
-                                st.success("Demande renvoyée aux Achats !")
+                                ajouter_log("Correction Demande", nom_departement, f"Demande #{r['id']} corrigée et renvoyée")
+                                st.toast("Correction envoyée !", icon="✅")
+                                st.success("Demande corrigée et renvoyée en validation !")
                                 st.rerun()
         else:
-            st.info("Aucune demande d'achat enregistrée.")
+            st.info("Aucune demande émise.")
 
+    # 3. ESPACE DE VALIDATION CORRIGÉ (FLUX FINANCE -> DIRECTION)
+    if est_controleur:
+        with sub_tabs[2]:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            if type_profil == "achats":
+                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'achats' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
+            elif type_profil == "finance":
+                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'finance' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
+            else:
+                cursor.execute("SELECT * FROM demandes WHERE etape_actuelle = 'direction' OR statut LIKE 'En attente%'")
+            
+            demandes_a_traiter = cursor.fetchall()
+            conn.close()
+
+            if demandes_a_traiter:
+                df_a_traiter = pd.DataFrame(demandes_a_traiter, columns=[
+                    "id", "departement", "titre", "cahier_charges", "montant", "fournisseur",
+                    "statut", "etape_actuelle", "avis_achats", "avis_finance", "motif_refus",
+                    "date", "fichier_devis", "retour_remarque", "fournisseur_retenu"
+                ])
+                afficher_boutons_export(
+                    df_a_traiter[["id", "date", "departement", "titre", "montant", "fournisseur", "fournisseur_retenu", "statut"]],
+                    "dossiers_a_valider", "Dossiers en Attente de Validation", key_prefix="validation"
+                )
+                for d in demandes_a_traiter:
+                    d_id, d_dept, d_titre, d_desc, d_montant, d_fourn, d_statut, d_etape, d_achats, d_fin, d_motif, d_date, d_fich, d_rem, d_fourn_retenu = d
+                    
+                    with st.expander(f"📥 Dossier #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
+                        st.write(f"**Description :** {d_desc}")
+                        st.write(f"**Fournisseur :** {fournisseur_affiche(d_fourn, d_fourn_retenu)}")
+
+                        if type_profil == "achats":
+                            with st.form(f"form_fournisseur_{d_id}"):
+                                st.markdown("##### 🏷️ Sourcing — Fournisseur retenu (décision Achats)")
+                                nouveau_fournisseur = st.text_input(
+                                    "Fournisseur retenu", value=d_fourn_retenu or d_fourn or "",
+                                    key=f"input_fourn_{d_id}"
+                                )
+                                if st.form_submit_button("💾 Enregistrer le fournisseur retenu"):
+                                    conn = get_db_connection()
+                                    cursor = conn.cursor()
+                                    cursor.execute("UPDATE demandes SET fournisseur_retenu=? WHERE id=?", (nouveau_fournisseur, d_id))
+                                    conn.commit()
+                                    conn.close()
+                                    ajouter_log("Sourcing Fournisseur", nom_departement, f"Dossier #{d_id} : fournisseur retenu = {nouveau_fournisseur}")
+                                    st.toast("Fournisseur enregistré !", icon="🏷️")
+                                    st.rerun()
+                        
+                        col_v1, col_v2, col_v3 = st.columns(3)
+                        
+                        # APPROUVER CORRIGÉ (FLUX SANS BUG ET PASSAGE DIRECTION OBLIGATOIRE POUR LA FINANCE)
+                        with col_v1:
+                            if st.button(f"🟢 Approuver #{d_id}", key=f"app_{d_id}"):
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                
+                                if type_profil == "achats":
+                                    prochaine = "direction" if d_dept == "Finance & Comptabilité" else "finance"
+                                    st_msg = "En attente validation Direction" if prochaine == "direction" else "En attente validation Finance"
+                                    cursor.execute("UPDATE demandes SET avis_achats='Approuvé', etape_actuelle=?, statut=? WHERE id=?", (prochaine, st_msg, d_id))
+                                
+                                elif type_profil == "finance":
+                                    # Correction demandée : La finance approuve mais renvoie obligatoirement à la direction pour le décaissement final !
+                                    cursor.execute("UPDATE demandes SET avis_finance='Approuvé', etape_actuelle='direction', statut='En attente validation Direction' WHERE id=?", (d_id,))
+                                
+                                else: # Direction Générale (Seule habilitée à décaisser définitivement)
+                                    cursor.execute("UPDATE demandes SET etape_actuelle='terminee', statut='Validé & Financé' WHERE id=?", (d_id,))
+                                    conn.commit()
+                                    conn.close()
+                                    solde_actuel = get_valeur_globale("solde_restant")
+                                    set_valeur_globale("solde_restant", solde_actuel - float(d_montant))
+                                    ajouter_log("Décaissement", nom_departement, f"Dossier #{d_id} validé et financé ({d_montant} €)")
+                                    st.success(f"Dossier #{d_id} approuvé et décaissement effectué !")
+                                    st.rerun()
+                                    
+                                conn.commit()
+                                conn.close()
+                                ajouter_log("Approbation", nom_departement, f"Dossier #{d_id} approuvé par {type_profil}")
+                                st.success(f"Dossier #{d_id} approuvé !")
+                                st.rerun()
+
+                        # DEMANDER MODIFICATION
+                        with col_v2:
+                            remarque = st.text_input("Remarque d'ajustement", key=f"rem_{d_id}")
+                            if st.button(f"🟡 Requis modification #{d_id}", key=f"mod_{d_id}") and remarque:
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE demandes SET statut='Demande de Modification', etape_actuelle='emetteur', retour_remarque=? WHERE id=?", (remarque, d_id))
+                                conn.commit()
+                                conn.close()
+                                ajouter_log("Demande de Modification", nom_departement, f"Dossier #{d_id} renvoyé pour correction : {remarque}")
+                                st.warning("Demande renvoyée pour correction.")
+                                st.rerun()
+
+                        # REFUS DÉFINITIF
+                        with col_v3:
+                            motif = st.text_input("Motif du refus", key=f"mot_{d_id}")
+                            if st.button(f"🔴 Refuser définitivement #{d_id}", key=f"ref_{d_id}") and motif:
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE demandes SET statut='Refusé', etape_actuelle='terminee', motif_refus=? WHERE id=?", (motif, d_id))
+                                conn.commit()
+                                conn.close()
+                                ajouter_log("Refus Demande", nom_departement, f"Dossier #{d_id} refusé : {motif}")
+                                st.error("Dossier refusé.")
+                                st.rerun()
+            else:
+                st.info("Aucune demande en attente de validation pour votre pôle.")
 
 # ==========================================
-# 4. MESSAGERIE & CHAT INTERACTIF
+# 4. MODULE MESSAGERIE & CHAT UNIFIÉ
 # ==========================================
-def afficher_module_chat(nom_departement):
-    st.subheader(f"💬 Canaux de Discussion & Messagerie Inter-Départements — {nom_departement}")
-    tous_depts = sorted(list(set(u["dept"] for u in UTILISATEURS.values())))
-
+@st.fragment(run_every="3s")
+def afficher_zone_messages(discussion_id, nom_dept):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, nom_groupe, membres_json, createur, date_creation, archives_par FROM discussions")
-    discussions = cursor.fetchall()
+    cursor.execute("SELECT id, expediteur, texte, date, lus_json FROM messages_chat WHERE discussion_id = ?", (discussion_id,))
+    messages = cursor.fetchall()
+    
+    for m_id, exp, txt, dt, lus_j in messages:
+        lus = json.loads(lus_j) if lus_j else []
+        if nom_dept not in lus:
+            lus.append(nom_dept)
+            cursor.execute("UPDATE messages_chat SET lus_json = ? WHERE id = ?", (json.dumps(lus), m_id))
+    conn.commit()
+
+    chat_box = st.container(height=380)
+    with chat_box:
+        if messages:
+            for m_id, exp, txt, dt, _ in messages:
+                is_me = (exp == nom_dept)
+                role = "user" if is_me else "assistant"
+                avatar = "👤" if is_me else "🏢"
+                
+                c_m1, c_m2 = st.columns([5, 1])
+                with c_m1:
+                    with st.chat_message(role, avatar=avatar):
+                        st.markdown(f"**{exp}** <small style='color: #8b949e;'>({dt})</small>", unsafe_allow_html=True)
+                        st.write(txt)
+                with c_m2:
+                    if is_me:
+                        if st.button("🗑️", key=f"del_msg_{m_id}", help="Supprimer ce message"):
+                            archiver_dans_corbeille(nom_dept, "Message Chat", txt[:40], {"discussion_id": discussion_id, "date": dt})
+                            conn_del = get_db_connection()
+                            cursor_del = conn_del.cursor()
+                            cursor_del.execute("DELETE FROM messages_chat WHERE id = ?", (m_id,))
+                            conn_del.commit()
+                            conn_del.close()
+                            st.rerun()
+        else:
+            st.info("Discussion démarrée. Envoyez le premier message !")
     conn.close()
 
-    # Filtrer discussions accessibles
-    discussions_accessibles = []
-    for d in discussions:
-        membres = json.loads(d[2])
-        archives = json.loads(d[5]) if d[5] else []
-        if nom_departement in membres and nom_departement not in archives:
-            discussions_accessibles.append(d)
+def afficher_module_messagerie_unifiee(nom_departement, type_profil):
+    st.subheader("💬 Hub de Discussion & Communication Directe")
+    tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
+    
+    col_groupes, col_chat = st.columns([1.1, 2.2])
 
-    c_g1, c_g2 = st.columns([1, 2.5])
-
-    with c_g1:
-        st.markdown("##### 📂 Canaux")
-        if st.button("➕ Créer un nouveau canal", use_container_width=True):
-            st.session_state.creer_canal_ouvert = True
-
-        if st.session_state.get("creer_canal_ouvert", False):
-            with st.form("form_nouveau_canal"):
-                nom_g = st.text_input("Nom du canal / discussion")
-                membres_choisis = st.multiselect("Membres invités :", tous_depts, default=[nom_departement])
-                if st.form_submit_button("Créer") and nom_g:
-                    if nom_departement not in membres_choisis:
-                        membres_choisis.append(nom_departement)
+    with col_groupes:
+        st.markdown("#### 💬 Salons & Conversations")
+        
+        with st.expander("➕ Créer une nouvelle discussion", expanded=False):
+            with st.form("form_nouveau_groupe"):
+                membres_selectionnes = st.multiselect("Sélectionner les participants :", tous_depts)
+                nom_groupe_custom = st.text_input("Nom du groupe (Facultatif)")
+                
+                if st.form_submit_button("Démarrer la discussion") and membres_selectionnes:
+                    tous_membres = list(set(membres_selectionnes + [nom_departement]))
+                    if not nom_groupe_custom:
+                        nom_groupe_custom = ", ".join(membres_selectionnes[:2]) + ("..." if len(membres_selectionnes) > 2 else "")
+                    
                     conn = get_db_connection()
                     cursor = conn.cursor()
-                    cursor.execute("""
-                        INSERT INTO discussions (nom_groupe, membres_json, createur, date_creation, archives_par)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (nom_g, json.dumps(membres_choisis), nom_departement, datetime.now().strftime("%Y-%m-%d %H:%M"), json.dumps([])))
+                    cursor.execute(
+                        "INSERT INTO discussions (nom_groupe, membres_json, createur, date_creation) VALUES (?, ?, ?, ?)",
+                        (nom_groupe_custom, json.dumps(tous_membres), nom_departement, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                    )
+                    nouveau_id = cursor.lastrowid
                     conn.commit()
                     conn.close()
-                    st.session_state.creer_canal_ouvert = False
-                    st.success("Canal créé !")
+                    st.session_state.discussion_active_id = nouveau_id
                     st.rerun()
 
         st.markdown("---")
-        if discussions_accessibles:
-            for disc in discussions_accessibles:
-                d_id, d_nom, _, _, _, _ = disc
-                # Compter messages non lus
-                conn = get_db_connection()
-                cursor = conn.cursor()
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nom_groupe, membres_json, archives_par FROM discussions ORDER BY id DESC")
+        toutes_discs = cursor.fetchall()
+        
+        discussions_utilisateur = []
+        for d_id, nom_g, membres_j, archives_j in toutes_discs:
+            membres = json.loads(membres_j)
+            archives = json.loads(archives_j) if archives_j else []
+            if nom_departement in membres and nom_departement not in archives:
                 cursor.execute("SELECT expediteur, lus_json FROM messages_chat WHERE discussion_id = ?", (d_id,))
                 msgs = cursor.fetchall()
-                conn.close()
-                non_lus = sum(1 for exp, lus_j in msgs if exp != nom_departement and nom_departement not in (json.loads(lus_j) if lus_j else []))
+                nb_non_lus = 0
+                for exp, lus_j in msgs:
+                    lus = json.loads(lus_j) if lus_j else []
+                    if exp != nom_departement and nom_departement not in lus:
+                        nb_non_lus += 1
+                
+                label = f"{'🔴 ' + str(nb_non_lus) + ' ' if nb_non_lus > 0 else ''}{nom_g}"
+                discussions_utilisateur.append((d_id, label, nom_g, nb_non_lus))
 
-                label_btn = f"💬 {d_nom}" + (f" ({non_lus})" if non_lus > 0 else "")
-                is_selected = (st.session_state.get("discussion_active_id") == d_id)
-                if st.button(label_btn, key=f"btn_disc_{d_id}", use_container_width=True, type="primary" if is_selected else "secondary"):
+        conn.close()
+
+        if discussions_utilisateur:
+            if st.session_state.discussion_active_id is None or st.session_state.discussion_active_id not in [d[0] for d in discussions_utilisateur]:
+                st.session_state.discussion_active_id = discussions_utilisateur[0][0]
+
+            for d_id, label, nom_g, count in discussions_utilisateur:
+                type_button = "primary" if st.session_state.discussion_active_id == d_id else "secondary"
+                if st.button(label, key=f"btn_disc_{d_id}", use_container_width=True, type=type_button):
                     st.session_state.discussion_active_id = d_id
                     st.rerun()
         else:
-            st.info("Aucun canal actif.")
+            st.session_state.discussion_active_id = None
+            st.info("Aucune discussion active.")
 
-    with c_g2:
-        disc_id_actif = st.session_state.get("discussion_active_id")
-        if disc_id_actif:
+    with col_chat:
+        if st.session_state.discussion_active_id:
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT id, nom_groupe, membres_json, createur, date_creation FROM discussions WHERE id = ?", (disc_id_actif,))
+            cursor.execute("SELECT nom_groupe, membres_json, createur FROM discussions WHERE id = ?", (st.session_state.discussion_active_id,))
             disc_info = cursor.fetchone()
             conn.close()
 
             if disc_info:
-                _, d_nom, membres_j, createur, d_date = disc_info
+                nom_g, membres_j, createur = disc_info
                 membres = json.loads(membres_j)
+                est_createur = (createur == nom_departement)
 
-                st.markdown(f"""
-                <div class="channel-header">
-                    <h4>💬 {d_nom}</h4>
-                    <span style="color: var(--text-muted); font-size: 0.85rem;">Membres : {', '.join(membres)} | Créé par {createur} le {d_date}</span>
-                </div>
-                """, unsafe_allow_html=True)
-
-                # Marquer messages comme lus
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("SELECT id, expediteur, lus_json FROM messages_chat WHERE discussion_id = ?", (disc_id_actif,))
-                tous_msgs = cursor.fetchall()
-                for m_id, exp, lus_j in tous_msgs:
-                    lus = json.loads(lus_j) if lus_j else []
-                    if exp != nom_departement and nom_departement not in lus:
-                        lus.append(nom_departement)
-                        cursor.execute("UPDATE messages_chat SET lus_json = ? WHERE id = ?", (json.dumps(lus), m_id))
-                conn.commit()
-                conn.close()
-
-                # Affichage des messages
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("SELECT expediteur, texte, date, lus_json FROM messages_chat WHERE discussion_id = ? ORDER BY id ASC", (disc_id_actif,))
-                messages = cursor.fetchall()
-                conn.close()
-
-                conteneur_msgs = st.container(height=400)
-                with conteneur_msgs:
-                    if messages:
-                        for exp, txt, dt, lus_j in messages:
-                            align = "right" if exp == nom_departement else "left"
-                            bg_col = "rgba(91,141,239,0.15)" if exp == nom_departement else "var(--bg-card)"
-                            border_col = "var(--accent)" if exp == nom_departement else "var(--border)"
-                            st.markdown(f"""
-                            <div style="text-align: {align}; margin-bottom: 10px;">
-                                <div style="display: inline-block; background: {bg_col}; border: 1px solid {border_col}; padding: 10px 14px; border-radius: 12px; max-width: 75%; text-align: left;">
-                                    <b style="font-size: 0.8rem; color: var(--accent);">{exp}</b><br>
-                                    <span>{txt}</span><br>
-                                    <span style="font-size: 0.7rem; color: var(--text-muted);">{dt}</span>
-                                </div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                    else:
-                        st.info("Aucun message dans ce canal pour l'instant.")
-
-                # Saisie nouveau message
-                with st.form(f"form_msg_{disc_id_actif}", clear_on_submit=True):
-                    texte_msg = st.text_input("Votre message...")
-                    col_envoi, col_archive = st.columns([4, 1])
-                    with col_envoi:
-                        submit_msg = st.form_submit_button("Envoyer", use_container_width=True)
-                    with col_archive:
-                        submit_archive = st.form_submit_button("Archiver le canal", use_container_width=True)
-
-                    if submit_msg and texte_msg:
+                c_head1, c_head2, c_head3 = st.columns([4, 1, 1])
+                with c_head1:
+                    st.markdown(f"""
+                    <div class="channel-header">
+                        <b style="font-size: 1.1rem; color: #ffffff;">👥 {nom_g}</b><br>
+                        <small style="color: #8b949e;">Membres : {', '.join(membres)}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with c_head2:
+                    if st.button("🚪 Quitter", key=f"quitter_{st.session_state.discussion_active_id}", help="La discussion disparaît de votre liste, elle reste visible pour les autres membres", use_container_width=True):
                         conn = get_db_connection()
                         cursor = conn.cursor()
-                        cursor.execute("""
-                            INSERT INTO messages_chat (discussion_id, expediteur, texte, date, lus_json)
-                            VALUES (?, ?, ?, ?, ?)
-                        """, (disc_id_actif, nom_departement, texte_msg, datetime.now().strftime("%H:%M"), json.dumps([nom_departement])))
+                        cursor.execute("SELECT archives_par FROM discussions WHERE id = ?", (st.session_state.discussion_active_id,))
+                        archives_actuel = json.loads(cursor.fetchone()[0] or "[]")
+                        if nom_departement not in archives_actuel:
+                            archives_actuel.append(nom_departement)
+                        cursor.execute("UPDATE discussions SET archives_par = ? WHERE id = ?", (json.dumps(archives_actuel), st.session_state.discussion_active_id))
                         conn.commit()
                         conn.close()
-                        st.rerun()
-
-                    if submit_archive:
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        cursor.execute("SELECT archives_par FROM discussions WHERE id = ?", (disc_id_actif,))
-                        res_arch = cursor.fetchone()
-                        archives = json.loads(res_arch[0]) if res_arch and res_arch[0] else []
-                        if nom_departement not in archives:
-                            archives.append(nom_departement)
-                        cursor.execute("UPDATE discussions SET archives_par = ? WHERE id = ?", (json.dumps(archives), disc_id_actif))
-                        conn.commit()
-                        conn.close()
+                        ajouter_log("Quitter Discussion", nom_departement, f"A quitté la discussion : {nom_g}")
                         st.session_state.discussion_active_id = None
-                        st.success("Canal archivé pour votre département.")
                         st.rerun()
-        else:
-            st.info("Sélectionnez ou créez un canal de discussion à gauche.")
+                with c_head3:
+                    if est_createur or type_profil == "fondateur":
+                        if st.button("🗑️ Supprimer", key=f"suppr_disc_{st.session_state.discussion_active_id}", help="Suppression définitive pour tous les membres", use_container_width=True):
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT id, expediteur, texte, date FROM messages_chat WHERE discussion_id = ?", (st.session_state.discussion_active_id,))
+                            tous_msgs = cursor.fetchall()
+                            archiver_dans_corbeille(
+                                nom_departement, "Discussion Complète", f"{nom_g} ({len(tous_msgs)} message(s))",
+                                {"membres": membres, "messages": [{"expediteur": m[1], "texte": m[2], "date": m[3]} for m in tous_msgs]}
+                            )
+                            cursor.execute("DELETE FROM messages_chat WHERE discussion_id = ?", (st.session_state.discussion_active_id,))
+                            cursor.execute("DELETE FROM discussions WHERE id = ?", (st.session_state.discussion_active_id,))
+                            conn.commit()
+                            conn.close()
+                            ajouter_log("Suppression Discussion", nom_departement, f"Discussion supprimée définitivement : {nom_g}")
+                            st.session_state.discussion_active_id = None
+                            st.success("Discussion supprimée et archivée pour la Direction.")
+                            st.rerun()
 
+                afficher_zone_messages(st.session_state.discussion_active_id, nom_departement)
+
+                prompt = st.chat_input("Votre message...")
+                if prompt:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO messages_chat (discussion_id, expediteur, texte, date, lus_json) VALUES (?, ?, ?, ?, ?)",
+                        (st.session_state.discussion_active_id, nom_departement, prompt, datetime.now().strftime("%Y-%m-%d %H:%M"), json.dumps([nom_departement]))
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
 
 # ==========================================
-# 5. JOURNAL DE BORD COLLABORATIF
+# 5. JOURNAL DE BORD QUOTIDIEN
 # ==========================================
-def afficher_module_journal(nom_departement):
-    st.subheader(f"📖 Journal de Bord & Notes de Service — {nom_departement}")
-    t1, t2 = st.tabs(["1. Rédiger une Note", "2. Consulter le Journal Global"])
+def afficher_module_journal_bord(nom_departement):
+    st.subheader(f"📖 Journal de Bord Quotidien & Cahier de Notes — {nom_departement}")
+    st.markdown("Consignez ici le fil des événements, activités, observations et faits marquants du département par date et heure.")
+    
+    col_saisie, col_historique = st.columns([1.2, 1.8])
 
-    with t1:
-        with st.form("form_journal", clear_on_submit=True):
-            note = st.text_area("Contenu de la note / point d'étape")
-            if st.form_submit_button("Publier dans le journal") and note:
+    with col_saisie:
+        st.markdown("#### ✍️ Ajouter une note")
+        with st.form("form_journal_note", clear_on_submit=True):
+            date_selectionnee = st.date_input("Date de l'événement", value=datetime.now())
+            note_texte = st.text_area("Note / Compte-rendu quotidien", height=140, placeholder="Ex: Début de la récolte sur la parcelle B...")
+            auteur_nom = st.text_input("Auteur / Rédacteur", value=f"Équipe {nom_departement}")
+            
+            if st.form_submit_button("📘 Enregistrer dans le Journal") and note_texte:
+                heure_actuelle = datetime.now().strftime("%H:%M")
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO journal_bord (departement, auteur, note, date_note, heure_note)
                     VALUES (?, ?, ?, ?, ?)
-                """, (nom_departement, profil["nom"], note, date.today().strftime("%d/%m/%Y"), datetime.now().strftime("%H:%M")))
+                """, (nom_departement, auteur_nom, note_texte, str(date_selectionnee), heure_actuelle))
                 conn.commit()
                 conn.close()
-                ajouter_log("Journal de bord", nom_departement, "Note publiée")
-                st.success("Note enregistrée dans le journal !")
+                st.toast("Note ajoutée !", icon="📘")
+                st.success("Note ajoutée au journal de bord !")
                 st.rerun()
 
-    with t2:
+    with col_historique:
+        st.markdown("#### 📜 Historique & Notes du Département")
+        
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, departement, auteur, note, date_note, heure_note FROM journal_bord ORDER BY id DESC")
+        cursor.execute("SELECT id, auteur, note, date_note, heure_note FROM journal_bord WHERE departement = ? ORDER BY date_note DESC, id DESC", (nom_departement,))
         notes = cursor.fetchall()
         conn.close()
 
         if notes:
-            df_export_j = pd.DataFrame([{
-                "ID": n[0], "Département": n[1], "Auteur": n[2], "Note": n[3], "Date": f"{n[4]} {n[5]}"
-            } for n in notes])
-            afficher_boutons_export(df_export_j, "journal_bord", "Journal de Bord", key_prefix="journal")
+            st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer</div>', unsafe_allow_html=True)
+            fj1, fj2, fj3 = st.columns([1.2, 1.2, 2])
+            with fj1:
+                dates_dispos = ["Toutes les dates"] + sorted(list(set(n[3] for n in notes)), reverse=True)
+                filtre_d = st.selectbox("📅 Date", dates_dispos)
+            with fj2:
+                auteurs_dispos = ["Tous"] + sorted(list(set(n[1] for n in notes)))
+                filtre_auteur = st.selectbox("👤 Auteur", auteurs_dispos)
+            with fj3:
+                recherche_note = st.text_input("Rechercher dans les notes")
+            st.markdown('</div>', unsafe_allow_html=True)
 
-            for n in notes:
-                n_id, n_dept, n_auteur, n_note, n_date, n_heure = n
-                st.markdown(f"""
-                <div class="note-card">
-                    <span class="note-date">📅 {n_date} à {n_heure} — [{n_dept}] {n_auteur}</span>
-                    <p style="margin-top: 8px; margin-bottom: 0;">{n_note}</p>
-                </div>
-                """, unsafe_allow_html=True)
+            notes_filtrees = [
+                n for n in notes
+                if (filtre_d == "Toutes les dates" or filtre_d == n[3])
+                and (filtre_auteur == "Tous" or filtre_auteur == n[1])
+                and (not recherche_note or recherche_note.lower() in n[2].lower())
+            ]
+
+            df_export_journal = pd.DataFrame([{
+                "Date": n[3], "Heure": n[4], "Auteur": n[1], "Note": n[2]
+            } for n in notes_filtrees])
+            afficher_boutons_export(df_export_journal, f"journal_de_bord_{nom_departement}", "Journal de Bord", key_prefix="journal")
+
+            if not notes_filtrees:
+                st.info("Aucune note ne correspond aux filtres.")
+
+            for n_id, n_auteur, n_txt, n_date, n_heure in notes_filtrees:
+                c_n1, c_n2 = st.columns([5, 1])
+                with c_n1:
+                    st.markdown(f"""
+                    <div class="note-card">
+                        <div class="note-date">📅 {n_date} à {n_heure} | Par : {n_auteur}</div>
+                        <div style="margin-top: 8px; font-size: 0.95rem; color: #e6edf3;">{n_txt}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with c_n2:
+                    if st.button("🗑️", key=f"del_note_{n_id}", help="Supprimer cette note"):
+                        archiver_dans_corbeille(nom_departement, "Journal de Bord", n_txt[:40], {"date": n_date, "auteur": n_auteur})
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM journal_bord WHERE id = ?", (n_id,))
+                        conn.commit()
+                        conn.close()
+                        st.success("Note supprimée et archivée.")
+                        st.rerun()
         else:
-            st.info("Aucune note dans le journal de bord.")
-
-
-# ==========================================
-# 6. RECHERCHE GLOBALE MULTI-CRITÈRES
-# ==========================================
-def afficher_module_recherche(nom_departement):
-    st.subheader("🔍 Recherche Globale Multi-Critères")
-    recherche = st.text_input("Mot-clé à rechercher dans toute la plateforme (études, cahiers des charges, achats, notes)...")
-
-    if recherche:
-        kw = f"%{recherche}%"
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        st.markdown("---")
-        st.markdown("##### ⚙️ Études Métier")
-        cursor.execute("SELECT id, departement, titre, date FROM etudes_metier WHERE titre LIKE ? OR donnees_json LIKE ?", (kw, kw))
-        for r in cursor.fetchall():
-            st.write(f"- **[{r[1]}] {r[2]** ({r[3]})")
-
-        st.markdown("##### 📋 Cahiers des Charges")
-        cursor.execute("SELECT id, departement, titre, date FROM cahiers_charges WHERE titre LIKE ? OR contenu LIKE ?", (kw, kw))
-        for r in cursor.fetchall():
-            st.write(f"- **[{r[1]}] {r[2].split('||')[0]}** ({r[3]})")
-
-        st.markdown("##### 🛒 Demandes d'Achat")
-        cursor.execute("SELECT id, departement, titre, montant, statut, date FROM demandes WHERE titre LIKE ? OR cahier_charges LIKE ?", (kw, kw))
-        for r in cursor.fetchall():
-            st.write(f"- **[{r[1]}] {r[2]}** — {r[3]:,.2f} € (Statut: {r[4]})")
-
-        st.markdown("##### 📖 Journal de Bord")
-        cursor.execute("SELECT id, departement, auteur, note, date_note FROM journal_bord WHERE note LIKE ?", (kw,))
-        for r in cursor.fetchall():
-            st.write(f"- **[{r[1]}] {r[2]}** ({r[4]}) : {r[3][:100]}...")
-
-        conn.close()
-    else:
-        st.info("Saisissez un mot-clé ci-dessus pour lancer la recherche transversale.")
-
+            st.info("Aucune note enregistrée dans le journal pour le moment.")
 
 # ==========================================
-# 7. PÔLE DE CONTRÔLE (SUIVI GLOBAL)
+# 6. MODULE SUIVI GLOBAL POUR PÔLE DE CONTRÔLE
 # ==========================================
-def afficher_module_controle():
-    st.subheader("📊 Pôle de Contrôle & Pilotage Financier")
-    b_total = get_valeur_globale("budget_global")
-    b_solde = get_valeur_globale("solde_restant")
-    b_engage = b_total - b_solde
+def afficher_module_suivi_global_controle():
+    st.subheader("📊 Pôle de Contrôle & Supervision Globale")
+    
+    conn = get_db_connection()
+    df_demandes = pd.read_sql_query("SELECT * FROM demandes ORDER BY id DESC", conn)
+    conn.close()
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Budget Global", f"{b_total:,.2f} €")
-    c2.metric("Montant Engagé / Dépensé", f"{b_engage:,.2f} €")
-    c3.metric("Solde Disponible", f"{b_solde:,.2f} €")
+    if df_demandes.empty:
+        st.info("Aucune donnée enregistrée.")
+        return
+
+    col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
+    col_kpi1.metric("Total Demandes Émises", len(df_demandes))
+    col_kpi2.metric("En Cours de Validation", len(df_demandes[df_demandes['statut'].str.contains("attente|Demande", case=False, na=False)]))
+    col_kpi3.metric("Validées & Financées", len(df_demandes[df_demandes['statut'] == "Validé & Financé"]))
+    col_kpi4.metric("Volume Cumulé (€)", f"{df_demandes['montant'].sum():,.2f} €")
 
     st.markdown("---")
-    st.markdown("##### 📑 Synthèse des Demandes d'Achats Validées & Financées")
+    st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer</div>', unsafe_allow_html=True)
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    with col_f1:
+        depts_dispos = ["Tous"] + sorted(df_demandes['departement'].unique().tolist())
+        dept_filtre = st.selectbox("Département Émetteur", depts_dispos)
+    with col_f2:
+        statuts_dispos = ["Tous"] + sorted(df_demandes['statut'].unique().tolist())
+        statut_filtre = st.selectbox("Statut de validation", statuts_dispos)
+    with col_f3:
+        recherche_g = st.text_input("Recherche (titre/fournisseur)")
+    with col_f4:
+        montant_min_g = st.number_input("Montant minimum (€)", min_value=0.0, step=100.0)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    df_filtré = df_demandes.copy()
+    if dept_filtre != "Tous":
+        df_filtré = df_filtré[df_filtré['departement'] == dept_filtre]
+    if statut_filtre != "Tous":
+        df_filtré = df_filtré[df_filtré['statut'] == statut_filtre]
+    if recherche_g:
+        masque_g = df_filtré['titre'].str.contains(recherche_g, case=False, na=False) | df_filtré['fournisseur'].str.contains(recherche_g, case=False, na=False)
+        df_filtré = df_filtré[masque_g]
+    if montant_min_g > 0:
+        df_filtré = df_filtré[df_filtré['montant'] >= montant_min_g]
+
+    colonnes_affichees = ['id', 'date', 'departement', 'titre', 'montant', 'fournisseur', 'fournisseur_retenu', 'statut', 'etape_actuelle', 'avis_achats', 'avis_finance']
+    afficher_boutons_export(df_filtré[colonnes_affichees], "suivi_global_demandes", "Suivi Global des Demandes d'Achat", key_prefix="suivi_global")
+
+    st.dataframe(
+        df_filtré[colonnes_affichees],
+        use_container_width=True,
+        hide_index=True
+    )
+
+# ==========================================
+# 7. MODULE DIRECTION : CORBEILLE & HISTORIQUE DES SUPPRESSIONS
+# ==========================================
+def afficher_module_direction_corbeille():
+    st.subheader("🗑️ Supervisions des Éléments Supprimés (Corbeille Centralisée)")
+    st.markdown("Cet espace exclusif à la Direction Générale liste l'ensemble des éléments supprimés par les différents départements (messages, notes, demandes, études, cahiers des charges) pour des besoins d'audit et de traçabilité.")
+
     conn = get_db_connection()
-    df_demandes = pd.read_sql_query("SELECT id, departement, titre, montant, fournisseur_retenu, statut, date FROM demandes", conn)
+    df_corbeille = pd.read_sql_query("SELECT * FROM corbeille_archives ORDER BY id DESC", conn)
     conn.close()
 
-    if not df_demandes.empty:
-        afficher_boutons_export(df_demandes, "pole_controle_achats", "Synthèse Globale des Achats", key_prefix="controle")
-        st.dataframe(df_demandes, use_container_width=True)
+    if not df_corbeille.empty:
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            dept_c_filtre = st.selectbox("Filtrer par Département :", ["Tous"] + list(df_corbeille['departement_auteur'].unique()))
+        with col_c2:
+            type_c_filtre = st.selectbox("Filtrer par Type d'élément :", ["Tous"] + list(df_corbeille['type_element'].unique()))
+
+        df_c_filtre = df_corbeille.copy()
+        if dept_c_filtre != "Tous":
+            df_c_filtre = df_c_filtre[df_c_filtre['departement_auteur'] == dept_c_filtre]
+        if type_c_filtre != "Tous":
+            df_c_filtre = df_c_filtre[df_c_filtre['type_element'] == type_c_filtre]
+
+        afficher_boutons_export(
+            df_c_filtre[['id', 'date_suppression', 'departement_auteur', 'type_element', 'resume']],
+            "corbeille_archives", "Corbeille & Historique des Suppressions", key_prefix="corbeille"
+        )
+
+        for _, row in df_c_filtre.iterrows():
+            with st.expander(f"🗑️ [{row['type_element']}] - Département : {row['departement_auteur']} (Supprimé le {row['date_suppression']})"):
+                st.write(f"**Résumé / Contenu abrégé :** {row['resume']}")
+                if row['details_json']:
+                    try:
+                        details = json.loads(row['details_json'])
+                        st.json(details)
+                    except:
+                        pass
+        
+        st.markdown("---")
+        if st.button("🧹 Vider entièrement la corbeille d'archives"):
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM corbeille_archives")
+            conn.commit()
+            conn.close()
+            st.success("La corbeille a été vidée.")
+            st.rerun()
     else:
-        st.info("Aucune donnée disponible.")
-
-
-# ==========================================
-# 8. STATISTIQUES
-# ==========================================
-def afficher_module_statistiques():
-    st.subheader("📈 Statistiques & Analyses de la Plateforme")
-    conn = get_db_connection()
-    df_demandes = pd.read_sql_query("SELECT departement, montant, statut FROM demandes", conn)
-    conn.close()
-
-    if not df_demandes.empty:
-        st.markdown("##### Montant total des demandes par département")
-        df_group = df_demandes.groupby("departement")["montant"].sum().reset_index()
-        st.bar_chart(df_group.set_index("departement"))
-
-        afficher_boutons_export(df_group, "statistiques_montants", "Statistiques par Département", key_prefix="stats")
-    else:
-        st.info("Données insuffisantes pour générer les graphiques.")
-
+        st.info("Aucun élément supprimé pour l'instant.")
 
 # ==========================================
-# 9. AUDIT & TRAÇABILITÉ (FONDATEUR)
+# 8. MODULE DIRECTION : AUDIT & TRAÇABILITÉ DES CONNEXIONS
 # ==========================================
 def afficher_module_audit():
-    st.subheader("🕵️ Journal d'Audit & Traçabilité des Actions")
+    st.subheader("🕵️ Audit & Traçabilité (Connexions, Actions, Durées)")
+    st.markdown("Historique complet des connexions et actions de tous les collaborateurs — réservé à la Direction Générale.")
+
     conn = get_db_connection()
-    df_audit = pd.read_sql_query("SELECT id, date, acteur, action, details FROM logs_audit ORDER BY id DESC", conn)
+    df_logs = pd.read_sql_query("SELECT * FROM logs_audit ORDER BY id DESC", conn)
     conn.close()
 
-    if not df_audit.empty:
-        afficher_boutons_export(df_audit, "logs_audit", "Journal d'Audit", key_prefix="audit")
-        st.dataframe(df_audit, use_container_width=True)
-    else:
-        st.info("Aucun journal d'audit enregistré.")
+    if df_logs.empty:
+        st.info("Aucun événement enregistré pour le moment.")
+        return
 
+    # --- Calcul des durées de connexion à partir des logs de déconnexion ---
+    import re
+    durees_par_acteur = {}
+    nb_sessions_par_acteur = {}
+    for _, row in df_logs[df_logs['action'] == 'Déconnexion'].iterrows():
+        m = re.search(r"(\d+)h(\d+)min", str(row['details']))
+        if m:
+            minutes = int(m.group(1)) * 60 + int(m.group(2))
+            durees_par_acteur[row['acteur']] = durees_par_acteur.get(row['acteur'], 0) + minutes
+            nb_sessions_par_acteur[row['acteur']] = nb_sessions_par_acteur.get(row['acteur'], 0) + 1
+
+    if durees_par_acteur:
+        st.markdown("#### ⏱️ Temps de connexion cumulé par collaborateur")
+        df_temps = pd.DataFrame([
+            {
+                "Collaborateur": acteur,
+                "Sessions terminées": nb_sessions_par_acteur.get(acteur, 0),
+                "Temps cumulé": f"{minutes // 60}h{minutes % 60:02d}min",
+                "Minutes totales": minutes
+            }
+            for acteur, minutes in sorted(durees_par_acteur.items(), key=lambda x: -x[1])
+        ])
+        st.dataframe(df_temps.drop(columns=["Minutes totales"]), use_container_width=True, hide_index=True)
+        afficher_boutons_export(df_temps, "temps_connexion_utilisateurs", "Temps de Connexion par Utilisateur", key_prefix="temps_connexion")
+
+    st.markdown("---")
+    st.markdown("#### 📜 Journal détaillé des actions")
+    st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer</div>', unsafe_allow_html=True)
+    ca1, ca2, ca3 = st.columns(3)
+    with ca1:
+        acteurs_dispo = ["Tous"] + sorted(df_logs['acteur'].unique().tolist())
+        acteur_filtre = st.selectbox("Collaborateur", acteurs_dispo)
+    with ca2:
+        actions_dispo = ["Toutes"] + sorted(df_logs['action'].unique().tolist())
+        action_filtre = st.selectbox("Type d'action", actions_dispo)
+    with ca3:
+        recherche_audit = st.text_input("Rechercher dans les détails")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    df_logs_filtres = df_logs.copy()
+    if acteur_filtre != "Tous":
+        df_logs_filtres = df_logs_filtres[df_logs_filtres['acteur'] == acteur_filtre]
+    if action_filtre != "Toutes":
+        df_logs_filtres = df_logs_filtres[df_logs_filtres['action'] == action_filtre]
+    if recherche_audit:
+        df_logs_filtres = df_logs_filtres[df_logs_filtres['details'].str.contains(recherche_audit, case=False, na=False)]
+
+    afficher_boutons_export(
+        df_logs_filtres[['id', 'date', 'acteur', 'action', 'details']],
+        "journal_audit", "Journal d'Audit Complet", key_prefix="audit"
+    )
+    st.dataframe(
+        df_logs_filtres[['date', 'acteur', 'action', 'details']],
+        use_container_width=True, hide_index=True
+    )
 
 # ==========================================
-# 10. CORBEILLE & HISTORIQUE SUPPRESSIONS (FONDATEUR)
+# 9. MODULE RECHERCHE GLOBALE (TOUS DÉPARTEMENTS)
 # ==========================================
-def afficher_module_corbeille():
-    st.subheader("🗑️ Corbeille & Historique des Éléments Supprimés")
+def afficher_module_recherche_globale(nom_departement, type_profil):
+    st.subheader("🔍 Recherche Globale")
+    st.markdown("Recherchez en une fois dans les études, cahiers des charges, demandes d'achat et notes de journal auxquels vous avez accès.")
+
+    requete = st.text_input("🔎 Terme à rechercher", placeholder="Ex : irrigation, devis pompe, budget maintenance...")
+    if not requete:
+        st.info("Saisissez un mot-clé pour lancer la recherche.")
+        return
+
+    q = requete.lower()
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, departement_auteur, type_element, resume, details_json, date_suppression FROM corbeille_archives ORDER BY id DESC")
-    archives = cursor.fetchall()
+
+    # --- Études ---
+    cursor.execute("SELECT id, departement, titre, donnees_json, destinataires_partage, date FROM etudes_metier")
+    resultats_etudes = []
+    for e_id, e_dept, e_titre, e_json, e_dest, e_date in cursor.fetchall():
+        dests = json.loads(e_dest) if e_dest else []
+        visible = (e_dept == nom_departement) or (nom_departement in dests) or (type_profil == "fondateur")
+        data = json.loads(e_json) if e_json else {}
+        texte = f"{e_titre} {data.get('details', '')}".lower()
+        if visible and q in texte:
+            resultats_etudes.append((e_id, e_dept, e_titre, e_date))
+
+    # --- Cahiers des charges ---
+    cursor.execute("SELECT id, departement, titre, contenu, destinataires_avis, date FROM cahiers_charges")
+    resultats_cdc = []
+    for c_id, c_dept, c_titre_raw, c_txt, c_dest, c_date in cursor.fetchall():
+        dests = json.loads(c_dest) if c_dest else []
+        visible = (c_dept == nom_departement) or (nom_departement in dests) or (type_profil == "fondateur")
+        titre_seul = c_titre_raw.split("||")[0]
+        texte = f"{titre_seul} {c_txt}".lower()
+        if visible and q in texte:
+            resultats_cdc.append((c_id, c_dept, titre_seul, c_date))
+
+    # --- Demandes d'achat ---
+    if type_profil == "fondateur":
+        cursor.execute("SELECT id, departement, titre, cahier_charges, fournisseur, statut, montant, date FROM demandes")
+    else:
+        cursor.execute("SELECT id, departement, titre, cahier_charges, fournisseur, statut, montant, date FROM demandes WHERE departement = ?", (nom_departement,))
+    resultats_demandes = []
+    for d_id, d_dept, d_titre, d_desc, d_fourn, d_statut, d_montant, d_date in cursor.fetchall():
+        texte = f"{d_titre} {d_desc} {d_fourn}".lower()
+        if q in texte:
+            resultats_demandes.append((d_id, d_dept, d_titre, d_statut, d_montant, d_date))
+
+    # --- Journal de bord (du département uniquement) ---
+    cursor.execute("SELECT id, auteur, note, date_note FROM journal_bord WHERE departement = ?", (nom_departement,))
+    resultats_journal = [n for n in cursor.fetchall() if q in n[2].lower()]
+
     conn.close()
 
-    if archives:
-        df_export_corr = pd.DataFrame([{
-            "ID": a[0], "Département": a[1], "Type": a[2], "Résumé": a[3], "Date Suppression": a[5]
-        } for a in archives])
-        afficher_boutons_export(df_export_corr, "corbeille_archives", "Archives et Suppressions", key_prefix="corbeille")
+    total = len(resultats_etudes) + len(resultats_cdc) + len(resultats_demandes) + len(resultats_journal)
+    st.markdown(f"**{total} résultat(s) trouvé(s) pour « {requete} »**")
+    st.markdown("---")
 
-        for a in archives:
-            a_id, a_dept, a_type, a_resume, a_json, a_date = a
-            with st.expander(f"🗑️ [{a_dept}] {a_type} : {a_resume} (Supprimé le {a_date})"):
-                st.write(f"**Détails techniques stockés :** {a_json}")
-    else:
-        st.info("La corbeille est vide.")
+    if resultats_etudes:
+        st.markdown(f"#### ⚙️ Études ({len(resultats_etudes)})")
+        for e_id, e_dept, e_titre, e_date in resultats_etudes:
+            st.write(f"📁 [{e_dept}] **{e_titre}** — {e_date}")
 
+    if resultats_cdc:
+        st.markdown(f"#### 📋 Cahiers des Charges ({len(resultats_cdc)})")
+        for c_id, c_dept, t_titre, c_date in resultats_cdc:
+            st.write(f"📄 [{c_dept}] **{t_titre}** — {c_date}")
 
-# --- ROUTAGE DES ONGLETS PRINCIPAUX ---
-onglet_courant = st.session_state.tab_actif
+    if resultats_demandes:
+        st.markdown(f"#### 🛒 Demandes d'Achat ({len(resultats_demandes)})")
+        for d_id, d_dept, d_titre, d_statut, d_montant, d_date in resultats_demandes:
+            st.markdown(f"📌 #{d_id} [{d_dept}] **{d_titre}** ({d_montant:,.2f} €) {pill_statut(d_statut)}", unsafe_allow_html=True)
 
-if onglet_courant == "1. Études & Ingénierie":
+    if resultats_journal:
+        st.markdown(f"#### 📖 Journal de Bord ({len(resultats_journal)})")
+        for n_id, n_auteur, n_txt, n_date in resultats_journal:
+            st.write(f"📅 {n_date} — Par {n_auteur} : {n_txt[:120]}{'...' if len(n_txt) > 120 else ''}")
+
+    if total == 0:
+        st.info("Aucun résultat ne correspond à votre recherche.")
+
+# ==========================================
+# 10. MODULE STATISTIQUES (DIRECTION / ACHATS / FINANCE)
+# ==========================================
+def afficher_module_statistiques():
+    st.subheader("📈 Statistiques par Département")
+
+    conn = get_db_connection()
+    df_demandes = pd.read_sql_query("SELECT * FROM demandes", conn)
+    df_etudes = pd.read_sql_query("SELECT * FROM etudes_metier", conn)
+    df_cdc = pd.read_sql_query("SELECT * FROM cahiers_charges", conn)
+    conn.close()
+
+    if df_demandes.empty and df_etudes.empty and df_cdc.empty:
+        st.info("Pas encore assez de données pour générer des statistiques.")
+        return
+
+    depts = sorted(set(df_demandes['departement'].tolist() + df_etudes['departement'].tolist() + df_cdc['departement'].tolist()))
+    lignes = []
+    for d in depts:
+        dem_dept = df_demandes[df_demandes['departement'] == d]
+        nb_dem = len(dem_dept)
+        nb_validees = len(dem_dept[dem_dept['statut'] == 'Validé & Financé'])
+        nb_refusees = len(dem_dept[dem_dept['statut'] == 'Refusé'])
+        taux_appro = (nb_validees / nb_dem * 100) if nb_dem > 0 else 0
+        volume = dem_dept['montant'].sum() if nb_dem > 0 else 0
+        lignes.append({
+            "Département": d,
+            "Études publiées": len(df_etudes[df_etudes['departement'] == d]),
+            "CDC publiés": len(df_cdc[df_cdc['departement'] == d]),
+            "Demandes émises": nb_dem,
+            "Validées": nb_validees,
+            "Refusées": nb_refusees,
+            "Taux d'approbation": f"{taux_appro:.0f} %",
+            "Volume demandé (€)": f"{volume:,.2f}"
+        })
+
+    df_stats = pd.DataFrame(lignes)
+    st.dataframe(df_stats, use_container_width=True, hide_index=True)
+    afficher_boutons_export(df_stats, "statistiques_departements", "Statistiques par Département", key_prefix="stats_dept")
+
+    st.markdown("---")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Études publiées", len(df_etudes))
+    c2.metric("Total Cahiers des Charges publiés", len(df_cdc))
+    c3.metric("Total Demandes émises", len(df_demandes))
+
+# ==========================================
+# ROUTAGE DYNAMIQUE DES VUES
+# ==========================================
+if st.session_state.tab_actif == "1. Études & Ingénierie":
     afficher_module_etudes(nom_dept, profil["type"])
-elif onglet_courant == "2. Cahiers des Charges":
+
+elif st.session_state.tab_actif == "2. Cahiers des Charges":
     afficher_module_cdc(nom_dept, profil["type"])
-elif onglet_courant == "3. Besoins & Achats":
+
+elif st.session_state.tab_actif == "3. Besoins & Achats":
     afficher_module_achats(nom_dept, profil["type"])
-elif onglet_courant == "4. Messagerie & Chat":
-    afficher_module_chat(nom_dept)
-elif onglet_courant == "📖 Journal de Bord":
-    afficher_module_journal(nom_dept)
-elif onglet_courant == "🔍 Recherche Globale":
-    afficher_module_recherche(nom_dept)
-elif onglet_courant == "📊 Pôle de Contrôle (Suivi Global)":
-    afficher_module_controle()
-elif onglet_courant == "📈 Statistiques":
+
+elif st.session_state.tab_actif == "4. Messagerie & Chat":
+    afficher_module_messagerie_unifiee(nom_dept, profil["type"])
+
+elif st.session_state.tab_actif == "📖 Journal de Bord":
+    afficher_module_journal_bord(nom_dept)
+
+elif st.session_state.tab_actif == "📊 Pôle de Contrôle (Suivi Global)":
+    afficher_module_suivi_global_controle()
+
+elif st.session_state.tab_actif == "🔍 Recherche Globale":
+    afficher_module_recherche_globale(nom_dept, profil["type"])
+
+elif st.session_state.tab_actif == "📈 Statistiques":
     afficher_module_statistiques()
-elif onglet_courant == "🕵️ Audit & Traçabilité":
+
+elif st.session_state.tab_actif == "🕵️ Audit & Traçabilité":
     afficher_module_audit()
-elif onglet_courant == "🗑️ Corbeille & Historique Suppressions":
-    afficher_module_corbeille()
+
+elif st.session_state.tab_actif == "🗑️ Corbeille & Historique Suppressions":
+    afficher_module_direction_corbeille()
