@@ -245,7 +245,25 @@ def init_db():
     conn.commit()
     conn.close()
 
+def migrer_schema():
+    """Ajoute les nouvelles colonnes nécessaires si elles n'existent pas déjà (compatible avec une base existante)."""
+    conn = sqlite3.connect("database.db", check_same_thread=False)
+    cursor = conn.cursor()
+    migrations = [
+        ("discussions", "archives_par", "TEXT DEFAULT '[]'"),
+        ("etudes_metier", "vus_json", "TEXT DEFAULT '[]'"),
+        ("cahiers_charges", "vus_par_json", "TEXT DEFAULT '[]'"),
+    ]
+    for table, colonne, type_def in migrations:
+        cursor.execute(f"PRAGMA table_info({table})")
+        colonnes_existantes = [c[1] for c in cursor.fetchall()]
+        if colonne not in colonnes_existantes:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {colonne} {type_def}")
+    conn.commit()
+    conn.close()
+
 init_db()
+migrer_schema()
 
 # --- UTILS DATABASE ---
 def get_db_connection():
@@ -338,6 +356,7 @@ if st.session_state.user_connecte is None:
     if st.sidebar.button("Se connecter"):
         if username in UTILISATEURS and UTILISATEURS[username]["mdp"] == password:
             st.session_state.user_connecte = username
+            st.session_state.heure_connexion = datetime.now()
             ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
             st.rerun()
         else:
@@ -351,17 +370,17 @@ nom_dept = profil["dept"]
 st.sidebar.success(f"Connecté : **{profil['nom']}**")
 st.sidebar.markdown("---")
 
-# --- CALCUL DES NOTIFICATIONS MESSAGERIE ---
 def obtenir_notifications_chat(dept_nom):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, nom_groupe, membres_json FROM discussions")
+    cursor.execute("SELECT id, nom_groupe, membres_json, archives_par FROM discussions")
     discs = cursor.fetchall()
-    
+
     notifs_chat = []
-    for d_id, nom_g, membres_j in discs:
+    for d_id, nom_g, membres_j, archives_j in discs:
         membres = json.loads(membres_j)
-        if dept_nom in membres:
+        archives = json.loads(archives_j) if archives_j else []
+        if dept_nom in membres and dept_nom not in archives:
             cursor.execute("SELECT expediteur, lus_json FROM messages_chat WHERE discussion_id = ?", (d_id,))
             msgs = cursor.fetchall()
             non_lus = 0
@@ -374,26 +393,96 @@ def obtenir_notifications_chat(dept_nom):
     conn.close()
     return notifs_chat
 
+def obtenir_toutes_notifications(nom_dept, type_profil):
+    """Centralise toutes les notifications actionnables pour le département connecté."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    notifs = []
+
+    # --- Chat non lus (par discussion) ---
+    for notif in notifs_chat_list:
+        notifs.append({
+            "icone": "💬", "label": f"{notif['nom']} ({notif['count']} message(s) non lu(s))",
+            "cible_tab": "4. Messagerie & Chat", "cible_disc": notif["disc_id"], "key": f"chat_{notif['disc_id']}"
+        })
+
+    # --- Études reçues non consultées ---
+    cursor.execute("SELECT id, departement, titre, destinataires_partage, vus_json FROM etudes_metier WHERE departement != ?", (nom_dept,))
+    for e_id, e_dept, e_titre, dest_j, vus_j in cursor.fetchall():
+        dests = json.loads(dest_j) if dest_j else []
+        vus = json.loads(vus_j) if vus_j else []
+        if nom_dept in dests and nom_dept not in vus:
+            notifs.append({
+                "icone": "⚙️", "label": f"Nouvelle étude de [{e_dept}] : {e_titre}",
+                "cible_tab": "1. Études & Ingénierie", "cible_disc": None, "key": f"etude_{e_id}"
+            })
+
+    # --- Cahiers des charges reçus non consultés ---
+    cursor.execute("SELECT id, departement, titre, destinataires_avis, vus_par_json FROM cahiers_charges WHERE departement != ?", (nom_dept,))
+    for c_id, c_dept, c_titre_raw, dest_j, vus_j in cursor.fetchall():
+        dests = json.loads(dest_j) if dest_j else []
+        vus = json.loads(vus_j) if vus_j else []
+        if nom_dept in dests and nom_dept not in vus:
+            notifs.append({
+                "icone": "📋", "label": f"Nouveau CDC de [{c_dept}] : {c_titre_raw.split('||')[0]}",
+                "cible_tab": "2. Cahiers des Charges", "cible_disc": None, "key": f"cdc_{c_id}"
+            })
+
+    # --- Demandes en attente de validation pour ce pôle ---
+    if type_profil in ["achats", "finance", "fondateur"]:
+        if type_profil == "achats":
+            cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'achats' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
+        elif type_profil == "finance":
+            cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'finance' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
+        else:
+            cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'direction' OR statut LIKE 'En attente%'")
+        nb_a_valider = cursor.fetchone()[0]
+        if nb_a_valider > 0:
+            notifs.append({
+                "icone": "🛡️", "label": f"{nb_a_valider} dossier(s) en attente de votre validation",
+                "cible_tab": "3. Besoins & Achats", "cible_disc": None, "key": "valid_achats"
+            })
+
+    # --- Corrections demandées à l'émetteur ---
+    cursor.execute("SELECT COUNT(*) FROM demandes WHERE departement = ? AND statut = 'Demande de Modification'", (nom_dept,))
+    nb_corrections = cursor.fetchone()[0]
+    if nb_corrections > 0:
+        notifs.append({
+            "icone": "✏️", "label": f"{nb_corrections} demande(s) à corriger suite à une remarque",
+            "cible_tab": "3. Besoins & Achats", "cible_disc": None, "key": "correction_emetteur"
+        })
+
+    conn.close()
+    return notifs
+
 notifs_chat_list = obtenir_notifications_chat(nom_dept)
 total_chat_notifs = sum(item["count"] for item in notifs_chat_list)
+toutes_notifs = obtenir_toutes_notifications(nom_dept, profil["type"])
 
-if total_chat_notifs > 0:
+if toutes_notifs:
     st.sidebar.markdown(f"""
     <div style="background-color: #161b22; padding: 10px; border-radius: 8px; border: 1px solid #f85149; text-align: center; margin-bottom: 10px;">
         <span style="font-size: 1.1rem;">🔔</span> <b style="color: #f85149;">Centre de Notifications</b><br>
-        <span class="badge-notification">{total_chat_notifs} message(s) non lu(s)</span>
+        <span class="badge-notification">{len(toutes_notifs)} élément(s) à traiter</span>
     </div>
     """, unsafe_allow_html=True)
-    
-    with st.sidebar.expander("💬 Téléportation vers Discussion", expanded=True):
-        for notif in notifs_chat_list:
-            if st.button(f"👉 {notif['nom']} ({notif['count']} non lu(s))", key=f"notif_btn_{notif['disc_id']}"):
-                st.session_state.discussion_active_id = notif['disc_id']
-                st.session_state.tab_actif = "4. Messagerie & Chat"
+
+    with st.sidebar.expander("👉 Téléportation interactive", expanded=True):
+        for notif in toutes_notifs:
+            if st.button(f"{notif['icone']} {notif['label']}", key=f"notif_btn_{notif['key']}", use_container_width=True):
+                if notif["cible_disc"] is not None:
+                    st.session_state.discussion_active_id = notif["cible_disc"]
+                st.session_state.tab_actif = notif["cible_tab"]
                 st.rerun()
 
 st.sidebar.markdown("---")
 if st.sidebar.button("Se déconnecter"):
+    duree = ""
+    if "heure_connexion" in st.session_state:
+        delta = datetime.now() - st.session_state.heure_connexion
+        minutes = int(delta.total_seconds() // 60)
+        duree = f"Durée de session : {minutes // 60}h{minutes % 60:02d}min"
+    ajouter_log("Déconnexion", profil["nom"], duree or "Durée de session inconnue")
     st.session_state.user_connecte = None
     st.session_state.discussion_active_id = None
     st.rerun()
@@ -410,10 +499,12 @@ if profil["type"] in ["finance", "fondateur"]:
 st.markdown("---")
 
 # --- NAVIGATION ONGLES PRINCIPAUX (AVEC MODULE DIRECTION CORBEILLE SI FONDATEUR) ---
-onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "4. Messagerie & Chat", "📖 Journal de Bord"]
+onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "4. Messagerie & Chat", "📖 Journal de Bord", "🔍 Recherche Globale"]
 if profil["type"] in ["achats", "finance", "fondateur"]:
     onglets_possibles.append("📊 Pôle de Contrôle (Suivi Global)")
+    onglets_possibles.append("📈 Statistiques")
 if profil["type"] == "fondateur":
+    onglets_possibles.append("🕵️ Audit & Traçabilité")
     onglets_possibles.append("🗑️ Corbeille & Historique Suppressions")
 
 cols_tabs = st.columns(len(onglets_possibles))
@@ -458,10 +549,18 @@ def afficher_module_etudes(nom_departement, type_profil):
     with t2:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date FROM etudes_metier WHERE departement != ? ORDER BY id DESC", (nom_departement,))
+        cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date, vus_json FROM etudes_metier WHERE departement != ? ORDER BY id DESC", (nom_departement,))
         etudes = cursor.fetchall()
-        conn.close()
         recus = [e for e in etudes if nom_departement in (json.loads(e[5]) if e[5] else []) or type_profil == "fondateur"]
+
+        # Marquer comme vues par ce département (pour désactiver la notification correspondante)
+        for e in recus:
+            vus = json.loads(e[7]) if e[7] else []
+            if nom_departement not in vus:
+                vus.append(nom_departement)
+                cursor.execute("UPDATE etudes_metier SET vus_json = ? WHERE id = ?", (json.dumps(vus), e[0]))
+        conn.commit()
+        conn.close()
 
         if recus:
             depts_dispo = ["Tous"] + sorted(set(e[1] for e in recus))
@@ -534,6 +633,7 @@ def afficher_module_etudes(nom_departement, type_profil):
                         cursor.execute("DELETE FROM etudes_metier WHERE id = ?", (me_id,))
                         conn.commit()
                         conn.close()
+                        ajouter_log("Suppression Étude", me_dept, f"Étude supprimée : {me_titre}")
                         st.success("Étude supprimée et archivée.")
                         st.rerun()
         else:
@@ -561,22 +661,29 @@ def afficher_module_cdc(nom_departement, type_profil):
                                (nom_departement, f"{titre}||{f_name}", contenu, datetime.now().strftime("%Y-%m-%d %H:%M"), json.dumps(dest)))
                 conn.commit()
                 conn.close()
+                ajouter_log("Cahier des Charges", nom_departement, f"CDC publié : {titre}")
                 st.success("Document diffusé avec succès.")
                 st.rerun()
 
     with t2:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis FROM cahiers_charges ORDER BY id DESC")
+        cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis, vus_par_json FROM cahiers_charges ORDER BY id DESC")
         cdcs = cursor.fetchall()
-        conn.close()
 
         cdcs_visibles = []
         for c in cdcs:
-            c_id, c_dept, c_titre_raw, c_txt, c_date, c_dest_raw = c
+            c_id, c_dept, c_titre_raw, c_txt, c_date, c_dest_raw, c_vus_raw = c
             dests = json.loads(c_dest_raw) if c_dest_raw else []
             if nom_departement in dests or c_dept == nom_departement or type_profil == "fondateur":
                 cdcs_visibles.append(c)
+                if c_dept != nom_departement:
+                    vus = json.loads(c_vus_raw) if c_vus_raw else []
+                    if nom_departement not in vus:
+                        vus.append(nom_departement)
+                        cursor.execute("UPDATE cahiers_charges SET vus_par_json = ? WHERE id = ?", (json.dumps(vus), c_id))
+        conn.commit()
+        conn.close()
 
         if cdcs_visibles:
             depts_dispo_cdc = ["Tous"] + sorted(set(c[1] for c in cdcs_visibles))
@@ -606,7 +713,7 @@ def afficher_module_cdc(nom_departement, type_profil):
             cdcs_filtres = []
 
         for c in cdcs_filtres:
-            c_id, c_dept, c_titre_raw, c_txt, c_date, c_dest_raw = c
+            c_id, c_dept, c_titre_raw, c_txt, c_date, c_dest_raw, c_vus_raw = c
             parts = c_titre_raw.split("||")
             t_titre = parts[0]
             t_fich = parts[1] if len(parts) > 1 else ""
@@ -627,6 +734,7 @@ def afficher_module_cdc(nom_departement, type_profil):
                         cursor.execute("DELETE FROM cahiers_charges WHERE id = ?", (c_id,))
                         conn.commit()
                         conn.close()
+                        ajouter_log("Suppression CDC", c_dept, f"CDC supprimé : {t_titre}")
                         st.success("Cahier des charges supprimé et archivé.")
                         st.rerun()
 
@@ -673,6 +781,7 @@ def afficher_module_achats(nom_departement, type_profil):
                 """, (nom_departement, titre, desc, montant, fournisseur, statut, etape, "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), f_devis, ""))
                 conn.commit()
                 conn.close()
+                ajouter_log("Demande d'Achat", nom_departement, f"Demande soumise : {titre} ({montant} €)")
                 st.success("Demande enregistrée dans le circuit de validation.")
                 st.rerun()
 
@@ -722,6 +831,7 @@ def afficher_module_achats(nom_departement, type_profil):
                             cursor.execute("DELETE FROM demandes WHERE id = ?", (r['id'],))
                             conn.commit()
                             conn.close()
+                            ajouter_log("Suppression Demande", nom_departement, f"Demande #{r['id']} supprimée : {r['titre']}")
                             st.success("Demande supprimée et archivée.")
                             st.rerun()
 
@@ -750,6 +860,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 """, (c_titre, c_desc, c_montant, nom_f, nouv_statut, nouv_etape, r['id']))
                                 conn.commit()
                                 conn.close()
+                                ajouter_log("Correction Demande", nom_departement, f"Demande #{r['id']} corrigée et renvoyée")
                                 st.success("Demande corrigée et renvoyée en validation !")
                                 st.rerun()
         else:
@@ -811,11 +922,13 @@ def afficher_module_achats(nom_departement, type_profil):
                                     conn.close()
                                     solde_actuel = get_valeur_globale("solde_restant")
                                     set_valeur_globale("solde_restant", solde_actuel - float(d_montant))
+                                    ajouter_log("Décaissement", nom_departement, f"Dossier #{d_id} validé et financé ({d_montant} €)")
                                     st.success(f"Dossier #{d_id} approuvé et décaissement effectué !")
                                     st.rerun()
                                     
                                 conn.commit()
                                 conn.close()
+                                ajouter_log("Approbation", nom_departement, f"Dossier #{d_id} approuvé par {type_profil}")
                                 st.success(f"Dossier #{d_id} approuvé !")
                                 st.rerun()
 
@@ -828,6 +941,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 cursor.execute("UPDATE demandes SET statut='Demande de Modification', etape_actuelle='emetteur', retour_remarque=? WHERE id=?", (remarque, d_id))
                                 conn.commit()
                                 conn.close()
+                                ajouter_log("Demande de Modification", nom_departement, f"Dossier #{d_id} renvoyé pour correction : {remarque}")
                                 st.warning("Demande renvoyée pour correction.")
                                 st.rerun()
 
@@ -840,6 +954,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 cursor.execute("UPDATE demandes SET statut='Refusé', etape_actuelle='terminee', motif_refus=? WHERE id=?", (motif, d_id))
                                 conn.commit()
                                 conn.close()
+                                ajouter_log("Refus Demande", nom_departement, f"Dossier #{d_id} refusé : {motif}")
                                 st.error("Dossier refusé.")
                                 st.rerun()
             else:
@@ -889,7 +1004,7 @@ def afficher_zone_messages(discussion_id, nom_dept):
             st.info("Discussion démarrée. Envoyez le premier message !")
     conn.close()
 
-def afficher_module_messagerie_unifiee(nom_departement):
+def afficher_module_messagerie_unifiee(nom_departement, type_profil):
     st.subheader("💬 Hub de Discussion & Communication Directe")
     tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
     
@@ -924,13 +1039,14 @@ def afficher_module_messagerie_unifiee(nom_departement):
         
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, nom_groupe, membres_json FROM discussions ORDER BY id DESC")
+        cursor.execute("SELECT id, nom_groupe, membres_json, archives_par FROM discussions ORDER BY id DESC")
         toutes_discs = cursor.fetchall()
         
         discussions_utilisateur = []
-        for d_id, nom_g, membres_j in toutes_discs:
+        for d_id, nom_g, membres_j, archives_j in toutes_discs:
             membres = json.loads(membres_j)
-            if nom_departement in membres:
+            archives = json.loads(archives_j) if archives_j else []
+            if nom_departement in membres and nom_departement not in archives:
                 cursor.execute("SELECT expediteur, lus_json FROM messages_chat WHERE discussion_id = ?", (d_id,))
                 msgs = cursor.fetchall()
                 nb_non_lus = 0
@@ -945,7 +1061,7 @@ def afficher_module_messagerie_unifiee(nom_departement):
         conn.close()
 
         if discussions_utilisateur:
-            if st.session_state.discussion_active_id is None:
+            if st.session_state.discussion_active_id is None or st.session_state.discussion_active_id not in [d[0] for d in discussions_utilisateur]:
                 st.session_state.discussion_active_id = discussions_utilisateur[0][0]
 
             for d_id, label, nom_g, count in discussions_utilisateur:
@@ -954,25 +1070,63 @@ def afficher_module_messagerie_unifiee(nom_departement):
                     st.session_state.discussion_active_id = d_id
                     st.rerun()
         else:
+            st.session_state.discussion_active_id = None
             st.info("Aucune discussion active.")
 
     with col_chat:
         if st.session_state.discussion_active_id:
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT nom_groupe, membres_json FROM discussions WHERE id = ?", (st.session_state.discussion_active_id,))
+            cursor.execute("SELECT nom_groupe, membres_json, createur FROM discussions WHERE id = ?", (st.session_state.discussion_active_id,))
             disc_info = cursor.fetchone()
+            conn.close()
 
             if disc_info:
-                nom_g, membres_j = disc_info
+                nom_g, membres_j, createur = disc_info
                 membres = json.loads(membres_j)
+                est_createur = (createur == nom_departement)
 
-                st.markdown(f"""
-                <div class="channel-header">
-                    <b style="font-size: 1.1rem; color: #ffffff;">👥 {nom_g}</b><br>
-                    <small style="color: #8b949e;">Membres : {', '.join(membres)}</small>
-                </div>
-                """, unsafe_allow_html=True)
+                c_head1, c_head2, c_head3 = st.columns([4, 1, 1])
+                with c_head1:
+                    st.markdown(f"""
+                    <div class="channel-header">
+                        <b style="font-size: 1.1rem; color: #ffffff;">👥 {nom_g}</b><br>
+                        <small style="color: #8b949e;">Membres : {', '.join(membres)}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with c_head2:
+                    if st.button("🚪 Quitter", key=f"quitter_{st.session_state.discussion_active_id}", help="La discussion disparaît de votre liste, elle reste visible pour les autres membres", use_container_width=True):
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT archives_par FROM discussions WHERE id = ?", (st.session_state.discussion_active_id,))
+                        archives_actuel = json.loads(cursor.fetchone()[0] or "[]")
+                        if nom_departement not in archives_actuel:
+                            archives_actuel.append(nom_departement)
+                        cursor.execute("UPDATE discussions SET archives_par = ? WHERE id = ?", (json.dumps(archives_actuel), st.session_state.discussion_active_id))
+                        conn.commit()
+                        conn.close()
+                        ajouter_log("Quitter Discussion", nom_departement, f"A quitté la discussion : {nom_g}")
+                        st.session_state.discussion_active_id = None
+                        st.rerun()
+                with c_head3:
+                    if est_createur or type_profil == "fondateur":
+                        if st.button("🗑️ Supprimer", key=f"suppr_disc_{st.session_state.discussion_active_id}", help="Suppression définitive pour tous les membres", use_container_width=True):
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT id, expediteur, texte, date FROM messages_chat WHERE discussion_id = ?", (st.session_state.discussion_active_id,))
+                            tous_msgs = cursor.fetchall()
+                            archiver_dans_corbeille(
+                                nom_departement, "Discussion Complète", f"{nom_g} ({len(tous_msgs)} message(s))",
+                                {"membres": membres, "messages": [{"expediteur": m[1], "texte": m[2], "date": m[3]} for m in tous_msgs]}
+                            )
+                            cursor.execute("DELETE FROM messages_chat WHERE discussion_id = ?", (st.session_state.discussion_active_id,))
+                            cursor.execute("DELETE FROM discussions WHERE id = ?", (st.session_state.discussion_active_id,))
+                            conn.commit()
+                            conn.close()
+                            ajouter_log("Suppression Discussion", nom_departement, f"Discussion supprimée définitivement : {nom_g}")
+                            st.session_state.discussion_active_id = None
+                            st.success("Discussion supprimée et archivée pour la Direction.")
+                            st.rerun()
 
                 afficher_zone_messages(st.session_state.discussion_active_id, nom_departement)
 
@@ -987,7 +1141,6 @@ def afficher_module_messagerie_unifiee(nom_departement):
                     conn.commit()
                     conn.close()
                     st.rerun()
-            conn.close()
 
 # ==========================================
 # 5. JOURNAL DE BORD QUOTIDIEN
@@ -1184,6 +1337,205 @@ def afficher_module_direction_corbeille():
         st.info("Aucun élément supprimé pour l'instant.")
 
 # ==========================================
+# 8. MODULE DIRECTION : AUDIT & TRAÇABILITÉ DES CONNEXIONS
+# ==========================================
+def afficher_module_audit():
+    st.subheader("🕵️ Audit & Traçabilité (Connexions, Actions, Durées)")
+    st.markdown("Historique complet des connexions et actions de tous les collaborateurs — réservé à la Direction Générale.")
+
+    conn = get_db_connection()
+    df_logs = pd.read_sql_query("SELECT * FROM logs_audit ORDER BY id DESC", conn)
+    conn.close()
+
+    if df_logs.empty:
+        st.info("Aucun événement enregistré pour le moment.")
+        return
+
+    # --- Calcul des durées de connexion à partir des logs de déconnexion ---
+    import re
+    durees_par_acteur = {}
+    nb_sessions_par_acteur = {}
+    for _, row in df_logs[df_logs['action'] == 'Déconnexion'].iterrows():
+        m = re.search(r"(\d+)h(\d+)min", str(row['details']))
+        if m:
+            minutes = int(m.group(1)) * 60 + int(m.group(2))
+            durees_par_acteur[row['acteur']] = durees_par_acteur.get(row['acteur'], 0) + minutes
+            nb_sessions_par_acteur[row['acteur']] = nb_sessions_par_acteur.get(row['acteur'], 0) + 1
+
+    if durees_par_acteur:
+        st.markdown("#### ⏱️ Temps de connexion cumulé par collaborateur")
+        df_temps = pd.DataFrame([
+            {
+                "Collaborateur": acteur,
+                "Sessions terminées": nb_sessions_par_acteur.get(acteur, 0),
+                "Temps cumulé": f"{minutes // 60}h{minutes % 60:02d}min",
+                "Minutes totales": minutes
+            }
+            for acteur, minutes in sorted(durees_par_acteur.items(), key=lambda x: -x[1])
+        ])
+        st.dataframe(df_temps.drop(columns=["Minutes totales"]), use_container_width=True, hide_index=True)
+        afficher_boutons_export(df_temps, "temps_connexion_utilisateurs", "Temps de Connexion par Utilisateur", key_prefix="temps_connexion")
+
+    st.markdown("---")
+    st.markdown("#### 📜 Journal détaillé des actions")
+    st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer</div>', unsafe_allow_html=True)
+    ca1, ca2, ca3 = st.columns(3)
+    with ca1:
+        acteurs_dispo = ["Tous"] + sorted(df_logs['acteur'].unique().tolist())
+        acteur_filtre = st.selectbox("Collaborateur", acteurs_dispo)
+    with ca2:
+        actions_dispo = ["Toutes"] + sorted(df_logs['action'].unique().tolist())
+        action_filtre = st.selectbox("Type d'action", actions_dispo)
+    with ca3:
+        recherche_audit = st.text_input("Rechercher dans les détails")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    df_logs_filtres = df_logs.copy()
+    if acteur_filtre != "Tous":
+        df_logs_filtres = df_logs_filtres[df_logs_filtres['acteur'] == acteur_filtre]
+    if action_filtre != "Toutes":
+        df_logs_filtres = df_logs_filtres[df_logs_filtres['action'] == action_filtre]
+    if recherche_audit:
+        df_logs_filtres = df_logs_filtres[df_logs_filtres['details'].str.contains(recherche_audit, case=False, na=False)]
+
+    afficher_boutons_export(
+        df_logs_filtres[['id', 'date', 'acteur', 'action', 'details']],
+        "journal_audit", "Journal d'Audit Complet", key_prefix="audit"
+    )
+    st.dataframe(
+        df_logs_filtres[['date', 'acteur', 'action', 'details']],
+        use_container_width=True, hide_index=True
+    )
+
+# ==========================================
+# 9. MODULE RECHERCHE GLOBALE (TOUS DÉPARTEMENTS)
+# ==========================================
+def afficher_module_recherche_globale(nom_departement, type_profil):
+    st.subheader("🔍 Recherche Globale")
+    st.markdown("Recherchez en une fois dans les études, cahiers des charges, demandes d'achat et notes de journal auxquels vous avez accès.")
+
+    requete = st.text_input("🔎 Terme à rechercher", placeholder="Ex : irrigation, devis pompe, budget maintenance...")
+    if not requete:
+        st.info("Saisissez un mot-clé pour lancer la recherche.")
+        return
+
+    q = requete.lower()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # --- Études ---
+    cursor.execute("SELECT id, departement, titre, donnees_json, destinataires_partage, date FROM etudes_metier")
+    resultats_etudes = []
+    for e_id, e_dept, e_titre, e_json, e_dest, e_date in cursor.fetchall():
+        dests = json.loads(e_dest) if e_dest else []
+        visible = (e_dept == nom_departement) or (nom_departement in dests) or (type_profil == "fondateur")
+        data = json.loads(e_json) if e_json else {}
+        texte = f"{e_titre} {data.get('details', '')}".lower()
+        if visible and q in texte:
+            resultats_etudes.append((e_id, e_dept, e_titre, e_date))
+
+    # --- Cahiers des charges ---
+    cursor.execute("SELECT id, departement, titre, contenu, destinataires_avis, date FROM cahiers_charges")
+    resultats_cdc = []
+    for c_id, c_dept, c_titre_raw, c_txt, c_dest, c_date in cursor.fetchall():
+        dests = json.loads(c_dest) if c_dest else []
+        visible = (c_dept == nom_departement) or (nom_departement in dests) or (type_profil == "fondateur")
+        titre_seul = c_titre_raw.split("||")[0]
+        texte = f"{titre_seul} {c_txt}".lower()
+        if visible and q in texte:
+            resultats_cdc.append((c_id, c_dept, titre_seul, c_date))
+
+    # --- Demandes d'achat ---
+    if type_profil == "fondateur":
+        cursor.execute("SELECT id, departement, titre, cahier_charges, fournisseur, statut, montant, date FROM demandes")
+    else:
+        cursor.execute("SELECT id, departement, titre, cahier_charges, fournisseur, statut, montant, date FROM demandes WHERE departement = ?", (nom_departement,))
+    resultats_demandes = []
+    for d_id, d_dept, d_titre, d_desc, d_fourn, d_statut, d_montant, d_date in cursor.fetchall():
+        texte = f"{d_titre} {d_desc} {d_fourn}".lower()
+        if q in texte:
+            resultats_demandes.append((d_id, d_dept, d_titre, d_statut, d_montant, d_date))
+
+    # --- Journal de bord (du département uniquement) ---
+    cursor.execute("SELECT id, auteur, note, date_note FROM journal_bord WHERE departement = ?", (nom_departement,))
+    resultats_journal = [n for n in cursor.fetchall() if q in n[2].lower()]
+
+    conn.close()
+
+    total = len(resultats_etudes) + len(resultats_cdc) + len(resultats_demandes) + len(resultats_journal)
+    st.markdown(f"**{total} résultat(s) trouvé(s) pour « {requete} »**")
+    st.markdown("---")
+
+    if resultats_etudes:
+        st.markdown(f"#### ⚙️ Études ({len(resultats_etudes)})")
+        for e_id, e_dept, e_titre, e_date in resultats_etudes:
+            st.write(f"📁 [{e_dept}] **{e_titre}** — {e_date}")
+
+    if resultats_cdc:
+        st.markdown(f"#### 📋 Cahiers des Charges ({len(resultats_cdc)})")
+        for c_id, c_dept, t_titre, c_date in resultats_cdc:
+            st.write(f"📄 [{c_dept}] **{t_titre}** — {c_date}")
+
+    if resultats_demandes:
+        st.markdown(f"#### 🛒 Demandes d'Achat ({len(resultats_demandes)})")
+        for d_id, d_dept, d_titre, d_statut, d_montant, d_date in resultats_demandes:
+            st.markdown(f"📌 #{d_id} [{d_dept}] **{d_titre}** ({d_montant:,.2f} €) {pill_statut(d_statut)}", unsafe_allow_html=True)
+
+    if resultats_journal:
+        st.markdown(f"#### 📖 Journal de Bord ({len(resultats_journal)})")
+        for n_id, n_auteur, n_txt, n_date in resultats_journal:
+            st.write(f"📅 {n_date} — Par {n_auteur} : {n_txt[:120]}{'...' if len(n_txt) > 120 else ''}")
+
+    if total == 0:
+        st.info("Aucun résultat ne correspond à votre recherche.")
+
+# ==========================================
+# 10. MODULE STATISTIQUES (DIRECTION / ACHATS / FINANCE)
+# ==========================================
+def afficher_module_statistiques():
+    st.subheader("📈 Statistiques par Département")
+
+    conn = get_db_connection()
+    df_demandes = pd.read_sql_query("SELECT * FROM demandes", conn)
+    df_etudes = pd.read_sql_query("SELECT * FROM etudes_metier", conn)
+    df_cdc = pd.read_sql_query("SELECT * FROM cahiers_charges", conn)
+    conn.close()
+
+    if df_demandes.empty and df_etudes.empty and df_cdc.empty:
+        st.info("Pas encore assez de données pour générer des statistiques.")
+        return
+
+    depts = sorted(set(df_demandes['departement'].tolist() + df_etudes['departement'].tolist() + df_cdc['departement'].tolist()))
+    lignes = []
+    for d in depts:
+        dem_dept = df_demandes[df_demandes['departement'] == d]
+        nb_dem = len(dem_dept)
+        nb_validees = len(dem_dept[dem_dept['statut'] == 'Validé & Financé'])
+        nb_refusees = len(dem_dept[dem_dept['statut'] == 'Refusé'])
+        taux_appro = (nb_validees / nb_dem * 100) if nb_dem > 0 else 0
+        volume = dem_dept['montant'].sum() if nb_dem > 0 else 0
+        lignes.append({
+            "Département": d,
+            "Études publiées": len(df_etudes[df_etudes['departement'] == d]),
+            "CDC publiés": len(df_cdc[df_cdc['departement'] == d]),
+            "Demandes émises": nb_dem,
+            "Validées": nb_validees,
+            "Refusées": nb_refusees,
+            "Taux d'approbation": f"{taux_appro:.0f} %",
+            "Volume demandé (€)": f"{volume:,.2f}"
+        })
+
+    df_stats = pd.DataFrame(lignes)
+    st.dataframe(df_stats, use_container_width=True, hide_index=True)
+    afficher_boutons_export(df_stats, "statistiques_departements", "Statistiques par Département", key_prefix="stats_dept")
+
+    st.markdown("---")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Études publiées", len(df_etudes))
+    c2.metric("Total Cahiers des Charges publiés", len(df_cdc))
+    c3.metric("Total Demandes émises", len(df_demandes))
+
+# ==========================================
 # ROUTAGE DYNAMIQUE DES VUES
 # ==========================================
 if st.session_state.tab_actif == "1. Études & Ingénierie":
@@ -1196,13 +1548,22 @@ elif st.session_state.tab_actif == "3. Besoins & Achats":
     afficher_module_achats(nom_dept, profil["type"])
 
 elif st.session_state.tab_actif == "4. Messagerie & Chat":
-    afficher_module_messagerie_unifiee(nom_dept)
+    afficher_module_messagerie_unifiee(nom_dept, profil["type"])
 
 elif st.session_state.tab_actif == "📖 Journal de Bord":
     afficher_module_journal_bord(nom_dept)
 
 elif st.session_state.tab_actif == "📊 Pôle de Contrôle (Suivi Global)":
     afficher_module_suivi_global_controle()
+
+elif st.session_state.tab_actif == "🔍 Recherche Globale":
+    afficher_module_recherche_globale(nom_dept, profil["type"])
+
+elif st.session_state.tab_actif == "📈 Statistiques":
+    afficher_module_statistiques()
+
+elif st.session_state.tab_actif == "🕵️ Audit & Traçabilité":
+    afficher_module_audit()
 
 elif st.session_state.tab_actif == "🗑️ Corbeille & Historique Suppressions":
     afficher_module_direction_corbeille()
