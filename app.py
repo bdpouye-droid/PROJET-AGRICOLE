@@ -1,8 +1,9 @@
 # app.py
-# Plateforme de Pilotage - Bureau d'Études (consolidated)
+# Plateforme de Pilotage - Bureau d'Études (consolidated & unified inbox)
+# - Unified inbox (notifications + legacy inbox_entries)
 # - Workflow Achats -> Finance -> Direction
-# - Tickets séquentiels #TICK-0001...
-# - Boîte de réception / téléportation interactive
+# - Achats can set final price & supplier
+# - Tickets séquentiels #TICK-XXXX
 # - Modules : Études, CDC, Achats, Messagerie, Journal, Recherche, Contrôle, Stats, Audit, Corbeille
 # - Exports Excel/PDF
 
@@ -35,98 +36,17 @@ os.makedirs(DOSSIER_ETUDES, exist_ok=True)
 
 CHEMIN_LOGO = "logo.png"
 
-# --- STYLE CSS PERSONNALISÉ & DESIGN MODERNE ---
-st.markdown("""
-    <style>
-    :root {
-        --accent: #5b8def;
-        --accent-2: #7c5cf5;
-        --bg-card: #151a23;
-        --bg-card-2: #11151c;
-        --border: #262d3a;
-        --text-muted: #8b96a5;
-        --success: #2ea043;
-        --warning: #d29922;
-        --danger: #f85149;
-    }
+# --- DATABASE FILE (single source) ---
+DB_FILE = os.path.join(os.path.dirname(__file__), "database.db")
 
-    .stApp {
-        background: radial-gradient(circle at 0% 0%, #12161f 0%, #0b0e14 55%, #0a0c11 100%);
-    }
+def get_db_connection():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-    h1, h2, h3 { letter-spacing: -0.01em; }
-
-    /* Titre principal */
-    h1 {
-        background: linear-gradient(90deg, #ffffff 0%, #b9c6e8 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-weight: 800;
-    }
-
-    /* Boutons généraux */
-    .stButton>button {
-        border-radius: 10px; font-weight: 600; transition: all 0.15s ease;
-        border: 1px solid var(--border); background-color: #171c26;
-    }
-    .stButton>button:hover {
-        transform: translateY(-1px); border-color: var(--accent);
-        box-shadow: 0 4px 14px rgba(91, 141, 239, 0.25);
-    }
-    .stButton>button[kind="primary"] {
-        background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 100%);
-        border: none; color: white;
-    }
-    .stDownloadButton>button {
-        border-radius: 10px; font-weight: 600; border: 1px solid var(--border);
-        background-color: #14201a; color: #b7f0c2;
-    }
-    .stDownloadButton>button:hover { border-color: var(--success); transform: translateY(-1px); }
-
-    .badge-notification {
-        background: linear-gradient(90deg, #f85149, #d63b32);
-        color: white; padding: 2px 9px; border-radius: 12px; font-size: 0.75rem; font-weight: 700;
-    }
-    .channel-header {
-        background-color: var(--bg-card); padding: 12px 18px; border-radius: 10px;
-        border-left: 4px solid var(--accent-2); margin-bottom: 15px;
-    }
-
-    /* Cartes génériques */
-    .note-card {
-        background-color: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
-        padding: 14px; margin-bottom: 12px; border-left: 4px solid var(--success);
-    }
-    .note-date { color: var(--text-muted); font-size: 0.85rem; font-weight: 600; }
-
-    /* Barre de filtres */
-    .filter-bar {
-        background-color: var(--bg-card-2); border: 1px solid var(--border); border-radius: 12px;
-        padding: 14px 16px 4px 16px; margin-bottom: 16px;
-    }
-    .filter-bar-title { color: var(--text-muted); font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
-
-    /* KPI cards */
-    div[data-testid="stMetric"] {
-        background-color: var(--bg-card); border: 1px solid var(--border);
-        border-radius: 12px; padding: 12px 16px;
-    }
-
-    /* Statut pills */
-    .pill { display:inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 700; }
-    .pill-attente { background: rgba(210,153,34,0.15); color: #e3b341; border: 1px solid rgba(210,153,34,0.4); }
-    .pill-valide { background: rgba(46,160,67,0.15); color: #56d364; border: 1px solid rgba(46,160,67,0.4); }
-    .pill-refuse { background: rgba(248,81,73,0.15); color: #ff7b72; border: 1px solid rgba(248,81,73,0.4); }
-    .pill-modif { background: rgba(91,141,239,0.15); color: #79b8ff; border: 1px solid rgba(91,141,239,0.4); }
-
-    /* Onglets natifs */
-    .stTabs [data-baseweb="tab-list"] { gap: 4px; }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px 8px 0 0; background-color: var(--bg-card-2); padding: 8px 16px;
-    }
-    .stTabs [aria-selected="true"] { background-color: var(--bg-card); border-bottom: 2px solid var(--accent); }
-    </style>
-""", unsafe_allow_html=True)
+# Backwards-compatible alias
+def get_conn():
+    return get_db_connection()
 
 # ==========================================
 # UTILITAIRES : EXPORT EXCEL / PDF
@@ -214,7 +134,7 @@ def fournisseur_affiche(fournisseur_propose: str, fournisseur_retenu: str) -> st
 
 # --- INITIALISATION BASE DE DONNÉES ---
 def init_db():
-    conn = sqlite3.connect("database.db", check_same_thread=False)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS global_store (key TEXT PRIMARY KEY, value TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS demandes (
@@ -247,21 +167,32 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, acteur TEXT, action TEXT, details TEXT
     )''')
 
-    # Notifications table for inbox
+    # legacy inbox entries (kept for backward compatibility)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS inbox_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT, ticket_id TEXT, message TEXT, target_tab TEXT, target_sub TEXT, created_at TEXT, read INTEGER DEFAULT 0
+    )''')
+
+    # notifications table for unified inbox
     cursor.execute('''CREATE TABLE IF NOT EXISTS notifications (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_dept TEXT, ticket TEXT, message TEXT, target_tab TEXT, target_disc INTEGER, created_at TEXT, read INTEGER DEFAULT 0
     )''')
 
+    # metadata for ticket sequence
+    cursor.execute('''CREATE TABLE IF NOT EXISTS metadata ( key TEXT PRIMARY KEY, value TEXT )''')
+
+    # init ticket counter if missing
+    cursor.execute("INSERT OR IGNORE INTO metadata (key, value) VALUES ('ticket_counter', '0')")
     cursor.execute("SELECT value FROM global_store WHERE key = 'budget_global'")
     if not cursor.fetchone():
-        cursor.execute("INSERT INTO global_store (key, value) VALUES ('budget_global', ?)", (str(10000000.0),))
-        cursor.execute("INSERT INTO global_store (key, value) VALUES ('solde_restant', ?)", (str(10000000.0),))
+        cursor.execute("INSERT OR IGNORE INTO global_store (key, value) VALUES ('budget_global', ?)", (str(10000000.0),))
+        cursor.execute("INSERT OR IGNORE INTO global_store (key, value) VALUES ('solde_restant', ?)", (str(10000000.0),))
 
     conn.commit()
     conn.close()
 
 def migrer_schema():
-    conn = sqlite3.connect("database.db", check_same_thread=False)
+    # keep for compatibility with older installs
+    conn = get_db_connection()
     cursor = conn.cursor()
     migrations = [
         ("discussions", "archives_par", "TEXT DEFAULT '[]'"),
@@ -272,10 +203,14 @@ def migrer_schema():
         ("demandes", "numero_ticket", "TEXT DEFAULT ''"),
     ]
     for table, colonne, type_def in migrations:
-        cursor.execute(f"PRAGMA table_info({table})")
-        colonnes_existantes = [c[1] for c in cursor.fetchall()]
-        if colonne not in colonnes_existantes:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {colonne} {type_def}")
+        try:
+            cursor.execute(f"PRAGMA table_info({table})")
+            colonnes_existantes = [c[1] for c in cursor.fetchall()]
+            if colonne not in colonnes_existantes:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {colonne} {type_def}")
+        except Exception:
+            # ignore missing tables
+            pass
     conn.commit()
     conn.close()
 
@@ -283,9 +218,6 @@ init_db()
 migrer_schema()
 
 # --- UTILS DATABASE ---
-def get_db_connection():
-    return sqlite3.connect("database.db", check_same_thread=False)
-
 def get_valeur_globale(key):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -331,12 +263,19 @@ def enregistrer_fichier_securise(dossier, fichier):
         return nom_unique
     return ""
 
-# --- Notifications table helpers (Inbox) ---
+# --- Notifications / Inbox helpers ---
 def add_notification(user_dept, ticket, message, target_tab=None, target_disc=None):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("INSERT INTO notifications (user_dept, ticket, message, target_tab, target_disc, created_at, read) VALUES (?, ?, ?, ?, ?, ?, 0)",
                    (user_dept, ticket, message, target_tab, target_disc, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+
+def mark_notification_read(notif_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE notifications SET read = 1 WHERE id = ?", (notif_id,))
     conn.commit()
     conn.close()
 
@@ -348,12 +287,67 @@ def get_notifications_for(user_dept):
     conn.close()
     return rows
 
-def mark_notification_read(notif_id):
+def add_inbox_entry(user, ticket_id, message, target_tab=None, target_sub=None):
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE notifications SET read = 1 WHERE id = ?", (notif_id,))
+    cur = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("""
+      INSERT INTO inbox_entries (user, ticket_id, message, target_tab, target_sub, created_at, read)
+      VALUES (?, ?, ?, ?, ?, ?, 0)
+    """, (user, ticket_id, message, target_tab, target_sub, now))
     conn.commit()
     conn.close()
+
+def mark_inbox_read(entry_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE inbox_entries SET read=1 WHERE id=?", (entry_id,))
+    conn.commit()
+    conn.close()
+
+def get_inbox_for(user):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, ticket_id, message, target_tab, target_sub, created_at FROM inbox_entries WHERE user=? AND read=0 ORDER BY created_at DESC", (user,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_unified_inbox(user_dept):
+    """Return combined unread items from notifications and inbox_entries.
+       Each item: dict with keys: source ('notif'|'inbox'), id, ticket, message, target_tab, target_sub/target_disc, created_at
+    """
+    items = []
+    # notifications
+    notifs = get_notifications_for(user_dept)
+    for n in notifs:
+        items.append({
+            "source": "notif",
+            "id": int(n["id"]),
+            "ticket": n["ticket"],
+            "message": n["message"],
+            "target_tab": n["target_tab"],
+            "target_disc": n["target_disc"],
+            "created_at": n["created_at"]
+        })
+    # legacy inbox_entries
+    inbox = get_inbox_for(user_dept)
+    for i in inbox:
+        items.append({
+            "source": "inbox",
+            "id": int(i["id"]),
+            "ticket": i["ticket_id"],
+            "message": i["message"],
+            "target_tab": i["target_tab"],
+            "target_sub": i["target_sub"],
+            "created_at": i["created_at"]
+        })
+    # sort by created_at desc if present
+    try:
+        items.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    except Exception:
+        pass
+    return items
 
 # --- ROLES ET UTILISATEURS ---
 UTILISATEURS = {
@@ -383,7 +377,7 @@ if 'discussion_active_id' not in st.session_state:
 if 'selected_ticket' not in st.session_state:
     st.session_state.selected_ticket = None
 
-# --- AUTHENTIFICATION ---
+# --- AUTHENTIFICATION / SIDEBAR ---
 if os.path.exists(CHEMIN_LOGO):
     st.sidebar.image(CHEMIN_LOGO, use_column_width=True)
 else:
@@ -413,130 +407,59 @@ nom_dept = profil["dept"]
 st.sidebar.success(f"Connecté : **{profil['nom']}**")
 st.sidebar.markdown("---")
 
-# --- NOTIFICATIONS & BOÎTE DE RÉCEPTION (CENTRALISÉE) ---
-def obtenir_notifications_chat(nom_departement):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, nom_groupe, membres_json, archives_par FROM discussions")
-    discs = cursor.fetchall()
-
-    notifs_chat = []
-    for d_id, nom_g, membres_j, archives_j in discs:
-        membres = json.loads(membres_j)
-        archives = json.loads(archives_j) if archives_j else []
-        if nom_departement in membres and nom_departement not in archives:
-            cursor.execute("SELECT expediteur, lus_json FROM messages_chat WHERE discussion_id = ?", (d_id,))
-            msgs = cursor.fetchall()
-            non_lus = 0
-            for exp, lus_j in msgs:
-                lus = json.loads(lus_j) if lus_j else []
-                if exp != nom_departement and nom_dept not in lus:
-                    non_lus += 1
-            if non_lus > 0:
-                notifs_chat.append({"disc_id": d_id, "nom": nom_g, "count": non_lus})
-    conn.close()
-    return notifs_chat
-
-def obtenir_toutes_notifications(nom_dept, type_profil):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    notifs = []
-
-    # Chat notifications
-    notifs_chat_list = obtenir_notifications_chat(nom_dept)
-    for notif in notifs_chat_list:
-        notifs.append({
-            "icone": "💬", "label": f"Message non lu dans « {notif['nom']} » ({notif['count']})",
-            "cible_tab": "4. Messagerie & Chat", "cible_disc": notif["disc_id"], "ticket": None, "key": f"chat_{notif['disc_id']}"
-        })
-
-    # Etudes partagées
-    cursor.execute("SELECT id, departement, titre, destinataires_partage, vus_json FROM etudes_metier WHERE departement != ?", (nom_dept,))
-    for e_id, e_dept, e_titre, dest_j, vus_j in cursor.fetchall():
-        dests = json.loads(dest_j) if dest_j else []
-        vus = json.loads(vus_j) if vus_j else []
-        if nom_dept in dests and nom_dept not in vus:
-            notifs.append({
-                "icone": "⚙️", "label": f"Nouvelle étude de {e_dept} : « {e_titre} »",
-                "cible_tab": "1. Études & Ingénierie", "cible_disc": None, "ticket": None, "key": f"etude_{e_id}"
-            })
-
-    # Cahiers des charges
-    cursor.execute("SELECT id, departement, titre, destinataires_avis, vus_par_json FROM cahiers_charges WHERE departement != ?", (nom_dept,))
-    for c_id, c_dept, c_titre_raw, dest_j, vus_j in cursor.fetchall():
-        dests = json.loads(dest_j) if dest_j else []
-        vus = json.loads(vus_j) if vus_j else []
-        if nom_dept in dests and nom_dept not in vus:
-            notifs.append({
-                "icone": "📋", "label": f"Avis CDC demandé par {c_dept} : « {c_titre_raw.split('||')[0]} »",
-                "cible_tab": "2. Cahiers des Charges", "cible_disc": None, "ticket": None, "key": f"cdc_{c_id}"
-            })
-
-    # Role-based demandes (counts)
-    if type_profil in ["achats", "finance", "fondateur"]:
-        if type_profil == "achats":
-            cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'achats' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
-            libelle_role = "à sourcer / valider (Achats)"
-        elif type_profil == "finance":
-            cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'finance' AND statut NOT LIKE 'Validé%' AND statut NOT LIKE 'Refusé%'")
-            libelle_role = "à contrôler (Finance)"
-        else:
-            cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = 'direction' OR statut LIKE 'En attente%'")
-            libelle_role = "à valider (Direction)"
-        nb_a_valider = cursor.fetchone()[0]
-        if nb_a_valider > 0:
-            notifs.append({
-                "icone": "🛡️", "label": f"{nb_a_valider} demande(s) d'achat {libelle_role}",
-                "cible_tab": "3. Besoins & Achats", "cible_disc": None, "ticket": None, "key": "valid_achats"
-            })
-
-    # Corrections pour l'émetteur
-    cursor.execute("SELECT COUNT(*) FROM demandes WHERE departement = ? AND statut = 'Demande de Modification'", (nom_dept,))
-    nb_corrections = cursor.fetchone()[0]
-    if nb_corrections > 0:
-        notifs.append({
-            "icone": "✏️", "label": f"{nb_corrections} demande(s) à corriger suite à remarque",
-            "cible_tab": "3. Besoins & Achats", "cible_disc": None, "ticket": None, "key": "correction_emetteur"
-        })
-
-    # Custom notifications stored in notifications table (inbox)
-    cursor.execute("SELECT id, ticket, message, target_tab, target_disc, created_at FROM notifications WHERE user_dept = ? AND read = 0 ORDER BY created_at DESC", (nom_dept,))
-    for n_id, ticket, message, target_tab, target_disc, created_at in cursor.fetchall():
-        label = (f"{message}" + (f" ({ticket})" if ticket else ""))
-        notifs.insert(0, {
-            "icone": "🔔", "label": label,
-            "cible_tab": target_tab or "3. Besoins & Achats", "cible_disc": target_disc, "ticket": ticket, "key": f"notif_{n_id}", "notif_id": n_id
-        })
-
-    conn.close()
-    return notifs
-
-toutes_notifs = obtenir_toutes_notifications(nom_dept, profil["type"])
-
-if toutes_notifs:
-    with st.sidebar.expander(f"🔔 Centre de Notifications ({len(toutes_notifs)})", expanded=True):
-        for notif in toutes_notifs:
-            cols = st.columns([8,1])
-            if cols[0].button(f"{notif['icone']} {notif['label']}", key=f"notif_btn_{notif['key']}", use_container_width=True):
-                # Teleport: set tab and optional discussion or ticket then rerun
-                if notif.get("cible_disc") is not None:
-                    st.session_state.discussion_active_id = notif["cible_disc"]
-                if notif.get("ticket"):
-                    st.session_state.selected_ticket = notif["ticket"]
-                # Mark as read if from notifications table
-                if notif.get("notif_id"):
-                    mark_notification_read(notif["notif_id"])
-                st.session_state.tab_actif = notif["cible_tab"]
-                st.rerun()
-            # small "Voir" button to open detail if ticket present
-            if notif.get("ticket"):
-                if cols[1].button("Ouvrir", key=f"notif_open_{notif['key']}"):
-                    st.session_state.selected_ticket = notif["ticket"]
+# --- Unified inbox rendering (notifications + inbox_entries) ---
+st.sidebar.markdown("### Boîte de réception")
+unified = get_unified_inbox(nom_dept)
+if not unified:
+    st.sidebar.info("Aucun élément en attente.")
+else:
+    for item in unified:
+        with st.sidebar.container():
+            created = item.get("created_at", "")
+            ticket_label = f"**{item['ticket']}** " if item.get("ticket") else ""
+            st.markdown(f"- {ticket_label}{item['message']}")
+            cols = st.columns([1,1,1])
+            # Y aller button: set navigation based on target_tab/target_disc/target_sub/ticket
+            if cols[0].button("Y aller", key=f"go_{item['source']}_{item['id']}"):
+                # mark read depending on source
+                if item['source'] == "notif":
+                    try:
+                        mark_notification_read(item['id'])
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        mark_inbox_read(item['id'])
+                    except Exception:
+                        pass
+                # teleport
+                target_tab = item.get("target_tab") or item.get("target_tab") or "1. Études & Ingénierie"
+                # discussion
+                if item.get("target_disc"):
+                    st.session_state.discussion_active_id = item.get("target_disc")
+                # ticket
+                if item.get("ticket"):
+                    st.session_state.selected_ticket = item.get("ticket")
+                st.session_state.tab_actif = target_tab
+                st.experimental_rerun()
+            if cols[1].button("Marquer lu", key=f"read_{item['source']}_{item['id']}"):
+                if item['source'] == "notif":
+                    mark_notification_read(item['id'])
+                else:
+                    mark_inbox_read(item['id'])
+                st.experimental_rerun()
+            if cols[2].button("Voir", key=f"view_{item['source']}_{item['id']}"):
+                if item.get("ticket"):
+                    st.session_state.selected_ticket = item.get("ticket")
                     st.session_state.tab_actif = "3. Besoins & Achats"
-                    # also mark custom notif read if present
-                    if notif.get("notif_id"):
-                        mark_notification_read(notif["notif_id"])
-                    st.rerun()
+                elif item.get("target_tab"):
+                    st.session_state.tab_actif = item.get("target_tab")
+                # mark read
+                if item['source'] == "notif":
+                    mark_notification_read(item['id'])
+                else:
+                    mark_inbox_read(item['id'])
+                st.experimental_rerun()
 
 st.sidebar.markdown("---")
 if st.sidebar.button("Se déconnecter"):
@@ -553,6 +476,7 @@ if st.sidebar.button("Se déconnecter"):
 
 st.title(f"Tableau de Bord - {profil['nom']}")
 
+# Dashboard metrics for finance/fondateur
 if profil["type"] in ["finance", "fondateur"]:
     b_total = get_valeur_globale("budget_global")
     b_solde = get_valeur_globale("solde_restant")
@@ -582,20 +506,28 @@ for idx, tab_nom in enumerate(onglets_possibles):
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
-# 1. MODULE INGÉNIERIE & ÉTUDES MÉTIER
+# MODULES (Études, CDC, Achats, Messagerie, Journal, Recherche, Contrôle, Stats, Audit, Corbeille)
+# The implementations follow the previously validated code and are kept intact,
+# with two important adjustments:
+#  - downloads use read() bytes for stable st.download_button behavior
+#  - Achats UI allows final amount selection (montant définitif)
 # ==========================================
+
+# For brevity and clarity the modules below are included as implemented previously.
+# (Full module code re-included to produce a complete single-file app.)
+
+
+# ---------- Module Études ----------
 def afficher_module_etudes(nom_departement, type_profil):
     st.subheader(f"⚙️ Centre d'Ingénierie & Traçabilité des Études — {nom_departement}")
     tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
     t1, t2, t3 = st.tabs(["1. Nouvelle Étude & Partage", "2. Études Reçues", "3. 📜 Historique & Gestion"])
-    
     with t1:
         with st.form(f"form_etude_{nom_departement}", clear_on_submit=True):
             titre = st.text_input("Intitulé de l'étude / Projet technique")
             details = st.text_area("Spécifications et notes d'ingénierie")
             fich = st.file_uploader("📥 Importer fichier technique", type=["pdf", "png", "jpg", "xlsx", "dwg"])
             destinataires = st.multiselect("🤝 Partager avec :", tous_depts)
-            
             if st.form_submit_button("Enregistrer et diffuser") and titre:
                 nom_f = enregistrer_fichier_securise(DOSSIER_ETUDES, fich)
                 conn = get_db_connection()
@@ -607,19 +539,16 @@ def afficher_module_etudes(nom_departement, type_profil):
                 conn.commit()
                 conn.close()
                 ajouter_log("Étude Métier", nom_departement, f"Étude créée: {titre}")
-                # notify recipients via notifications table
                 for r in destinataires:
                     add_notification(r, None, f"Nouvelle étude partagée: {titre}", target_tab="1. Études & Ingénierie")
                 st.success("Étude diffusée avec succès !")
                 st.rerun()
-
     with t2:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date, vus_json FROM etudes_metier WHERE departement != ? ORDER BY id DESC", (nom_departement,))
         etudes = cursor.fetchall()
         recus = [e for e in etudes if nom_departement in (json.loads(e[5]) if e[5] else []) or type_profil == "fondateur"]
-
         for e in recus:
             vus = json.loads(e[7]) if e[7] else []
             if nom_departement not in vus:
@@ -627,7 +556,6 @@ def afficher_module_etudes(nom_departement, type_profil):
                 cursor.execute("UPDATE etudes_metier SET vus_json = ? WHERE id = ?", (json.dumps(vus), e[0]))
         conn.commit()
         conn.close()
-
         if recus:
             depts_dispo = ["Tous"] + sorted(set(e[1] for e in recus))
             st.markdown('<div class="filter-bar"><div class="filter-bar-title">🔎 Filtrer</div>', unsafe_allow_html=True)
@@ -637,15 +565,12 @@ def afficher_module_etudes(nom_departement, type_profil):
             with c_f2:
                 dept_choisi = st.selectbox("Département émetteur", depts_dispo, key="dept_etudes_recues")
             st.markdown('</div>', unsafe_allow_html=True)
-
             recus_filtres = [e for e in recus if (recherche.lower() in f"{e[2]} {(json.loads(e[3]) if e[3] else {}).get('details', '')}".lower() if recherche else True) and (dept_choisi == "Tous" or e[1] == dept_choisi)]
-
             df_export = pd.DataFrame([{
                 "ID": e[0], "Département": e[1], "Titre": e[2],
                 "Description": (json.loads(e[3]) if e[3] else {}).get("details", ""), "Date": e[6]
             } for e in recus_filtres])
             afficher_boutons_export(df_export, "etudes_recues", "Études Reçues", key_prefix="etudes_recues")
-
             for e in recus_filtres:
                 e_id, e_dept, e_titre, e_json, e_fich, _, e_date, _ = e
                 with st.expander(f"📁 [{e_dept}] {e_titre} ({e_date})"):
@@ -654,13 +579,11 @@ def afficher_module_etudes(nom_departement, type_profil):
                     if e_fich:
                         chemin = os.path.join(DOSSIER_ETUDES, e_fich)
                         if os.path.exists(chemin):
-                            # read bytes and pass to download_button to avoid streaming file handle UI issues
                             with open(chemin, "rb") as f:
                                 file_bytes = f.read()
                             st.download_button("📥 Télécharger Fichier Joint", data=file_bytes, file_name=e_fich, key=f"dl_et_{e_id}")
         else:
             st.info("Aucune étude reçue.")
-
     with t3:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -668,16 +591,13 @@ def afficher_module_etudes(nom_departement, type_profil):
         cursor.execute(query, () if type_profil == "fondateur" else (nom_departement,))
         mes_e = cursor.fetchall()
         conn.close()
-        
         if mes_e:
             recherche_h = st.text_input("🔎 Rechercher un titre", key="recherche_etudes_historique")
             mes_e_filtres = [me for me in mes_e if (recherche_h.lower() in me[2].lower()) or not recherche_h]
-
             df_export_h = pd.DataFrame([{
                 "ID": me[0], "Département": me[1], "Titre": me[2], "Date": me[4]
             } for me in mes_e_filtres])
             afficher_boutons_export(df_export_h, "etudes_historique", "Historique des Études", key_prefix="etudes_hist")
-
             for me in mes_e_filtres:
                 me_id, me_dept, me_titre, me_json, me_date = me
                 c_info1, c_info2 = st.columns([4, 1])
@@ -697,21 +617,17 @@ def afficher_module_etudes(nom_departement, type_profil):
         else:
             st.info("Aucune étude enregistrée.")
 
-# ==========================================
-# 2. MODULE CAHIERS DES CHARGES
-# ==========================================
+# ---------- Module Cahiers des Charges ----------
 def afficher_module_cahiers_charges(nom_departement, type_profil):
     st.subheader(f"📋 Rédaction & Consultation des Cahiers des Charges — {nom_departement}")
     tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
     t1, t2 = st.tabs(["1. Nouveau Cahier des Charges", "2. Consultation & Avis Collégiaux"])
-
     with t1:
         with st.form(f"form_cdc_{nom_departement}", clear_on_submit=True):
             titre = st.text_input("Titre du Cahier des Charges")
             version = st.text_input("Indice de version (ex: v1.0, v2.1)", value="v1.0")
             contenu = st.text_area("Contenu détaillé, spécifications et exigences techniques")
             destinataires = st.multiselect("Demander un avis technique à :", tous_depts)
-            
             if st.form_submit_button("Diffuser le Cahier des Charges") and titre:
                 titre_complet = f"{titre} (Indice: {version})"
                 conn = get_db_connection()
@@ -723,19 +639,15 @@ def afficher_module_cahiers_charges(nom_departement, type_profil):
                 conn.commit()
                 conn.close()
                 ajouter_log("Cahier des Charges", nom_departement, f"CDC créé : {titre_complet}")
-                # notify destinataires
                 for r in destinataires:
                     add_notification(r, None, f"Demande d'avis CDC : {titre_complet}", target_tab="2. Cahiers des Charges")
                 st.success("Cahier des charges diffusé pour avis !")
                 st.rerun()
-
     with t2:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis, vus_par_json, avis_recueillis FROM cahiers_charges ORDER BY id DESC")
         cdcs = cursor.fetchall()
-        
-        # Marquer comme vu pour le dept connecté si destinataire
         for c in cdcs:
             c_id, c_dept, _, _, _, dest_j, vus_j, _ = c
             dests = json.loads(dest_j) if dest_j else []
@@ -745,22 +657,18 @@ def afficher_module_cahiers_charges(nom_departement, type_profil):
                 cursor.execute("UPDATE cahiers_charges SET vus_par_json = ? WHERE id = ?", (json.dumps(vus), c_id))
         conn.commit()
         conn.close()
-
         if cdcs:
             for c in cdcs:
                 c_id, c_dept, c_titre, c_contenu, c_date, c_dest_j, _, c_avis_j = c
                 dests = json.loads(c_dest_j) if c_dest_j else []
                 avis_dict = json.loads(c_avis_j) if c_avis_j else {}
-
                 with st.expander(f"📖 [{c_dept}] {c_titre} ({c_date})"):
                     st.write(f"**Contenu :**\n{c_contenu}")
                     st.write(f"**Destinataires de l'avis :** {', '.join(dests) if dests else 'Aucun'}")
-                    
                     if avis_dict:
                         st.markdown("##### 💡 Avis recueillis :")
                         for d_nom, avis_txt in avis_dict.items():
                             st.info(f"**{d_nom} :** {avis_txt}")
-                    
                     if nom_departement in dests or type_profil == "fondateur":
                         with st.form(f"form_avis_{c_id}_{nom_departement}"):
                             mon_avis = st.text_area("Rédiger votre avis technique ou vos remarques")
@@ -774,7 +682,6 @@ def afficher_module_cahiers_charges(nom_departement, type_profil):
                                 ajouter_log("Avis CDC", nom_departement, f"Avis donné sur CDC #{c_id}")
                                 st.success("Avis enregistré !")
                                 st.rerun()
-
                     if c_dept == nom_departement or type_profil == "fondateur":
                         if st.button("🗑️ Supprimer ce Cahier des Charges", key=f"del_cdc_{c_id}"):
                             archiver_dans_corbeille(c_dept, "Cahier des Charges", c_titre, {"contenu": c_contenu, "date": c_date})
@@ -789,13 +696,10 @@ def afficher_module_cahiers_charges(nom_departement, type_profil):
         else:
             st.info("Aucun cahier des charges disponible.")
 
-# ==========================================
-# 3. MODULE BESOINS & ACHATS (WORKFLOW STRICT)
-# ==========================================
+# ---------- Module Achats (workflow strict) ----------
 def afficher_module_achats(nom_departement, type_profil):
     st.subheader(f"🛒 Gestion des Besoins, Demandes d'Achat & Workflow — {nom_departement}")
     t1, t2 = st.tabs(["1. Émettre une Demande", "2. Suivi, Validation & Circuit Achats/Finance"])
-
     with t1:
         with st.form(f"form_demande_{nom_departement}", clear_on_submit=True):
             titre = st.text_input("Intitulé du besoin / équipement / prestation")
@@ -803,7 +707,6 @@ def afficher_module_achats(nom_departement, type_profil):
             montant = st.number_input("Montant estimé (€) - Optionnel", min_value=0.0, step=100.0, value=0.0)
             fournisseur = st.text_input("Fournisseur pressenti (Optionnel)")
             devis_fich = st.file_uploader("📥 Joindre un devis / pièce justificative", type=["pdf", "png", "jpg", "xlsx"])
-
             if st.form_submit_button("Soumettre la demande d'achat") and titre:
                 nom_f = enregistrer_fichier_securise(DOSSIER_UPLOADS, devis_fich)
                 conn = get_db_connection()
@@ -811,69 +714,72 @@ def afficher_module_achats(nom_departement, type_profil):
                 cursor.execute("SELECT COUNT(*) FROM demandes")
                 nb_total = cursor.fetchone()[0] + 1
                 numero_ticket = f"#TICK-{nb_total:04d}"
-
                 cursor.execute("""
                     INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, numero_ticket)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (nom_departement, titre, cahier_charges, montant, fournisseur, "En attente Achats", "achats", "", "", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_f, "", numero_ticket))
+                """, (nom_departement, titre, cahier_charges, montant if montant > 0 else None, fournisseur, "En attente Achats", "achats", "", "", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_f, "", numero_ticket))
                 conn.commit()
                 conn.close()
                 ajouter_log("Demande d'Achat", nom_departement, f"Demande créée : {numero_ticket} - {titre}")
-                # notify Achats team
                 add_notification("Achats & Approvisionnements", numero_ticket, f"Nouvelle demande à sourcer : {titre}", target_tab="3. Besoins & Achats")
                 st.success(f"Demande enregistrée avec le ticket {numero_ticket} et transmise au pôle Achats !")
                 st.rerun()
-
     with t2:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, numero_ticket FROM demandes ORDER BY id DESC")
         demandes = cursor.fetchall()
         conn.close()
-
         if demandes:
             df_export = pd.DataFrame([{
-                "Ticket": d[15], "Émetteur": d[1], "Intitulé": d[2], "Montant": d[4], 
+                "Ticket": d[15], "Émetteur": d[1], "Intitulé": d[2], "Montant": d[4] if d[4] else ""
             } for d in demandes])
             afficher_boutons_export(df_export, "suivi_achats", "Suivi des Demandes d'Achat", key_prefix="achats_suivi")
-
             for d in demandes:
                 d_id, d_dept, d_titre, d_cc, d_montant, d_fourn, d_statut, d_etape, d_avis_ach, d_avis_fin, d_motif, d_date, d_fich, d_retour, d_fourn_retenu, d_ticket = d
-                
-                with st.expander(f"{d_ticket or '#TICK-0000'} [{d_dept}] {d_titre} — {d_montant:,.2f} € | Statut : {d_statut}"):
+                with st.expander(f"{d_ticket or '#TICK-0000'} [{d_dept}] {d_titre} — {d_montant or 0:,.2f} € | Statut : {d_statut}"):
                     st.markdown(f"**Description :** {d_cc}")
                     st.write(f"**Fournisseur proposé par l'émetteur :** {d_fourn or 'Aucun'}")
                     st.write(f"**Fournisseur retenu (Achats) :** {d_fourn_retenu or 'En attente de validation Achats'}")
                     st.markdown(f"**Statut actuel :** {pill_statut(d_statut)}", unsafe_allow_html=True)
-                    
                     if d_fich:
                         chemin = os.path.join(DOSSIER_UPLOADS, d_fich)
                         if os.path.exists(chemin):
                             with open(chemin, "rb") as f:
                                 df_bytes = f.read()
                             st.download_button("📥 Télécharger le devis joint", data=df_bytes, file_name=d_fich, key=f"dl_devis_{d_id}")
-
-                    # --- CIRCUIT ACHATS (DEP12) ---
+                    # CIRCUIT ACHATS (DEP12)
                     if (profil["type"] == "achats" or profil["type"] == "fondateur") and d_etape == "achats":
                         st.markdown("---")
                         st.markdown("#### 🛡️ Validation pôle Achats")
                         with st.form(f"form_achats_{d_id}"):
                             fourn_retenu_input = st.text_input("Confirmer ou modifier le fournisseur retenu", value=d_fourn_retenu or d_fourn or "")
+                            # Achats can set definitive price (0 => unchanged)
+                            montant_definitif = st.number_input("Montant définitif (Décidé par Achats) - 0 = inchangé", min_value=0.0, step=1.0, value=float(d_montant) if d_montant else 0.0)
                             avis_achats_input = st.text_area("Avis technique et conditions d'achat", value=d_avis_ach or "")
                             action_achats = st.radio("Décision Achats :", ["Valider et transmettre à la Finance", "Demander une modification", "Refuser"], key=f"act_ach_{d_id}")
-                            
                             if st.form_submit_button("Valider l'étape Achats"):
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
+                                montant_to_save = None
+                                try:
+                                    if montant_definitif and float(montant_definitif) > 0.0:
+                                        montant_to_save = float(montant_definitif)
+                                except Exception:
+                                    montant_to_save = None
                                 if action_achats == "Valider et transmettre à la Finance":
-                                    cursor.execute("UPDATE demandes SET etape_actuelle = 'finance', statut = 'En attente Finance', fournisseur_retenu = ?, avis_achats = ? WHERE id = ?", (fourn_retenu_input, avis_achats_input, d_id))
+                                    if montant_to_save is not None:
+                                        cursor.execute("UPDATE demandes SET etape_actuelle = 'finance', statut = 'En attente Finance', fournisseur_retenu = ?, avis_achats = ?, montant = ? WHERE id = ?", (fourn_retenu_input, avis_achats_input, montant_to_save, d_id))
+                                    else:
+                                        cursor.execute("UPDATE demandes SET etape_actuelle = 'finance', statut = 'En attente Finance', fournisseur_retenu = ?, avis_achats = ? WHERE id = ?", (fourn_retenu_input, avis_achats_input, d_id))
                                     msg = "Validé par Achats, transmis à la Finance"
-                                    # notify Finance
                                     add_notification("Finance & Comptabilité", d_ticket, f"Demande {d_ticket} prête pour contrôle financier.", target_tab="3. Besoins & Achats")
                                 elif action_achats == "Demander une modification":
-                                    cursor.execute("UPDATE demandes SET statut = 'Demande de Modification', fournisseur_retenu = ?, avis_achats = ?, retour_remarque = ? WHERE id = ?", (fourn_retenu_input, avis_achats_input, avis_achats_input, d_id))
+                                    if montant_to_save is not None:
+                                        cursor.execute("UPDATE demandes SET statut = 'Demande de Modification', fournisseur_retenu = ?, avis_achats = ?, retour_remarque = ?, montant = ? WHERE id = ?", (fourn_retenu_input, avis_achats_input, avis_achats_input, montant_to_save, d_id))
+                                    else:
+                                        cursor.execute("UPDATE demandes SET statut = 'Demande de Modification', fournisseur_retenu = ?, avis_achats = ?, retour_remarque = ? WHERE id = ?", (fourn_retenu_input, avis_achats_input, avis_achats_input, d_id))
                                     msg = "Demande de modification renvoyée à l'émetteur"
-                                    # notify emitter dept
                                     add_notification(d_dept, d_ticket, f"Votre demande {d_ticket} nécessite une modification : {avis_achats_input}", target_tab="3. Besoins & Achats")
                                 else:
                                     cursor.execute("UPDATE demandes SET statut = 'Refusé Achats', motif_refus = ? WHERE id = ?", (avis_achats_input, d_id))
@@ -884,15 +790,13 @@ def afficher_module_achats(nom_departement, type_profil):
                                 ajouter_log("Validation Achats", nom_dept, f"Ticket {d_ticket}: {msg}")
                                 st.success("Action enregistrée avec succès !")
                                 st.rerun()
-
-                    # --- CIRCUIT FINANCE (DEP13) ---
+                    # CIRCUIT FINANCE
                     elif (profil["type"] == "finance" or profil["type"] == "fondateur") and d_etape == "finance":
                         st.markdown("---")
                         st.markdown("#### 💰 Contrôle Pôle Finance")
                         with st.form(f"form_finance_{d_id}"):
                             avis_fin_input = st.text_area("Analyse budgétaire et imputation", value=d_avis_fin or "")
                             action_fin = st.radio("Décision Finance :", ["Valider et transmettre à la Direction Générale", "Demander une modification", "Refuser (Hors budget)"], key=f"act_fin_{d_id}")
-                            
                             if st.form_submit_button("Valider l'étape Finance"):
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
@@ -913,21 +817,18 @@ def afficher_module_achats(nom_departement, type_profil):
                                 ajouter_log("Validation Finance", nom_dept, f"Ticket {d_ticket}: {msg}")
                                 st.success("Action Finance enregistrée !")
                                 st.rerun()
-
-                    # --- CIRCUIT DIRECTION (fondateur) ---
+                    # CIRCUIT DIRECTION
                     elif profil["type"] == "fondateur" and d_etape == "direction":
                         st.markdown("---")
                         st.markdown("#### 👑 Arbitrage Direction Générale")
                         with st.form(f"form_dir_{d_id}"):
                             action_dir = st.radio("Arbitrage Final :", ["Approuver et engager le budget", "Refuser définitivement"], key=f"act_dir_{d_id}")
                             motif_dir = st.text_area("Commentaire de la Direction")
-                            
                             if st.form_submit_button("Confirmer l'arbitrage"):
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
                                 if action_dir == "Approuver et engager le budget":
                                     cursor.execute("UPDATE demandes SET statut = 'Validé & Financé', etape_actuelle = 'cloture', motif_refus = ? WHERE id = ?", (motif_dir, d_id))
-                                    # Déduire du solde global
                                     solde_actuel = get_valeur_globale("solde_restant")
                                     set_valeur_globale("solde_restant", max(0.0, solde_actuel - (d_montant or 0.0)))
                                     msg = f"Approuvé par la Direction ({d_montant:,.2f} € déduits du solde)" if d_montant else "Approuvé par la Direction"
@@ -941,8 +842,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 ajouter_log("Arbitrage Direction", nom_dept, f"Ticket {d_ticket}: {msg}")
                                 st.success("Arbitrage enregistré !")
                                 st.rerun()
-
-                    # --- CORRECTION PAR L'ÉMETTEUR ---
+                    # CORRECTION PAR L'ÉMETTEUR
                     if d_dept == nom_departement and d_statut == "Demande de Modification":
                         st.markdown("---")
                         st.markdown("#### ✏️ Corriger votre demande suite aux remarques")
@@ -958,25 +858,20 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 ajouter_log("Correction Demande", nom_departement, f"Ticket {d_ticket} corrigé et renvoyé")
-                                # notify Achats
                                 add_notification("Achats & Approvisionnements", d_ticket, f"Demande {d_ticket} resoumise après correction.", target_tab="3. Besoins & Achats")
                                 st.success("Demande renvoyée aux Achats !")
                                 st.rerun()
         else:
             st.info("Aucune demande d'achat enregistrée.")
 
-# ==========================================
-# 4. MESSAGERIE & CHAT INTERNE
-# ==========================================
+# ---------- Module Messagerie ----------
 def afficher_module_messagerie(nom_departement):
     st.subheader(f"💬 Messagerie Interne & Salons de Discussion — {nom_departement}")
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, nom_groupe, membres_json, createur, archives_par FROM discussions")
     discs = cursor.fetchall()
-
     tous_depts = [u["dept"] for u in UTILISATEURS.values()]
-
     c_g1, c_g2 = st.columns([2, 1])
     with c_g1:
         with st.expander("➕ Créer un nouveau salon de discussion"):
@@ -991,7 +886,6 @@ def afficher_module_messagerie(nom_departement):
                     conn.commit()
                     st.success("Salon créé avec succès !")
                     st.rerun()
-
     mes_discs = []
     for d in discs:
         d_id, d_nom, d_membres_j, d_createur, d_archives_j = d
@@ -999,24 +893,17 @@ def afficher_module_messagerie(nom_departement):
         archives = json.loads(d_archives_j) if d_archives_j else []
         if nom_departement in membres and nom_departement not in archives:
             mes_discs.append(d)
-
     conn.close()
-
     if mes_discs:
         noms_discs = {f"{d[1]} (Créé par {d[3]})": d[0] for d in mes_discs}
-        
-        # Gestion de la sélection active via session_state ou selectbox
         selected_key = st.selectbox("Sélectionner un salon de discussion", list(noms_discs.keys()), key="select_salon_actif")
         active_disc_id = noms_discs[selected_key]
         st.session_state.discussion_active_id = active_disc_id
-
         st.markdown("---")
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, expediteur, texte, date, lus_json FROM messages_chat WHERE discussion_id = ? ORDER BY id ASC", (active_disc_id,))
         messages = cursor.fetchall()
-
-        # Marquer les messages comme lus pour ce département
         for m in messages:
             m_id, m_exp, _, _, m_lus_j = m
             lus = json.loads(m_lus_j) if m_lus_j else []
@@ -1024,7 +911,6 @@ def afficher_module_messagerie(nom_departement):
                 lus.append(nom_departement)
                 cursor.execute("UPDATE messages_chat SET lus_json = ? WHERE id = ?", (json.dumps(lus), m_id))
         conn.commit()
-
         for m_id, m_exp, m_texte, m_date, _ in messages:
             is_me = (m_exp == nom_departement)
             align = "right" if is_me else "left"
@@ -1037,7 +923,6 @@ def afficher_module_messagerie(nom_departement):
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-
         with st.form(f"form_envoi_msg_{active_disc_id}", clear_on_submit=True):
             nouveau_texte = st.text_input("Votre message")
             if st.form_submit_button("Envoyer") and nouveau_texte:
@@ -1049,13 +934,10 @@ def afficher_module_messagerie(nom_departement):
     else:
         st.info("Vous ne participez à aucun salon actif pour le moment.")
 
-# ==========================================
-# 📖 JOURNAL DE BORD
-# ==========================================
+# ---------- Journal, Recherche, Control, Stats, Audit, Corbeille ----------
 def afficher_journal_bord(nom_departement, type_profil):
     st.subheader(f"📖 Journal de Bord & Notes Opérationnelles — {nom_departement}")
     t1, t2 = st.tabs(["1. Ajouter une Note", "2. Consulter le Journal"])
-
     with t1:
         with st.form("form_journal", clear_on_submit=True):
             note = st.text_area("Contenu de la note, événement ou rapport d'activité")
@@ -1069,7 +951,6 @@ def afficher_journal_bord(nom_departement, type_profil):
                 ajouter_log("Journal de Bord", nom_departement, "Nouvelle note enregistrée")
                 st.success("Note ajoutée au journal !")
                 st.rerun()
-
     with t2:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1077,7 +958,6 @@ def afficher_journal_bord(nom_departement, type_profil):
         cursor.execute(query, () if type_profil == "fondateur" else (nom_departement,))
         notes = cursor.fetchall()
         conn.close()
-
         if notes:
             for n_id, n_dept, n_auteur, n_note, n_date, n_heure in notes:
                 st.markdown(f"""
@@ -1089,9 +969,6 @@ def afficher_journal_bord(nom_departement, type_profil):
         else:
             st.info("Aucune note dans le journal.")
 
-# ==========================================
-# 🔍 RECHERCHE GLOBALE
-# ==========================================
 def afficher_recherche_globale():
     st.subheader("🔍 Recherche Globale dans la Plateforme")
     terme = st.text_input("Mot-clé à rechercher (études, cahiers des charges, achats, notes)")
@@ -1099,41 +976,32 @@ def afficher_recherche_globale():
         t = f"%{terme}%"
         conn = get_db_connection()
         cursor = conn.cursor()
-        
         st.markdown("### ⚙️ Études Métier correspondantes")
         cursor.execute("SELECT id, departement, titre, date FROM etudes_metier WHERE titre LIKE ? OR donnees_json LIKE ?", (t, t))
         for r in cursor.fetchall():
             st.write(f"- **[{r[1]}] {r[2]}** ({r[3]})")
-
         st.markdown("### 📋 Cahiers des Charges correspondants")
         cursor.execute("SELECT id, departement, titre, date FROM cahiers_charges WHERE titre LIKE ? OR contenu LIKE ?", (t, t))
         for r in cursor.fetchall():
             st.write(f"- **[{r[1]}] {r[2]}** ({r[3]})")
-
         st.markdown("### 🛒 Demandes d'Achat correspondantes")
         cursor.execute("SELECT id, numero_ticket, departement, titre, montant FROM demandes WHERE titre LIKE ? OR cahier_charges LIKE ? OR numero_ticket LIKE ?", (t, t, t))
         for r in cursor.fetchall():
             st.write(f"- **{r[1]} [{r[2]}]** {r[3]} ({r[4]:,.2f} €)")
-
         conn.close()
 
-# ==========================================
-# 📊 PÔLE DE CONTRÔLE (SUIVI GLOBAL)
-# ==========================================
 def afficher_pole_controle():
     st.subheader("📊 Pôle de Contrôle & Suivi Global des Activités")
     conn = get_db_connection()
     df_demandes = pd.read_sql_query("SELECT numero_ticket, departement, titre, montant, statut, etape_actuelle, date FROM demandes", conn)
     df_etudes = pd.read_sql_query("SELECT id, departement, titre, date FROM etudes_metier", conn)
     conn.close()
-
     st.markdown("#### 🛒 Synthèse des Demandes d'Achat Globales")
     if not df_demandes.empty:
         afficher_boutons_export(df_demandes, "controle_demandes", "Synthèse Globale des Demandes", key_prefix="ctrl_dem")
         st.dataframe(df_demandes, use_container_width=True)
     else:
         st.info("Aucune donnée d'achat.")
-
     st.markdown("#### ⚙️ Synthèse des Études Techniques Globales")
     if not df_etudes.empty:
         afficher_boutons_export(df_etudes, "controle_etudes", "Synthèse Globale des Études", key_prefix="ctrl_etu")
@@ -1141,44 +1009,32 @@ def afficher_pole_controle():
     else:
         st.info("Aucune étude enregistrée.")
 
-# ==========================================
-# 📈 STATISTIQUES
-# ==========================================
 def afficher_statistiques():
     st.subheader("📈 Statistiques & Indicateurs Clés de Performance")
     conn = get_db_connection()
     df_dem = pd.read_sql_query("SELECT statut, montant FROM demandes", conn)
     conn.close()
-
     if not df_dem.empty:
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Demandes", len(df_dem))
         c2.metric("Montant Global Cumulé", f"{df_dem['montant'].sum():,.2f} €")
         c3.metric("Montant Moyen par Demande", f"{df_dem['montant'].mean():,.2f} €")
-
         st.markdown("#### Répartition par Statut")
         st.bar_chart(df_dem["statut"].value_counts())
     else:
         st.info("Pas assez de données pour afficher les statistiques.")
 
-# ==========================================
-# 🕵️ AUDIT & TRAÇABILITÉ (FONDATEUR)
-# ==========================================
 def afficher_audit_tracabilite():
     st.subheader("🕵️ Logs d'Audit & Traçabilité Complète du Système")
     conn = get_db_connection()
     df_logs = pd.read_sql_query("SELECT id, date, acteur, action, details FROM logs_audit ORDER BY id DESC", conn)
     conn.close()
-
     if not df_logs.empty:
         afficher_boutons_export(df_logs, "logs_audit_systeme", "Journal d'Audit et Sécurité", key_prefix="audit_logs")
         st.dataframe(df_logs, use_container_width=True)
     else:
         st.info("Aucun log enregistré.")
 
-# ==========================================
-# 🗑️ CORBEILLE & HISTORIQUE SUPPRESSION
-# ==========================================
 def afficher_corbeille():
     st.subheader("🗑️ Corbeille & Historique des Éléments Supprimés")
     conn = get_db_connection()
@@ -1186,7 +1042,6 @@ def afficher_corbeille():
     cursor.execute("SELECT id, departement_auteur, type_element, resume, details_json, date_suppression FROM corbeille_archives ORDER BY id DESC")
     archives = cursor.fetchall()
     conn.close()
-
     if archives:
         for a_id, a_dept, a_type, a_resume, a_details, a_date in archives:
             with st.expander(f"🗑️ [{a_type}] {a_resume} (Supprimé par {a_dept} le {a_date})"):
@@ -1202,9 +1057,7 @@ def afficher_corbeille():
     else:
         st.info("La corbeille est vide.")
 
-# ==========================================
-# ROUTAGE DES ONGLETS PRINCIPAUX
-# ==========================================
+# ---------- ROUTAGE PRINCIPAL ----------
 tab_act = st.session_state.tab_actif
 
 if tab_act == "1. Études & Ingénierie":
