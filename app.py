@@ -323,6 +323,20 @@ def enregistrer_fichier_securise(dossier, fichier):
         return nom_unique
     return ""
 
+def proposer_telechargement(dossier, nom_fichier, libelle, key):
+    """Affiche un bouton de téléchargement s'il existe, sinon un message clair — ne plante jamais la page."""
+    if not nom_fichier:
+        return
+    try:
+        chemin = os.path.join(dossier, nom_fichier)
+        if os.path.exists(chemin):
+            with open(chemin, "rb") as f:
+                st.download_button(libelle, f, file_name=nom_fichier, key=key)
+        else:
+            st.caption("📎 Pièce jointe indisponible (fichier introuvable sur le serveur — possible réinitialisation de l'espace de stockage).")
+    except Exception:
+        st.caption("📎 Impossible d'accéder à cette pièce jointe pour le moment.")
+
 # --- ROLES ET UTILISATEURS ---
 UTILISATEURS = {
     "DEP1": {"nom": "Agriculture", "mdp": "DEP123", "type": "standard", "dept": "Agriculture"},
@@ -617,15 +631,12 @@ def afficher_module_etudes(nom_departement, type_profil):
 
             if recus_filtres:
                 for e in recus_filtres:
-                    e_id, e_dept, e_titre, e_json, e_fich, _, e_date = e
+                    e_id, e_dept, e_titre, e_json, e_fich, e_dest_raw, e_date, e_vus_raw = e
                     with st.expander(f"📁 [{e_dept}] {e_titre} ({e_date})"):
                         data = json.loads(e_json) if e_json else {}
                         st.write(f"**Description :** {data.get('details', '')}")
                         if e_fich:
-                            chemin = os.path.join(DOSSIER_ETUDES, e_fich)
-                            if os.path.exists(chemin):
-                                with open(chemin, "rb") as f:
-                                    st.download_button("📥 Télécharger Fichier Joint", f, file_name=e_fich, key=f"dl_et_{e_id}")
+                            proposer_telechargement(DOSSIER_ETUDES, e_fich, "📥 Télécharger Fichier Joint", f"dl_et_{e_id}")
             else:
                 st.info("Aucune étude ne correspond aux filtres.")
         else:
@@ -750,10 +761,7 @@ def afficher_module_cdc(nom_departement, type_profil):
             with st.expander(f"📄 [{c_dept}] {t_titre} ({c_date})"):
                 st.write(c_txt)
                 if t_fich:
-                    ch = os.path.join(DOSSIER_UPLOADS, t_fich)
-                    if os.path.exists(ch):
-                        with open(ch, "rb") as f:
-                            st.download_button("📥 Télécharger pièce jointe", f, file_name=t_fich, key=f"dl_cdc_{c_id}")
+                    proposer_telechargement(DOSSIER_UPLOADS, t_fich, "📥 Télécharger pièce jointe", f"dl_cdc_{c_id}")
 
                 if c_dept == nom_departement or type_profil == "fondateur":
                     if st.button("🗑️ Supprimer ce Cahier des Charges", key=f"del_cdc_{c_id}"):
@@ -852,6 +860,7 @@ def afficher_module_achats(nom_departement, type_profil):
                     st.markdown(pill_statut(r['statut']), unsafe_allow_html=True)
                     st.write(f"**Description :** {r['cahier_charges']}")
                     st.write(f"**Fournisseur :** {fournisseur_affiche(r['fournisseur'], r.get('fournisseur_retenu', ''))}")
+                    proposer_telechargement(DOSSIER_UPLOADS, r['fichier_devis'], "📥 Télécharger mon devis", f"dl_devis_suivi_{r['id']}")
                     
                     c_del1, c_del2 = st.columns([4, 1])
                     with c_del2:
@@ -930,6 +939,7 @@ def afficher_module_achats(nom_departement, type_profil):
                     with st.expander(f"📥 Dossier #{d_id} - [{d_dept}] {d_titre} ({d_montant} €)"):
                         st.write(f"**Description :** {d_desc}")
                         st.write(f"**Fournisseur :** {fournisseur_affiche(d_fourn, d_fourn_retenu)}")
+                        proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📥 Télécharger le devis joint", f"dl_devis_valid_{d_id}")
 
                         if type_profil == "achats":
                             with st.form(f"form_fournisseur_{d_id}"):
@@ -983,29 +993,39 @@ def afficher_module_achats(nom_departement, type_profil):
 
                         # DEMANDER MODIFICATION
                         with col_v2:
-                            remarque = st.text_input("Remarque d'ajustement", key=f"rem_{d_id}")
-                            if st.button(f"🟡 Requis modification #{d_id}", key=f"mod_{d_id}") and remarque:
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE demandes SET statut='Demande de Modification', etape_actuelle='emetteur', retour_remarque=? WHERE id=?", (remarque, d_id))
-                                conn.commit()
-                                conn.close()
-                                ajouter_log("Demande de Modification", nom_departement, f"Dossier #{d_id} renvoyé pour correction : {remarque}")
-                                st.warning("Demande renvoyée pour correction.")
-                                st.rerun()
+                            with st.form(f"form_modif_{d_id}"):
+                                remarque = st.text_input("Remarque d'ajustement")
+                                if st.form_submit_button("🟡 Requis modification"):
+                                    if not remarque.strip():
+                                        st.warning("Merci de préciser une remarque avant d'envoyer.")
+                                    else:
+                                        conn = get_db_connection()
+                                        cursor = conn.cursor()
+                                        cursor.execute("UPDATE demandes SET statut='Demande de Modification', etape_actuelle='emetteur', retour_remarque=? WHERE id=?", (remarque, d_id))
+                                        conn.commit()
+                                        conn.close()
+                                        ajouter_log("Demande de Modification", nom_departement, f"Dossier #{d_id} renvoyé pour correction : {remarque}")
+                                        st.toast("Demande de correction envoyée !", icon="🟡")
+                                        st.warning("Demande renvoyée pour correction.")
+                                        st.rerun()
 
                         # REFUS DÉFINITIF
                         with col_v3:
-                            motif = st.text_input("Motif du refus", key=f"mot_{d_id}")
-                            if st.button(f"🔴 Refuser définitivement #{d_id}", key=f"ref_{d_id}") and motif:
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE demandes SET statut='Refusé', etape_actuelle='terminee', motif_refus=? WHERE id=?", (motif, d_id))
-                                conn.commit()
-                                conn.close()
-                                ajouter_log("Refus Demande", nom_departement, f"Dossier #{d_id} refusé : {motif}")
-                                st.error("Dossier refusé.")
-                                st.rerun()
+                            with st.form(f"form_refus_{d_id}"):
+                                motif = st.text_input("Motif du refus")
+                                if st.form_submit_button("🔴 Refuser définitivement"):
+                                    if not motif.strip():
+                                        st.warning("Merci de préciser un motif avant de refuser.")
+                                    else:
+                                        conn = get_db_connection()
+                                        cursor = conn.cursor()
+                                        cursor.execute("UPDATE demandes SET statut='Refusé', etape_actuelle='terminee', motif_refus=? WHERE id=?", (motif, d_id))
+                                        conn.commit()
+                                        conn.close()
+                                        ajouter_log("Refus Demande", nom_departement, f"Dossier #{d_id} refusé : {motif}")
+                                        st.toast("Dossier refusé.", icon="🔴")
+                                        st.error("Dossier refusé.")
+                                        st.rerun()
             else:
                 st.info("Aucune demande en attente de validation pour votre pôle.")
 
