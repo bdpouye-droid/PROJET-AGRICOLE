@@ -402,7 +402,7 @@ if profil["type"] in ["finance", "fondateur"]:
     c_b2.metric("Solde Restant Disponible", f"{b_solde:,.2f} €")
     st.markdown("---")
 
-# --- NAVIGATION ONGLET PRINCIPAUX ---
+# --- NAVIGATION ONGLETS PRINCIPAUX ---
 
 onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "4. Messagerie & Chat", "📖 Journal de Bord", "🔍 Recherche Globale"]
 if profil["type"] in ["achats", "finance", "fondateur"]:
@@ -423,7 +423,7 @@ for idx, tab_nom in enumerate(onglets_possibles):
 st.markdown("---")
 
 # ==========================================
-# 3. MODULE BESOINS & ACHATS (SIMPLIFIÉ & ARCHIVABLE)
+# MODULE BESOINS & ACHATS (RESTRICTION STRICTE ACHATS)
 # ==========================================
 
 def afficher_module_achats(nom_departement, type_profil):
@@ -437,7 +437,7 @@ def afficher_module_achats(nom_departement, type_profil):
                 with st.form("form_nouvelle_demande"):
                     titre_demande = st.text_input("Titre de la demande / Objet")
                     cahier_charges_ref = st.text_input("Référence ou lien du Cahier des Charges associé")
-                    montant_estime = st.number_input("Montant estimé (€)", min_value=0.0, step=100.0, value=100.0)
+                    montant_estime = st.number_input("Montant estimé (€ - minimum 100€ recommandé)", min_value=0.0, step=100.0, value=100.0)
                     fournisseur_propose = st.text_input("Fournisseur pressenti (optionnel)")
                     fichier_devis = st.file_uploader("Joindre un devis / document (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"])
                     
@@ -511,8 +511,9 @@ def afficher_module_achats(nom_departement, type_profil):
                             st.rerun()
 
     with tab_achats_2:
+        # CONTRÔLE STRICT : Seul le profil 'achats' (ou fondateur) peut valider ici
         if type_profil != "achats" and type_profil != "fondateur":
-            st.warning("Espace réservé au Département des Achats.")
+            st.warning("🔒 Espace strictement réservé au Département des Achats pour le traitement et la validation du sourcing.")
         else:
             st.markdown("### 📥 Boîte de réception des demandes Achats")
             conn = get_db_connection()
