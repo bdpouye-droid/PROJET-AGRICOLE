@@ -115,7 +115,7 @@ st.markdown("""
     .pill-modif { background: rgba(91,141,239,0.15); color: #79b8ff; border: 1px solid rgba(91,141,239,0.4); }
 
     /* Onglets natifs st.tabs */
-    .stTabs [data-baseweb="tab-list"] { gap: 4px; }
+    st.write(f"- **[{r[1]}] {r[2]}** ({r[3]})")
     .stTabs [data-baseweb="tab"] {
         border-radius: 8px 8px 0 0; background-color: var(--bg-card-2); padding: 8px 16px;
     }
