@@ -607,13 +607,12 @@ def afficher_module_achats(nom_departement, type_profil):
                 cahier_charges_ref = st.text_input("Référence ou lien du Cahier des Charges / Étude associée (optionnel)")
                 fournisseur_presenti = st.text_input("Fournisseur pressenti (optionnel)")
                 fichier_devis = st.file_uploader("Joindre un devis initial / document descriptif (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"])
-                
                 soumettre = st.form_submit_button("Soumettre la demande")
                 if soumettre:
                     if not titre_demande.strip() or not besoins_specifiques.strip():
                         st.warning("Veuillez renseigner l'intitulé de la demande ainsi que les besoins spécifiques.")
                     else:
-                       nom_fichier_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_devis)
+                        nom_fichier_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_devis)
                         conn = get_db_connection()
                         cursor = conn.cursor()
                         cursor.execute(
@@ -626,8 +625,6 @@ def afficher_module_achats(nom_departement, type_profil):
                         ajouter_log("Création Demande d'Achat", nom_departement, f"Demande '{titre_demande}' soumise.")
                         st.toast("✅ Demande transmise aux Achats avec succès !", icon="✅")
                         st.rerun()
-
-        elif type_profil == "achats":
             with st.form("form_nouvelle_demande_achats", clear_on_submit=True):
                 titre_demande = st.text_input("Intitulé de la demande")
                 besoins_specifiques = st.text_area("Besoins spécifiques de la demande")
