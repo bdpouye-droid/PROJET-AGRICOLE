@@ -209,21 +209,6 @@ def init_db():
         destinataires_avis TEXT,
         archive INTEGER DEFAULT 0
     )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS discussions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nom_groupe TEXT,
-        membres_json TEXT,
-        createur TEXT,
-        date_creation TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS messages_chat (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        discussion_id INTEGER,
-        expediteur TEXT,
-        texte TEXT,
-        date TEXT,
-        lus_json TEXT
-    )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS journal_bord (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         departement TEXT,
@@ -254,7 +239,6 @@ def migrer_schema():
     conn = sqlite3.connect("database.db", check_same_thread=False)
     cursor = conn.cursor()
     migrations = [
-        ("discussions", "archives_par", "TEXT DEFAULT '[]'"),
         ("etudes_metier", "vus_json", "TEXT DEFAULT '[]'"),
         ("cahiers_charges", "vus_par_json", "TEXT DEFAULT '[]'"),
         ("demandes", "fournisseur_retenu", "TEXT DEFAULT ''"),
@@ -363,8 +347,6 @@ if 'user_connecte' not in st.session_state:
     st.session_state.user_connecte = None
 if 'tab_actif' not in st.session_state:
     st.session_state.tab_actif = "1. Études & Ingénierie"
-if 'discussion_active_id' not in st.session_state:
-    st.session_state.discussion_active_id = None
 
 # ==========================================
 # AUTHENTIFICATION & BARRE LATÉRALE
@@ -405,7 +387,6 @@ if st.sidebar.button("Se déconnecter"):
         duree = f"Durée de session : {minutes // 60}h{minutes % 60:02d}min"
     ajouter_log("Déconnexion", profil["nom"], duree or "Durée de session inconnue")
     st.session_state.user_connecte = None
-    st.session_state.discussion_active_id = None
     st.rerun()
 
 st.title(f"Tableau de Bord - {profil['nom']}")
@@ -422,7 +403,7 @@ if profil["type"] in ["finance", "fondateur"]:
 # NAVIGATION ONGLETS PRINCIPAUX
 # ==========================================
 
-onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "4. Messagerie & Chat", "📖 Journal de Bord", "🔍 Recherche Globale"]
+onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "📖 Journal de Bord", "🔍 Recherche Globale"]
 if profil["type"] in ["achats", "finance", "fondateur"]:
     onglets_possibles.append("📊 Pôle de Contrôle (Suivi Global)")
     onglets_possibles.append("📈 Statistiques")
@@ -452,7 +433,7 @@ def afficher_module_etudes(nom_departement, type_profil):
     with t1:
         with st.form("form_nouvelle_etude"):
             titre = st.text_input("Titre de l'étude / Note technique")
-            desc = st.text_area("Description & Paramètres (JSON ou texte structuré)")
+            desc = st.text_area("Description & Paramètres")
             destinataires = st.multiselect("Partager cette étude avec d'autres départements", tous_depts)
             fichier = st.file_uploader("Pièce jointe (PDF, Excel, DWG, etc.)", type=["pdf", "xlsx", "docx"])
             submitted = st.form_submit_button("Diffuser l'étude")
@@ -562,7 +543,6 @@ def afficher_module_cdc(nom_departement, type_profil):
 def afficher_module_achats(nom_departement, type_profil):
     st.subheader("🛒 Gestion des Demandes d'Achat & Workflow de Validation")
     
-    # Adaptation des onglets selon le profil connecté
     if type_profil == "achats":
         onglets_achats = ["📋 Soumettre & Suivi", "📥 Validation Achats & Sourcing", "🗄️ Archives"]
     elif type_profil == "finance":
@@ -574,9 +554,6 @@ def afficher_module_achats(nom_departement, type_profil):
 
     tabs_res = st.tabs(onglets_achats)
     
-    # ----------------------------------------------------
-    # ONGLET 1 : SOUMETTRE & SUIVI
-    # ----------------------------------------------------
     with tabs_res[0]:
         if type_profil != "achats" and type_profil != "finance" and type_profil != "fondateur":
             with st.expander("➕ Émettre une nouvelle demande d'achat", expanded=False):
@@ -595,7 +572,6 @@ def afficher_module_achats(nom_departement, type_profil):
                             nom_fichier_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_devis)
                             conn = get_db_connection()
                             cursor = conn.cursor()
-                            # Le workflow commence par l'étape Achats
                             cursor.execute(
                                 """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive)
                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
@@ -651,7 +627,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 st.warning(f"Motif / Remarque (Modification ou Refus) : {d_motif}")
                             proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📎 Télécharger la pièce jointe / devis", f"dl_devis_{did}")
                             
-                            # Si une modification est demandée, permettre à l'émetteur de modifier et resoumettre
                             if d_statut == "Modif demandée" and d_dept == nom_departement:
                                 st.markdown("---")
                                 st.info("🔄 Cette demande nécessite une modification suite à un retour.")
@@ -686,9 +661,6 @@ def afficher_module_achats(nom_departement, type_profil):
                             st.success("Demande archivée avec succès.")
                             st.rerun()
 
-    # ----------------------------------------------------
-    # ONGLET 2 : VALIDATION ACHATS & SOURCING (Pour DEP12)
-    # ----------------------------------------------------
     if type_profil == "achats":
         with tabs_res[1]:
             st.markdown("### 📥 Traitement & Sourcing (Département Achats)")
@@ -750,9 +722,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 st.success("Décision enregistrée avec succès !")
                                 st.rerun()
 
-    # ----------------------------------------------------
-    # ONGLET 2 (Finance) : VALIDATION FINANCIÈRE & BUDGÉTAIRE (Pour DEP13)
-    # ----------------------------------------------------
     if type_profil == "finance":
         with tabs_res[1]:
             st.markdown("### 💰 Analyse & Validation Budgétaire (Finance & Comptabilité)")
@@ -812,9 +781,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 st.success("Décision financière enregistrée !")
                                 st.rerun()
 
-    # ----------------------------------------------------
-    # ONGLET 2 (Fondateur) : VALIDATION FINALE & SIGNATURE (Direction Générale)
-    # ----------------------------------------------------
     if type_profil == "fondateur":
         with tabs_res[1]:
             st.markdown("### ✍️ Validation Finale & Signature (Direction Générale)")
@@ -852,7 +818,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                     nouveau_statut = "Validé & Signé"
                                     nouvelle_etape = "Clôturé"
                                     motif_maj = ""
-                                    # Mise à jour automatique du solde global si nécessaire
                                     solde_actuel = get_valeur_globale("solde_restant")
                                     montant_dem = float(d_montant or 0)
                                     set_valeur_globale("solde_restant", max(0.0, solde_actuel - montant_dem))
@@ -875,9 +840,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 st.success("Décision finale enregistrée avec succès !")
                                 st.rerun()
 
-    # ----------------------------------------------------
-    # ONGLET ARCHIVES
-    # ----------------------------------------------------
     idx_arch = 2 if len(tabs_res) > 2 else 1
     with tabs_res[idx_arch]:
         st.markdown("### 🗄️ Archives des demandes d'achat")
@@ -899,91 +861,7 @@ def afficher_module_achats(nom_departement, type_profil):
 
 
 # ==========================================
-# 4. MODULE MESSAGERIE & CHAT UNIFIÉ
-# ==========================================
-
-@st.fragment(run_every="3s")
-def afficher_zone_messages(discussion_id, nom_dept):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, expediteur, texte, date, lus_json FROM messages_chat WHERE discussion_id = ?", (discussion_id,))
-    messages = cursor.fetchall()
-    conn.close()
-
-    container = st.container(height=400)
-    with container:
-        if not messages:
-            st.info("Aucun message dans cette discussion.")
-        for m in messages:
-            st.markdown(f"**{m[1]}** *({m[3]})* : {m[2]}")
-
-def afficher_module_messagerie_unifiee(nom_departement, type_profil):
-    st.subheader("💬 Hub de Discussion & Communication Directe")
-    tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
-
-    t1, t2 = st.tabs(["💬 Discussions Actives", "➕ Créer un Groupe"])
-
-    with t2:
-        with st.form("form_nouveau_groupe"):
-            nom_g = st.text_input("Nom du groupe ou sujet de discussion")
-            membres = st.multiselect("Sélectionner les départements participants", tous_depts)
-            sub_g = st.form_submit_button("Créer le groupe")
-            if sub_g and nom_g:
-                membres.append(nom_departement)
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute(
-                    """INSERT INTO discussions (nom_groupe, membres_json, createur, date_creation) 
-                       VALUES (?, ?, ?, ?)""",
-                    (nom_g, json.dumps(membres), nom_departement, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                )
-                conn.commit()
-                conn.close()
-                st.success("Groupe créé avec succès !")
-                st.rerun()
-
-    with t1:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, nom_groupe, membres_json, createur FROM discussions")
-        all_discs = cursor.fetchall()
-        conn.close()
-
-        mes_discs = []
-        for d in all_discs:
-            membres = json.loads(d[2] if d[2] else "[]")
-            if (nom_departement in membres or type_profil == "fondateur" or d[3] == nom_departement):
-                mes_discs.append(d)
-
-        if not mes_discs:
-            st.info("Aucune discussion disponible. Créez un groupe pour commencer à échanger.")
-        else:
-            options = {f"{d[1]} (Créé par {d[3]})": d[0] for d in mes_discs}
-            choix = st.selectbox("Sélectionnez une discussion", list(options.keys()))
-            if choix:
-                disc_id = options[choix]
-                st.session_state.discussion_active_id = disc_id
-                st.markdown("---")
-                afficher_zone_messages(disc_id, nom_departement)
-
-                with st.form(key=f"form_msg_{disc_id}", clear_on_submit=True):
-                    texte_msg = st.text_input("Votre message")
-                    envoyer = st.form_submit_button("Envoyer")
-                    if envoyer and texte_msg:
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        cursor.execute(
-                            """INSERT INTO messages_chat (discussion_id, expediteur, texte, date, lus_json) 
-                               VALUES (?, ?, ?, ?, ?)""",
-                            (disc_id, nom_departement, texte_msg, datetime.now().strftime("%Y-%m-%d %H:%M"), "[]")
-                        )
-                        conn.commit()
-                        conn.close()
-                        st.rerun()
-
-
-# ==========================================
-# 5. JOURNAL DE BORD QUOTIDIEN
+# 4. JOURNAL DE BORD QUOTIDIEN
 # ==========================================
 
 def afficher_module_journal_bord(nom_departement):
@@ -1018,7 +896,7 @@ def afficher_module_journal_bord(nom_departement):
 
 
 # ==========================================
-# 6. MODULE SUIVI GLOBAL POUR PÔLE DE CONTRÔLE
+# 5. MODULE SUIVI GLOBAL POUR PÔLE DE CONTRÔLE
 # ==========================================
 
 def afficher_module_suivi_global_controle():
@@ -1039,7 +917,7 @@ def afficher_module_suivi_global_controle():
 
 
 # ==========================================
-# 7. MODULE CORBEILLE & HISTORIQUE
+# 6. MODULE CORBEILLE & HISTORIQUE
 # ==========================================
 
 def afficher_module_direction_corbeille():
@@ -1059,27 +937,70 @@ def afficher_module_direction_corbeille():
 
 
 # ==========================================
-# 8. MODULE AUDIT & TRAÇABILITÉ
+# 7. MODULE AUDIT & TRAÇABILITÉ (ERGONOMIE AMÉLIORÉE)
 # ==========================================
 
 def afficher_module_audit():
-    st.subheader("🕵️ Audit & Traçabilité (Connexions, Actions, Durées)")
+    st.subheader("🕵️ Audit & Traçabilité (Connexions, Durées & Actions)")
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, date, acteur, action, details FROM logs_audit")
+    cursor.execute("SELECT id, date, acteur, action, details FROM logs_audit ORDER BY id DESC")
     rows = cursor.fetchall()
     conn.close()
 
     if not rows:
         st.info("Aucun journal d'audit disponible.")
     else:
+        # Filtres ergonomiques pour mieux analyser les logs
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            filtre_acteur = st.text_input("Filtrer par acteur / utilisateur")
+        with col_f2:
+            filtre_action = st.selectbox("Filtrer par type d'action", ["Tous", "Connexion", "Déconnexion", "Validation", "Création"])
+
+        logs_filtres = []
+        for r in rows:
+            _, r_date, r_acteur, r_action, r_details = r
+            if filtre_acteur and filtre_acteur.lower() not in r_acteur.lower():
+                continue
+            if filtre_action != "Tous" and filtre_action.lower() not in r_action.lower():
+                continue
+            logs_filtres.append(r)
+
+        if not logs_filtres:
+            st.warning("Aucun journal ne correspond aux filtres sélectionnés.")
+        else:
+            for r in logs_filtres:
+                r_id, r_date, r_acteur, r_action, r_details = r
+                # Distinction visuelle claire selon l'action
+                badge_color = "var(--accent)"
+                if "connexion" in r_action.lower():
+                    badge_color = "var(--success)"
+                elif "déconnexion" in r_action.lower():
+                    badge_color = "var(--danger)"
+                elif "validation" in r_action.lower():
+                    badge_color = "var(--warning)"
+
+                st.markdown(f"""
+                    <div class="stCard" style="border-left: 4px solid {badge_color};">
+                        <div style="display: flex; justify-content: space-between; font-weight: bold;">
+                            <span>👤 {r_acteur}</span>
+                            <span style="color: var(--text-muted); font-size: 0.85rem;">🕒 {r_date}</span>
+                        </div>
+                        <div style="margin-top: 6px;">
+                            <span style="background-color: {badge_color}; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem;">{r_action}</span>
+                            <span style="margin-left: 8px; font-size: 0.95rem;">{r_details}</span>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+
+        st.markdown("---")
         df_audit = pd.DataFrame(rows, columns=["ID", "Date", "Acteur", "Action", "Détails"])
-        st.dataframe(df_audit, use_container_width=True)
-        afficher_boutons_export(df_audit, "Logs_Audit", "Journal d'Audit")
+        afficher_boutons_export(df_audit, "Logs_Audit", "Journal d'Audit", "audit_exp")
 
 
 # ==========================================
-# 9. MODULE RECHERCHE GLOBALE
+# 8. MODULE RECHERCHE GLOBALE
 # ==========================================
 
 def afficher_module_recherche_globale(nom_departement, type_profil):
@@ -1103,7 +1024,7 @@ def afficher_module_recherche_globale(nom_departement, type_profil):
 
 
 # ==========================================
-# 10. MODULE STATISTIQUES
+# 9. MODULE STATISTIQUES
 # ==========================================
 
 def afficher_module_statistiques():
@@ -1130,8 +1051,6 @@ elif st.session_state.tab_actif == "2. Cahiers des Charges":
     afficher_module_cdc(nom_dept, profil["type"])
 elif st.session_state.tab_actif == "3. Besoins & Achats":
     afficher_module_achats(nom_dept, profil["type"])
-elif st.session_state.tab_actif == "4. Messagerie & Chat":
-    afficher_module_messagerie_unifiee(nom_dept, profil["type"])
 elif st.session_state.tab_actif == "📖 Journal de Bord":
     afficher_module_journal_bord(nom_dept)
 elif st.session_state.tab_actif == "📊 Pôle de Contrôle (Suivi Global)":
