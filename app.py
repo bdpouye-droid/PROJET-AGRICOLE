@@ -1053,11 +1053,40 @@ def afficher_module_direction_corbeille():
 
 
 # ==========================================
-# 7. MODULE AUDIT & TRAÇABILITÉ (ERGONOMIE AMÉLIORÉE)
+# 7. MODULE AUDIT & TRAÇABILITÉ (AVEC BOUTON DE REMISE À ZÉRO RÉSERVÉ AU FONDATEUR)
 # ==========================================
 
 def afficher_module_audit():
     st.subheader("🕵️ Audit & Traçabilité (Connexions, Durées & Actions)")
+    
+    # BOUTON DE REMISE À ZÉRO EXCLUSIF AU FONDATEUR
+    if profil["type"] == "fondateur":
+        with st.container(border=True):
+            st.markdown("### ⚠️ Zone de Réinitialisation Globale (Crash-Test)")
+            st.markdown("Ce bouton permet de remettre l'ensemble des données de l'application à zéro (demandes, études, cahiers des charges, journaux, corbeille, logs) et de réinitialiser le budget global.")
+            
+            confirmation_reset = st.checkbox("Je confirme vouloir tout effacer et réinitialiser l'application")
+            if st.button("🗑️ Réinitialiser toutes les données (Remise à zéro)", type="primary"):
+                if confirmation_reset:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM demandes")
+                    cursor.execute("DELETE FROM etudes_metier")
+                    cursor.execute("DELETE FROM cahiers_charges")
+                    cursor.execute("DELETE FROM journal_bord")
+                    cursor.execute("DELETE FROM corbeille_archives")
+                    cursor.execute("DELETE FROM logs_audit")
+                    conn.commit()
+                    conn.close()
+                    set_valeur_globale("budget_global", 100000.0)
+                    set_valeur_globale("solde_restant", 100000.0)
+                    ajouter_log("Réinitialisation Système", profil["nom"], "Remise à zéro complète effectuée pour crash-test.")
+                    st.toast("Application réinitialisée à zéro avec succès !", icon="✅")
+                    st.rerun()
+                else:
+                    st.warning("Veuillez cocher la case de confirmation pour exécuter la réinitialisation.")
+        st.markdown("---")
+
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, date, acteur, action, details FROM logs_audit ORDER BY id DESC")
@@ -1071,7 +1100,7 @@ def afficher_module_audit():
         with col_f1:
             filtre_acteur = st.text_input("Filtrer par acteur / utilisateur")
         with col_f2:
-            filtre_action = st.selectbox("Filtrer par type d'action", ["Tous", "Connexion", "Déconnexion", "Validation", "Création"])
+            filtre_action = st.selectbox("Filtrer par type d'action", ["Tous", "Connexion", "Déconnexion", "Validation", "Création", "Réinitialisation"])
 
         logs_filtres = []
         for r in rows:
@@ -1094,6 +1123,8 @@ def afficher_module_audit():
                     badge_color = "var(--danger)"
                 elif "validation" in r_action.lower():
                     badge_color = "var(--warning)"
+                elif "réinitialisation" in r_action.lower():
+                    badge_color = "var(--danger)"
 
                 st.markdown(f"""
                     <div class="stCard" style="border-left: 4px solid {badge_color};">
