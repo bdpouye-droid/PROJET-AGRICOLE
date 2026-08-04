@@ -23,7 +23,7 @@ st.set_page_config(
 )
 
 # ==========================================
-# DOSSIERS DE STOCKAGE
+# DOSSIERS DE STOCKAGE & CACHE OPTIMISÉ
 # ==========================================
 
 DOSSIER_UPLOADS = "uploads_devis"
@@ -64,7 +64,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# UTILITAIRES : EXPORT EXCEL / PDF
+# UTILITAIRES : EXPORT EXCEL / PDF & CACHE
 # ==========================================
 
 def _lignes_texte(df: pd.DataFrame):
@@ -260,7 +260,8 @@ migrer_schema()
 def get_db_connection():
     return sqlite3.connect("database.db", check_same_thread=False)
 
-def get_valeur_globale(key):
+@st.cache_data(ttl=60)
+def get_valeur_globale_cached(key):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM global_store WHERE key = ?", (key,))
@@ -268,12 +269,16 @@ def get_valeur_globale(key):
     conn.close()
     return float(val[0]) if val else 0.0
 
+def get_valeur_globale(key):
+    return get_valeur_globale_cached(key)
+
 def set_valeur_globale(key, val):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO global_store (key, value) VALUES (?, ?)", (key, str(val)))
     conn.commit()
     conn.close()
+    st.cache_data.clear()
 
 def ajouter_log(action, acteur, details):
     conn = get_db_connection()
@@ -367,6 +372,7 @@ if st.session_state.user_connecte is None:
             st.session_state.user_connecte = username
             st.session_state.heure_connexion = datetime.now()
             ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
+            st.toast("Connexion établie avec succès !", icon="✅")
             st.rerun()
         else:
             st.sidebar.error("Identifiant ou mot de passe incorrect.")
@@ -387,6 +393,7 @@ if st.sidebar.button("Se déconnecter"):
         duree = f"Durée de session : {minutes // 60}h{minutes % 60:02d}min"
     ajouter_log("Déconnexion", profil["nom"], duree or "Durée de session inconnue")
     st.session_state.user_connecte = None
+    st.toast("Déconnexion effectuée.", icon="ℹ️")
     st.rerun()
 
 st.title(f"Tableau de Bord - {profil['nom']}")
@@ -433,7 +440,7 @@ def afficher_module_etudes(nom_departement, type_profil):
     with t1:
         with st.form("form_nouvelle_etude"):
             titre = st.text_input("Titre de l'étude / Note technique")
-            desc = st.text_area("Description & Paramètres")
+            desc = st.text_area("Description et paramètres")
             destinataires = st.multiselect("Partager cette étude avec d'autres départements", tous_depts)
             fichier = st.file_uploader("Pièce jointe (PDF, Excel, DWG, etc.)", type=["pdf", "xlsx", "docx"])
             submitted = st.form_submit_button("Diffuser l'étude")
@@ -453,7 +460,7 @@ def afficher_module_etudes(nom_departement, type_profil):
                     conn.commit()
                     conn.close()
                     ajouter_log("Création Étude", nom_departement, f"Étude: {titre}")
-                    st.success("Étude enregistrée et partagée avec succès !")
+                    st.toast("Étude enregistrée et partagée avec succès !", icon="✅")
                     st.rerun()
 
     with t2:
@@ -520,7 +527,7 @@ def afficher_module_cdc(nom_departement, type_profil):
                 conn.commit()
                 conn.close()
                 ajouter_log("Création CDC", nom_departement, f"Cahier des charges: {titre}")
-                st.success("Cahier des charges publié.")
+                st.toast("Cahier des charges publié avec succès.", icon="✅")
                 st.rerun()
 
     st.markdown("---")
@@ -537,7 +544,7 @@ def afficher_module_cdc(nom_departement, type_profil):
 
 
 # ==========================================
-# 3. MODULE BESOINS & ACHATS (WORKFLOW CORRIGÉ)
+# 3. MODULE BESOINS & ACHATS (WORKFLOW ADAPTÉ 3 DÉPARTEMENTS PILOTES)
 # ==========================================
 
 def afficher_module_achats(nom_departement, type_profil):
@@ -580,7 +587,98 @@ def afficher_module_achats(nom_departement, type_profil):
                             conn.commit()
                             conn.close()
                             ajouter_log("Création Demande d'Achat", nom_departement, f"Demande '{titre_demande}' soumise.")
-                            st.success("✅ Demande transmise aux Achats avec succès !")
+                            st.toast("✅ Demande transmise aux Achats avec succès !", icon="✅")
+                            st.rerun()
+
+        # FORMULAIRE SPÉCIFIQUE SI LE DÉPARTEMENT CONNECTÉ EST LES ACHATS
+        elif type_profil == "achats":
+            with st.expander("➕ Émettre une nouvelle demande d'achat (Département Achats)", expanded=False):
+                with st.form("form_nouvelle_demande_achats"):
+                    titre_demande = st.text_input("Intitulé de la demande")
+                    besoins_specifiques = st.text_area("Besoins spécifiques de la demande")
+                    cahier_charges_ref = st.text_input("Référence ou lien associé (optionnel)")
+                    fournisseur_retenu_saisie = st.text_input("Fournisseur retenu")
+                    montant_defini = st.number_input("Prix définitif (€)", min_value=0.0, step=10.0)
+                    fichier_devis = st.file_uploader("Joindre le devis / document justificatif (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"])
+                    
+                    soumettre_achats = st.form_submit_button("Soumettre la demande (Circuit direct Finance)")
+                    if soumettre_achats:
+                        if not titre_demande.strip() or not besoins_specifiques.strip():
+                            st.warning("Veuillez renseigner l'intitulé et les besoins spécifiques.")
+                        else:
+                            nom_fichier_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_devis)
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            # Circuit spécifique Achats : Bypass l'étape Achats, va directement à Finance
+                            cursor.execute(
+                                """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+                                (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", montant_defini, fournisseur_retenu_saisie, "En attente Finance", "Finance", "Validé", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", fournisseur_retenu_saisie, "")
+                            )
+                            conn.commit()
+                            conn.close()
+                            ajouter_log("Création Demande d'Achat (Achats)", nom_departement, f"Demande '{titre_demande}' transmise directement en Finance.")
+                            st.toast("✅ Demande transmise directement à la Finance avec succès !", icon="✅")
+                            st.rerun()
+
+        # FORMULAIRE SPÉCIFIQUE SI LE DÉPARTEMENT CONNECTÉ EST LA FINANCE
+        elif type_profil == "finance":
+            with st.expander("➕ Émettre une nouvelle demande d'achat (Département Finance)", expanded=False):
+                with st.form("form_nouvelle_demande_finance"):
+                    titre_demande = st.text_input("Intitulé de la demande")
+                    besoins_specifiques = st.text_area("Besoins spécifiques de la demande")
+                    cahier_charges_ref = st.text_input("Référence ou lien associé (optionnel)")
+                    fournisseur_presenti = st.text_input("Fournisseur pressenti (optionnel)")
+                    fichier_devis = st.file_uploader("Joindre un devis initial / document (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"])
+                    
+                    soumettre_fin = st.form_submit_button("Soumettre la demande (Circuit Achats -> Direction)")
+                    if soumettre_fin:
+                        if not titre_demande.strip() or not besoins_specifiques.strip():
+                            st.warning("Veuillez renseigner l'intitulé et les besoins spécifiques.")
+                        else:
+                            nom_fichier_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_devis)
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            # Circuit spécifique Finance : Va aux Achats, puis de Achats va directement à Direction (bypass l'étape Finance interne)
+                            cursor.execute(
+                                """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+                                (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", 0.0, fournisseur_presenti, "En attente Achats", "Achats", "En attente", "Validé", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "", "")
+                            )
+                            conn.commit()
+                            conn.close()
+                            ajouter_log("Création Demande d'Achat (Finance)", nom_departement, f"Demande '{titre_demande}' transmise aux Achats.")
+                            st.toast("✅ Demande transmise aux Achats avec succès !", icon="✅")
+                            st.rerun()
+
+        # FORMULAIRE SPÉCIFIQUE SI LE DÉPARTEMENT CONNECTÉ EST LE FONDATEUR (DIRECTION GÉNÉRALE)
+        elif type_profil == "fondateur":
+            with st.expander("➕ Émettre une nouvelle demande d'achat (Direction Générale)", expanded=False):
+                with st.form("form_nouvelle_demande_dir"):
+                    titre_demande = st.text_input("Intitulé de la demande")
+                    besoins_specifiques = st.text_area("Besoins spécifiques de la demande")
+                    cahier_charges_ref = st.text_input("Référence ou lien associé (optionnel)")
+                    fournisseur_presenti = st.text_input("Fournisseur pressenti (optionnel)")
+                    fichier_devis = st.file_uploader("Joindre un devis initial / document (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"])
+                    
+                    soumettre_dir_emis = st.form_submit_button("Soumettre la demande (Circuit complet Achats -> Finance -> Direction)")
+                    if soumettre_dir_emis:
+                        if not titre_demande.strip() or not besoins_specifiques.strip():
+                            st.warning("Veuillez renseigner l'intitulé et les besoins spécifiques.")
+                        else:
+                            nom_fichier_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_devis)
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            # Circuit spécifique Direction : Passe par Achats, puis Finance, puis revient à la Direction
+                            cursor.execute(
+                                """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+                                (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", 0.0, fournisseur_presenti, "En attente Achats", "Achats", "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "", "")
+                            )
+                            conn.commit()
+                            conn.close()
+                            ajouter_log("Création Demande d'Achat (Direction)", nom_departement, f"Demande '{titre_demande}' transmise aux Achats.")
+                            st.toast("✅ Demande transmise aux Achats avec succès !", icon="✅")
                             st.rerun()
 
         st.markdown("### Suivi de vos demandes")
@@ -634,19 +732,31 @@ def afficher_module_achats(nom_departement, type_profil):
                                     nouveau_titre = st.text_input("Modifier l'intitulé", value=d_titre)
                                     nouveaux_besoins = st.text_area("Modifier les besoins spécifiques", value=d_cc)
                                     nouveau_fichier = st.file_uploader("Remplacer le document / devis (optionnel)", type=["pdf", "png", "jpg", "jpeg"], key=f"file_mod_{did}")
-                                    resoumettre = st.form_submit_button("Modifier et resoumettre aux Achats")
+                                    resoumettre = st.form_submit_button("Modifier et resoumettre")
                                     if resoumettre:
                                         fich_final = enregistrer_fichier_securise(DOSSIER_UPLOADS, nouveau_fichier) if nouveau_fichier else d_fich
+                                        
+                                        # Gestion dynamique de l'étape de retour selon l'émetteur
+                                        if d_dept == "Achats & Approvisionnements":
+                                            prochaine_etape = "Finance"
+                                            nouveau_statut_res = "En attente Finance"
+                                        elif d_dept == "Finance & Comptabilité":
+                                            prochaine_etape = "Achats"
+                                            nouveau_statut_res = "En attente Achats"
+                                        else:
+                                            prochaine_etape = "Achats"
+                                            nouveau_statut_res = "En attente Achats"
+
                                         conn_m = get_db_connection()
                                         cur_m = conn_m.cursor()
                                         cur_m.execute(
                                             """UPDATE demandes SET titre = ?, cahier_charges = ?, statut = ?, etape_actuelle = ?, motif_refus = ?, fichier_devis = ? WHERE id = ?""",
-                                            (nouveau_titre, nouveaux_besoins, "En attente Achats", "Achats", "", fich_final, did)
+                                            (nouveau_titre, nouveaux_besoins, nouveau_statut_res, prochaine_etape, "", fich_final, did)
                                         )
                                         conn_m.commit()
                                         conn_m.close()
                                         ajouter_log("Resoumission Demande", nom_departement, f"Demande {did} modifiée et resoumise.")
-                                        st.success("Demande modifiée et transmise de nouveau aux Achats !")
+                                        st.toast("Demande modifiée et transmise avec succès !", icon="✅")
                                         st.rerun()
 
                     with c_arch:
@@ -658,7 +768,7 @@ def afficher_module_achats(nom_departement, type_profil):
                             conn.close()
                             archiver_dans_corbeille(nom_departement, "Demande d'Achat", f"Demande : {d_titre}", {"id": did, "titre": d_titre, "montant": montant_aff})
                             ajouter_log("Archivage Demande", nom_departement, f"Demande '{d_titre}' archivée")
-                            st.success("Demande archivée avec succès.")
+                            st.toast("Demande archivée avec succès.", icon="✅")
                             st.rerun()
 
     if type_profil == "achats":
@@ -687,7 +797,7 @@ def afficher_module_achats(nom_departement, type_profil):
                             montant_definitif = st.number_input("Saisir le prix définitif négocié (€)", min_value=0.0, step=10.0, value=float(d_montant or 0.0))
                             nouveau_fichier_achat = st.file_uploader("Ajouter / Remplacer le devis achats consolidé (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"], key=f"f_achat_{did}")
                             
-                            action_achat = st.selectbox("Décision Achats", ["Valider et transmettre à la Finance", "Demander une modification", "Refuser définitivement"])
+                            action_achat = st.selectbox("Décision Achats", ["Valider", "Demander une modification", "Refuser définitivement"])
                             motif_achat = st.text_area("Commentaire / Motif (obligatoire en cas de modification ou refus)")
                             
                             valider_action = st.form_submit_button("Appliquer la décision Achats")
@@ -696,9 +806,15 @@ def afficher_module_achats(nom_departement, type_profil):
                                 cursor = conn.cursor()
                                 fich_u = enregistrer_fichier_securise(DOSSIER_UPLOADS, nouveau_fichier_achat) if nouveau_fichier_achat else d_fich
                                 
-                                if action_achat == "Valider et transmettre à la Finance":
-                                    nouveau_statut = "En attente Finance"
-                                    nouvelle_etape = "Finance"
+                                if action_achat == "Valider":
+                                    # Règle adaptée : si l'émetteur est la Finance ou la Direction Générale, après les achats, la demande va directement à la Direction Générale (en bypassant le contrôle Finance puisque Finance est émetteur, ou allant en Finance si émetteur standard/Direction)
+                                    if d_dept == "Finance & Comptabilité":
+                                        nouveau_statut = "En attente Direction"
+                                        nouvelle_etape = "Direction Générale"
+                                    else:
+                                        nouveau_statut = "En attente Finance"
+                                        nouvelle_etape = "Finance"
+                                    
                                     avis_a = "Validé"
                                     motif_maj = ""
                                 elif action_achat == "Demander une modification":
@@ -719,7 +835,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 ajouter_log("Validation Achats", nom_departement, f"Demande {did} traitée : {action_achat}")
-                                st.success("Décision enregistrée avec succès !")
+                                st.toast("Décision enregistrée avec succès !", icon="✅")
                                 st.rerun()
 
     if type_profil == "finance":
@@ -747,7 +863,7 @@ def afficher_module_achats(nom_departement, type_profil):
                         proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📎 Télécharger le devis / document joint", f"dl_fin_{did}")
                         
                         with st.form(f"form_traitement_finance_{did}"):
-                            action_fin = st.selectbox("Décision Finance", ["Valider le déblocage et transmettre à la Direction Générale", "Demander une modification", "Refuser (problème budgétaire)"])
+                            action_fin = st.selectbox("Décision Finance", ["Valider", "Demander une modification", "Refuser (problème budgétaire)"])
                             motif_fin = st.text_area("Commentaire / Motif financier")
                             
                             valider_fin = st.form_submit_button("Appliquer la décision financière")
@@ -755,7 +871,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
                                 
-                                if action_fin == "Valider le déblocage et transmettre à la Direction Générale":
+                                if action_fin == "Valider":
                                     nouveau_statut = "En attente Direction"
                                     nouvelle_etape = "Direction Générale"
                                     avis_f = "Validé"
@@ -778,7 +894,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 ajouter_log("Validation Finance", nom_departement, f"Demande {did} traitée : {action_fin}")
-                                st.success("Décision financière enregistrée !")
+                                st.toast("Décision financière enregistrée !", icon="✅")
                                 st.rerun()
 
     if type_profil == "fondateur":
@@ -837,7 +953,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 ajouter_log("Validation Direction Générale", nom_departement, f"Demande {did} traitée : {action_dir}")
-                                st.success("Décision finale enregistrée avec succès !")
+                                st.toast("Décision finale enregistrée avec succès !", icon="✅")
                                 st.rerun()
 
     idx_arch = 2 if len(tabs_res) > 2 else 1
@@ -879,7 +995,7 @@ def afficher_module_journal_bord(nom_departement):
             )
             conn.commit()
             conn.close()
-            st.success("Note ajoutée au journal.")
+            st.toast("Note ajoutée au journal.", icon="✅")
             st.rerun()
 
     st.markdown("---")
@@ -951,7 +1067,6 @@ def afficher_module_audit():
     if not rows:
         st.info("Aucun journal d'audit disponible.")
     else:
-        # Filtres ergonomiques pour mieux analyser les logs
         col_f1, col_f2 = st.columns(2)
         with col_f1:
             filtre_acteur = st.text_input("Filtrer par acteur / utilisateur")
@@ -972,7 +1087,6 @@ def afficher_module_audit():
         else:
             for r in logs_filtres:
                 r_id, r_date, r_acteur, r_action, r_details = r
-                # Distinction visuelle claire selon l'action
                 badge_color = "var(--accent)"
                 if "connexion" in r_action.lower():
                     badge_color = "var(--success)"
@@ -1000,18 +1114,18 @@ def afficher_module_audit():
 
 
 # ==========================================
-# 8. MODULE RECHERCHE GLOBALE
+# 8. MODULE RECHERCHE GLOBALE (ÉLARGIE : TITRE, STATUT, DÉPARTEMENT)
 # ==========================================
 
 def afficher_module_recherche_globale(nom_departement, type_profil):
     st.subheader("🔍 Recherche Globale")
-    terme = st.text_input("Mot-clé à rechercher dans les études et demandes")
+    terme = st.text_input("Mot-clé à rechercher dans les études, demandes, statuts ou départements")
     if terme:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT titre, departement, 'Étude' FROM etudes_metier WHERE titre LIKE ? OR donnees_json LIKE ?", (f"%{terme}%", f"%{terme}%"))
+        cursor.execute("SELECT titre, departement, 'Étude' FROM etudes_metier WHERE titre LIKE ? OR donnees_json LIKE ? OR departement LIKE ?", (f"%{terme}%", f"%{terme}%", f"%{terme}%"))
         res_etudes = cursor.fetchall()
-        cursor.execute("SELECT titre, departement, 'Demande Achat' FROM demandes WHERE titre LIKE ? OR cahier_charges LIKE ?", (f"%{terme}%", f"%{terme}%"))
+        cursor.execute("SELECT titre, departement, 'Demande Achat' FROM demandes WHERE titre LIKE ? OR cahier_charges LIKE ? OR statut LIKE ? OR departement LIKE ?", (f"%{terme}%", f"%{terme}%", f"%{terme}%", f"%{terme}%"))
         res_demandes = cursor.fetchall()
         conn.close()
 
