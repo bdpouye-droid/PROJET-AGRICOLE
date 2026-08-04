@@ -62,8 +62,65 @@ st.markdown("""
     .pill-refuse { background-color: #f85149; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8rem; }
     .pill-modif { background-color: #d29922; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8rem; }
     .pill-attente { background-color: #5b8def; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8rem; }
+    .notif-centre-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      z-index: 9999;
+    }
+    .notif-centre-box {
+      background-color: var(--bg-card);
+      border: 1px solid var(--success);
+      color: white;
+      padding: 1.1rem 2rem;
+      border-radius: 12px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.55);
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      animation: notifCentreAnim 2.8s ease forwards;
+    }
+    .notif-centre-icon { font-size: 1.6rem; }
+    @keyframes notifCentreAnim {
+      0%   { opacity: 0; transform: scale(0.85) translateY(10px); }
+      10%  { opacity: 1; transform: scale(1) translateY(0); }
+      85%  { opacity: 1; transform: scale(1) translateY(0); }
+      100% { opacity: 0; transform: scale(0.95) translateY(-6px); }
+    }
   </style>
 """, unsafe_allow_html=True)
+
+# ==========================================
+# NOTIFICATION CENTRÉE ANIMÉE
+# ==========================================
+
+def notifier_succes(message, icon="✅"):
+    """À appeler juste avant st.rerun() pour afficher une notification animée
+    au centre de l'écran une fois la page rechargée."""
+    st.session_state["_notif_centre"] = {"message": message, "icon": icon}
+
+
+def afficher_notification_centre():
+    """Affiche (une seule fois) la notification en attente, s'il y en a une."""
+    notif = st.session_state.pop("_notif_centre", None)
+    if notif:
+        st.markdown(f"""
+        <div class="notif-centre-overlay">
+          <div class="notif-centre-box">
+            <span class="notif-centre-icon">{notif['icon']}</span>
+            <span class="notif-centre-texte">{notif['message']}</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
 
 # ==========================================
 # UTILITAIRES : EXPORT EXCEL / PDF & CACHE
@@ -357,6 +414,8 @@ if 'user_connecte' not in st.session_state:
 if 'tab_actif' not in st.session_state:
     st.session_state.tab_actif = "1. Études & Ingénierie"
 
+afficher_notification_centre()
+
 # ==========================================
 # AUTHENTIFICATION & BARRE LATÉRALE
 # ==========================================
@@ -376,7 +435,7 @@ if st.session_state.user_connecte is None:
             st.session_state.user_connecte = username
             st.session_state.heure_connexion = datetime.now()
             ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
-            st.toast("Connexion établie avec succès !", icon="✅")
+            notifier_succes("Connexion établie avec succès !", icon="✅")
             st.rerun()
         else:
             st.sidebar.error("Identifiant ou mot de passe incorrect.")
@@ -397,7 +456,7 @@ if st.sidebar.button("Se déconnecter"):
         duree = f"Durée de session : {minutes // 60}h{minutes % 60:02d}min"
     ajouter_log("Déconnexion", profil["nom"], duree or "Durée de session inconnue")
     st.session_state.user_connecte = None
-    st.toast("Déconnexion effectuée.", icon="ℹ️")
+    notifier_succes("Déconnexion effectuée.", icon="ℹ️")
     st.rerun()
 
 st.title(f"Tableau de Bord - {profil['nom']}")
@@ -464,7 +523,7 @@ def afficher_module_etudes(nom_departement, type_profil):
                     conn.commit()
                     conn.close()
                     ajouter_log("Création Étude", nom_departement, f"Étude: {titre}")
-                    st.toast("Étude enregistrée et partagée avec succès !", icon="✅")
+                    notifier_succes("Étude enregistrée et partagée avec succès !", icon="✅")
                     st.rerun()
 
     with t2:
@@ -514,7 +573,7 @@ def afficher_module_etudes(nom_departement, type_profil):
                         conn_a.close()
                         archiver_dans_corbeille(nom_departement, "Étude Métier", f"Étude : {etitrans}", {"id": eid, "titre": etitrans})
                         ajouter_log("Archivage Étude", nom_departement, f"Étude '{etitrans}' archivée")
-                        st.toast("Étude archivée avec succès.", icon="✅")
+                        notifier_succes("Étude archivée avec succès.", icon="✅")
                         st.rerun()
 
     with t4:
@@ -568,7 +627,7 @@ def afficher_module_cdc(nom_departement, type_profil):
                 conn.commit()
                 conn.close()
                 ajouter_log("Création CDC", nom_departement, f"Cahier des charges: {titre}")
-                st.toast("Cahier des charges publié avec succès.", icon="✅")
+                notifier_succes("Cahier des charges publié avec succès.", icon="✅")
                 st.rerun()
 
     st.markdown("---")
@@ -623,8 +682,10 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.commit()
                         conn.close()
                         ajouter_log("Création Demande d'Achat", nom_departement, f"Demande '{titre_demande}' soumise.")
-                        st.toast("✅ Demande transmise aux Achats avec succès !", icon="✅")
+                        notifier_succes("Demande transmise aux Achats avec succès !")
                         st.rerun()
+
+        elif type_profil == "achats":
             with st.form("form_nouvelle_demande_achats", clear_on_submit=True):
                 titre_demande = st.text_input("Intitulé de la demande")
                 besoins_specifiques = st.text_area("Besoins spécifiques de la demande")
@@ -649,7 +710,7 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.commit()
                         conn.close()
                         ajouter_log("Création Demande d'Achat (Achats)", nom_departement, f"Demande '{titre_demande}' transmise directement en Finance.")
-                        st.toast("✅ Demande transmise directement à la Finance avec succès !", icon="✅")
+                        notifier_succes("Demande transmise directement à la Finance avec succès !")
                         st.rerun()
 
         elif type_profil == "finance":
@@ -676,7 +737,7 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.commit()
                         conn.close()
                         ajouter_log("Création Demande d'Achat (Finance)", nom_departement, f"Demande '{titre_demande}' transmise aux Achats.")
-                        st.toast("✅ Demande transmise aux Achats avec succès !", icon="✅")
+                        notifier_succes("Demande transmise aux Achats avec succès !", icon="✅")
                         st.rerun()
 
         elif type_profil == "fondateur":
@@ -703,7 +764,7 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.commit()
                         conn.close()
                         ajouter_log("Création Demande d'Achat (Direction)", nom_departement, f"Demande '{titre_demande}' transmise aux Achats.")
-                        st.toast("✅ Demande transmise aux Achats avec succès !", icon="✅")
+                        notifier_succes("Demande transmise aux Achats avec succès !", icon="✅")
                         st.rerun()
 
     with tabs_res[1]:
@@ -768,7 +829,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 ajouter_log("Validation Achats", nom_departement, f"Demande {did} traitée : {action_achat}")
-                                st.toast("Décision enregistrée avec succès !", icon="✅")
+                                notifier_succes("Décision enregistrée avec succès !", icon="✅")
                                 st.rerun()
 
         elif type_profil == "finance":
@@ -820,7 +881,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 ajouter_log("Validation Finance", nom_departement, f"Demande {did} traitée : {action_fin}")
-                                st.toast("Décision financière enregistrée !", icon="✅")
+                                notifier_succes("Décision financière enregistrée !", icon="✅")
                                 st.rerun()
 
         elif type_profil == "fondateur":
@@ -872,7 +933,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 ajouter_log("Validation Direction Générale", nom_departement, f"Demande {did} traitée : {action_dir}")
-                                st.toast("Décision finale enregistrée avec succès !", icon="✅")
+                                notifier_succes("Décision finale enregistrée avec succès !", icon="✅")
                                 st.rerun()
 
         # Affichage des demandes propres au département ou global pour le fondateur
@@ -944,7 +1005,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                         conn_m.commit()
                                         conn_m.close()
                                         ajouter_log("Resoumission Demande", nom_departement, f"Demande {did} modifiée et resoumise.")
-                                        st.toast("Demande modifiée et transmise avec succès !", icon="✅")
+                                        notifier_succes("Demande modifiée et transmise avec succès !", icon="✅")
                                         st.rerun()
 
                     with c_arch:
@@ -956,7 +1017,7 @@ def afficher_module_achats(nom_departement, type_profil):
                             conn.close()
                             archiver_dans_corbeille(nom_departement, "Demande d'Achat", f"Demande : {d_titre}", {"id": did, "titre": d_titre, "montant": montant_aff})
                             ajouter_log("Archivage Demande", nom_departement, f"Demande '{d_titre}' archivée")
-                            st.toast("Demande archivée avec succès.", icon="✅")
+                            notifier_succes("Demande archivée avec succès.", icon="✅")
                             st.rerun()
 
     with tabs_res[2]:
@@ -997,7 +1058,7 @@ def afficher_module_journal_bord(nom_departement):
             )
             conn.commit()
             conn.close()
-            st.toast("Note ajoutée au journal.", icon="✅")
+            notifier_succes("Note ajoutée au journal.", icon="✅")
             st.rerun()
 
     st.markdown("---")
@@ -1082,7 +1143,7 @@ def afficher_module_audit():
                     set_valeur_globale("budget_global", 100000.0)
                     set_valeur_globale("solde_restant", 100000.0)
                     ajouter_log("Réinitialisation Système", profil["nom"], "Remise à zéro complète effectuée pour crash-test.")
-                    st.toast("Application réinitialisée à zéro avec succès !", icon="✅")
+                    notifier_succes("Application réinitialisée à zéro avec succès !", icon="✅")
                     st.rerun()
                 else:
                     st.warning("Veuillez cocher la case de confirmation pour exécuter la réinitialisation.")
