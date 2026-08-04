@@ -3,8 +3,6 @@ import json
 import os
 import uuid
 import io
-import time
-import logging
 from datetime import datetime, date
 import pandas as pd
 import streamlit as st
@@ -13,9 +11,6 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
-
-logging.basicConfig(level=logging.WARNING)
-logger_notifs = logging.getLogger("notifications")
 
 # ==========================================
 # CONFIGURATION DE LA PAGE
@@ -240,6 +235,45 @@ def date_du_jour_fr() -> str:
     maintenant = datetime.now()
     return f"{jours[maintenant.weekday()]} {maintenant.day} {mois[maintenant.month - 1]} {maintenant.year}"
 
+def est_recent(date_str, heures=48):
+    """Renvoie True si la date (format '%Y-%m-%d %H:%M') a moins de `heures` heures."""
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
+        return (datetime.now() - d).total_seconds() < heures * 3600
+    except (ValueError, TypeError):
+        return False
+
+def compter_nouveaux_elements(nom_dept, type_profil):
+    """Compte, à partir des données déjà existantes (pas de table séparée),
+    les éléments récents ou nécessitant une action pour le profil connecté."""
+    total = 0
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT destinataires_partage, date FROM etudes_metier WHERE archive = 0")
+        for dests_json, d in cursor.fetchall():
+            dests = json.loads(dests_json) if dests_json else []
+            if (nom_dept in dests or type_profil == "fondateur") and est_recent(d):
+                total += 1
+
+        cursor.execute("SELECT date FROM cahiers_charges WHERE archive = 0")
+        for (d,) in cursor.fetchall():
+            if est_recent(d):
+                total += 1
+
+        if type_profil in ["achats", "finance", "fondateur"]:
+            cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = ? AND statut LIKE 'En attente%' AND archive = 0", (nom_dept,))
+            total += cursor.fetchone()[0]
+        else:
+            cursor.execute("SELECT COUNT(*) FROM demandes WHERE departement = ? AND statut = 'Modif demandée' AND archive = 0", (nom_dept,))
+            total += cursor.fetchone()[0]
+
+        conn.close()
+    except sqlite3.OperationalError:
+        pass
+    return total
+
 def fournisseur_affiche(fournisseur_propose: str, fournisseur_retenu: str) -> str:
     if fournisseur_retenu:
         return f"{fournisseur_retenu} ✅ (retenu par les Achats)"
@@ -316,14 +350,6 @@ def init_db():
         action TEXT,
         details TEXT
     )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        destinataire_dept TEXT,
-        message TEXT,
-        type TEXT,
-        date TEXT,
-        lue INTEGER DEFAULT 0
-    )''')
     conn.commit()
     conn.close()
 
@@ -387,84 +413,6 @@ def ajouter_log(action, acteur, details):
     )
     conn.commit()
     conn.close()
-
-def _assurer_table_notifications(cursor):
-    """Filet de sécurité : garantit que la table existe, quel que soit l'état
-    de la base sur l'environnement de déploiement."""
-    cursor.execute('''CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        destinataire_dept TEXT,
-        message TEXT,
-        type TEXT,
-        date TEXT,
-        lue INTEGER DEFAULT 0
-    )''')
-
-def creer_notification(destinataire_dept, message, type_notif="info"):
-    """Crée une notification pour le département cible (destinataire_dept doit
-    correspondre exactement au champ 'dept' d'un profil de UTILISATEURS).
-    Réessaie en cas de verrou SQLite transitoire, et ne fait jamais échouer
-    l'action principale qui l'appelle : un échec final est simplement tracé
-    dans les logs serveur (visibles dans 'Manage app' > Logs sur Streamlit Cloud)."""
-    if not destinataire_dept:
-        return
-    derniere_erreur = None
-    for tentative in range(3):
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            _assurer_table_notifications(cursor)
-            cursor.execute(
-                "INSERT INTO notifications (destinataire_dept, message, type, date, lue) VALUES (?, ?, ?, ?, 0)",
-                (destinataire_dept, message, type_notif, datetime.now().strftime("%Y-%m-%d %H:%M"))
-            )
-            conn.commit()
-            conn.close()
-            return
-        except sqlite3.OperationalError as e:
-            derniere_erreur = e
-            time.sleep(0.3)
-    logger_notifs.warning(f"Échec de création de notification pour '{destinataire_dept}' après 3 tentatives : {derniere_erreur}")
-
-def compter_notifications_non_lues(dept):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM notifications WHERE destinataire_dept = ? AND lue = 0", (dept,))
-        n = cursor.fetchone()[0]
-        conn.close()
-        return n
-    except sqlite3.OperationalError:
-        return 0
-
-def recuperer_notifications(dept, limite=20):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, message, type, date, lue FROM notifications WHERE destinataire_dept = ? ORDER BY id DESC LIMIT ?",
-            (dept, limite)
-        )
-        rows = cursor.fetchall()
-        conn.close()
-        return rows
-    except sqlite3.OperationalError:
-        return []
-
-def marquer_notifications_lues(dept):
-    for tentative in range(3):
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            _assurer_table_notifications(cursor)
-            cursor.execute("UPDATE notifications SET lue = 1 WHERE destinataire_dept = ? AND lue = 0", (dept,))
-            conn.commit()
-            conn.close()
-            return
-        except sqlite3.OperationalError as e:
-            time.sleep(0.3)
-            derniere_erreur = e
-    logger_notifs.warning(f"Échec du marquage des notifications comme lues pour '{dept}' après 3 tentatives : {derniere_erreur}")
 
 def archiver_dans_corbeille(departement_auteur, type_element, resume, details_dict):
     conn = get_db_connection()
@@ -624,7 +572,20 @@ profil = UTILISATEURS[user_key]
 nom_dept = profil["dept"]
 
 st.sidebar.success(f"Connecté : {profil['nom']}")
-st.sidebar.caption(f"📅 {date_du_jour_fr()}")
+st.sidebar.markdown(
+    f"<div style='display:inline-flex; align-items:center; gap:6px; background-color:rgba(124,148,115,0.18); "
+    f"color:#cfe0c8; padding:4px 10px; border-radius:14px; font-size:0.82rem; margin-bottom:6px;'>"
+    f"📅 {date_du_jour_fr()}</div>",
+    unsafe_allow_html=True
+)
+nb_nouveaux = compter_nouveaux_elements(nom_dept, profil["type"])
+if nb_nouveaux > 0:
+    st.sidebar.markdown(
+        f"<div style='display:inline-flex; align-items:center; gap:6px; background-color:rgba(217,119,87,0.18); "
+        f"color:#f0b79c; padding:4px 10px; border-radius:14px; font-size:0.82rem; margin-left:6px;'>"
+        f"🆕 {nb_nouveaux} nouveau(x)</div>",
+        unsafe_allow_html=True
+    )
 st.sidebar.markdown("---")
 
 if st.sidebar.button("Se déconnecter"):
@@ -638,31 +599,7 @@ if st.sidebar.button("Se déconnecter"):
     notifier_succes("Déconnexion effectuée.", icon="ℹ️")
     st.rerun()
 
-col_titre, col_cloche = st.columns([6, 1])
-with col_titre:
-    st.title(f"Tableau de Bord - {profil['nom']}")
-with col_cloche:
-    st.markdown("<div style='height: 2.1rem;'></div>", unsafe_allow_html=True)
-    nb_non_lues = compter_notifications_non_lues(nom_dept)
-    libelle_cloche = f"🔔 {nb_non_lues}" if nb_non_lues > 0 else "🔔"
-    with st.popover(libelle_cloche, use_container_width=True):
-        st.markdown("#### 🔔 Notifications")
-        liste_notifs = recuperer_notifications(nom_dept)
-        if not liste_notifs:
-            st.caption("Aucune notification pour le moment.")
-        else:
-            icones_notif = {"demande": "📦", "etude": "📘", "cdc": "📋", "modification": "✏️", "refus": "❌", "suivi": "🔄"}
-            for notif_id, notif_msg, notif_type, notif_date, notif_lue in liste_notifs:
-                icone = icones_notif.get(notif_type, "🔔")
-                poids = "600" if not notif_lue else "400"
-                st.markdown(
-                    f"<div style='font-weight:{poids}; padding:6px 0; border-bottom:1px solid var(--border);'>"
-                    f"{icone} {notif_msg}<br><span style='color:var(--text-muted); font-size:0.75rem;'>{notif_date}</span></div>",
-                    unsafe_allow_html=True
-                )
-            if nb_non_lues > 0 and st.button("Tout marquer comme lu", use_container_width=True):
-                marquer_notifications_lues(nom_dept)
-                st.rerun()
+st.title(f"Tableau de Bord - {profil['nom']}")
 
 if profil["type"] in ["finance", "fondateur"]:
     b_total = get_valeur_globale("budget_global")
@@ -725,8 +662,6 @@ def afficher_module_etudes(nom_departement, type_profil):
                     )
                     conn.commit()
                     conn.close()
-                    for dest in destinataires:
-                        creer_notification(dest, f"Nouvelle étude partagée par {nom_departement} : « {titre} »", "etude")
                     notifier_succes("Étude enregistrée et partagée avec succès !", icon="✅")
                     st.rerun()
 
@@ -748,7 +683,8 @@ def afficher_module_etudes(nom_departement, type_profil):
             st.info("Aucune étude reçue pour le moment.")
         else:
             for r in recues:
-                with st.expander(f"📁 [{r[1]}] {r[2]} (Émise le {r[6]})"):
+                prefixe = "🆕 " if est_recent(r[6]) else ""
+                with st.expander(f"{prefixe}📁 [{r[1]}] {r[2]} (Émise le {r[6]})"):
                     st.write(f"**Description & Paramètres :** {r[3]}")
                     proposer_telechargement(DOSSIER_ETUDES, r[4], "📥 Télécharger le document", f"dl_etude_recue_{r[0]}")
 
@@ -829,8 +765,6 @@ def afficher_module_cdc(nom_departement, type_profil):
                 )
                 conn.commit()
                 conn.close()
-                for dest in destinataires:
-                    creer_notification(dest, f"Nouveau cahier des charges publié par {nom_departement} : « {titre} »", "cdc")
                 notifier_succes("Cahier des charges publié avec succès.", icon="✅")
                 st.rerun()
 
@@ -844,7 +778,8 @@ def afficher_module_cdc(nom_departement, type_profil):
 
     for r in rows:
         cid, cdept, ctitre, ccont, cdate, cdests, cfich = r
-        with st.expander(f"📋 {ctitre} ({cdept} - {cdate})"):
+        prefixe = "🆕 " if est_recent(cdate) else ""
+        with st.expander(f"{prefixe}📋 {ctitre} ({cdept} - {cdate})"):
             st.write(ccont)
             proposer_telechargement(DOSSIER_CDC, cfich, "📥 Télécharger la pièce jointe du CDC", f"dl_cdc_{cid}")
 
@@ -885,7 +820,6 @@ def afficher_module_achats(nom_departement, type_profil):
                         )
                         conn.commit()
                         conn.close()
-                        creer_notification(DEPT_ACHATS, f"Nouvelle demande d'achat de {nom_departement} : « {titre_demande} »", "demande")
                         notifier_succes("Demande transmise aux Achats avec succès !")
                         st.rerun()
 
@@ -913,7 +847,6 @@ def afficher_module_achats(nom_departement, type_profil):
                         )
                         conn.commit()
                         conn.close()
-                        creer_notification(DEPT_FINANCE, f"Nouvelle demande (circuit direct) des Achats : « {titre_demande} »", "demande")
                         notifier_succes("Demande transmise directement à la Finance avec succès !")
                         st.rerun()
 
@@ -940,7 +873,6 @@ def afficher_module_achats(nom_departement, type_profil):
                         )
                         conn.commit()
                         conn.close()
-                        creer_notification(DEPT_ACHATS, f"Nouvelle demande d'achat de {nom_departement} (Finance) : « {titre_demande} »", "demande")
                         notifier_succes("Demande transmise aux Achats avec succès !", icon="✅")
                         st.rerun()
 
@@ -967,7 +899,6 @@ def afficher_module_achats(nom_departement, type_profil):
                         )
                         conn.commit()
                         conn.close()
-                        creer_notification(DEPT_ACHATS, f"Nouvelle demande d'achat de la Direction : « {titre_demande} »", "demande")
                         notifier_succes("Demande transmise aux Achats avec succès !", icon="✅")
                         st.rerun()
 
@@ -1032,14 +963,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 )
                                 conn.commit()
                                 conn.close()
-                                if action_achat == "Valider":
-                                    creer_notification(DEPT_DIRECTION if nouvelle_etape == "Direction Générale" else DEPT_FINANCE,
-                                                        f"Demande « {d_titre} » ({d_dept}) validée par les Achats, à traiter.", "demande")
-                                    creer_notification(d_dept, f"Votre demande « {d_titre} » est passée à l'étape {nouvelle_etape}.", "suivi")
-                                elif action_achat == "Demander une modification":
-                                    creer_notification(d_dept, f"Votre demande « {d_titre} » nécessite une modification (retour des Achats).", "modification")
-                                else:
-                                    creer_notification(d_dept, f"Votre demande « {d_titre} » a été refusée par les Achats.", "refus")
                                 notifier_succes("Décision enregistrée avec succès !", icon="✅")
                                 st.rerun()
 
@@ -1091,13 +1014,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 )
                                 conn.commit()
                                 conn.close()
-                                if action_fin == "Valider":
-                                    creer_notification(DEPT_DIRECTION, f"Demande « {d_titre} » ({d_dept}) validée par la Finance, à traiter.", "demande")
-                                    creer_notification(d_dept, f"Votre demande « {d_titre} » est passée à l'étape Direction Générale.", "suivi")
-                                elif action_fin == "Demander une modification":
-                                    creer_notification(d_dept, f"Votre demande « {d_titre} » nécessite une modification (retour de la Finance).", "modification")
-                                else:
-                                    creer_notification(d_dept, f"Votre demande « {d_titre} » a été refusée par la Finance.", "refus")
                                 notifier_succes("Décision financière enregistrée !", icon="✅")
                                 st.rerun()
 
@@ -1149,12 +1065,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 )
                                 conn.commit()
                                 conn.close()
-                                if action_dir == "Valider et signer (Exécution finale)":
-                                    creer_notification(d_dept, f"Votre demande « {d_titre} » a été validée et signée par la Direction.", "suivi")
-                                elif action_dir == "Demander une modification":
-                                    creer_notification(d_dept, f"Votre demande « {d_titre} » nécessite une modification (retour de la Direction).", "modification")
-                                else:
-                                    creer_notification(d_dept, f"Votre demande « {d_titre} » a été refusée par la Direction.", "refus")
                                 notifier_succes("Décision finale enregistrée avec succès !", icon="✅")
                                 st.rerun()
 
@@ -1226,8 +1136,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                         )
                                         conn_m.commit()
                                         conn_m.close()
-                                        creer_notification(DEPT_FINANCE if prochaine_etape == "Finance" else DEPT_ACHATS,
-                                                            f"Demande « {nouveau_titre} » ({nom_departement}) modifiée et resoumise.", "demande")
                                         notifier_succes("Demande modifiée et transmise avec succès !", icon="✅")
                                         st.rerun()
 
@@ -1360,7 +1268,6 @@ def afficher_module_audit():
                     cursor.execute("DELETE FROM journal_bord")
                     cursor.execute("DELETE FROM corbeille_archives")
                     cursor.execute("DELETE FROM logs_audit")
-                    cursor.execute("DELETE FROM notifications")
                     conn.commit()
                     conn.close()
                     set_valeur_globale("budget_global", 100000.0)
