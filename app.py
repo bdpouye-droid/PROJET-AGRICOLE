@@ -613,13 +613,13 @@ def afficher_module_achats(nom_departement, type_profil):
                     if not titre_demande.strip() or not besoins_specifiques.strip():
                         st.warning("Veuillez renseigner l'intitulé de la demande ainsi que les besoins spécifiques.")
                     else:
-                        nom_fichier_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_devis)
+                       nom_fichier_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_devis)
                         conn = get_db_connection()
                         cursor = conn.cursor()
                         cursor.execute(
                             """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
-                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", 0.0, fournisseur_presenti, "En attente Achats", "Achats", "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "", "")
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", 0.0, fournisseur_presenti, "En attente Achats", "Achats", "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "", 0)
                         )
                         conn.commit()
                         conn.close()
