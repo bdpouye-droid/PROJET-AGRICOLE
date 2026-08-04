@@ -346,7 +346,12 @@ init_db()
 migrer_schema()
 
 def get_db_connection():
-    return sqlite3.connect("database.db", check_same_thread=False, timeout=15)
+    conn = sqlite3.connect("database.db", check_same_thread=False, timeout=15)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
+    return conn
 
 @st.cache_data(ttl=60)
 def get_valeur_globale_cached(key):
@@ -392,18 +397,22 @@ def _assurer_table_notifications(cursor):
 
 def creer_notification(destinataire_dept, message, type_notif="info"):
     """Crée une notification pour le département cible (destinataire_dept doit
-    correspondre exactement au champ 'dept' d'un profil de UTILISATEURS)."""
+    correspondre exactement au champ 'dept' d'un profil de UTILISATEURS).
+    Ne doit jamais faire échouer l'action principale qui l'appelle."""
     if not destinataire_dept:
         return
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    _assurer_table_notifications(cursor)
-    cursor.execute(
-        "INSERT INTO notifications (destinataire_dept, message, type, date, lue) VALUES (?, ?, ?, ?, 0)",
-        (destinataire_dept, message, type_notif, datetime.now().strftime("%Y-%m-%d %H:%M"))
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        _assurer_table_notifications(cursor)
+        cursor.execute(
+            "INSERT INTO notifications (destinataire_dept, message, type, date, lue) VALUES (?, ?, ?, ?, 0)",
+            (destinataire_dept, message, type_notif, datetime.now().strftime("%Y-%m-%d %H:%M"))
+        )
+        conn.commit()
+        conn.close()
+    except sqlite3.OperationalError:
+        pass
 
 def compter_notifications_non_lues(dept):
     try:
@@ -431,12 +440,15 @@ def recuperer_notifications(dept, limite=20):
         return []
 
 def marquer_notifications_lues(dept):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    _assurer_table_notifications(cursor)
-    cursor.execute("UPDATE notifications SET lue = 1 WHERE destinataire_dept = ? AND lue = 0", (dept,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        _assurer_table_notifications(cursor)
+        cursor.execute("UPDATE notifications SET lue = 1 WHERE destinataire_dept = ? AND lue = 0", (dept,))
+        conn.commit()
+        conn.close()
+    except sqlite3.OperationalError:
+        pass
 
 def archiver_dans_corbeille(departement_auteur, type_element, resume, details_dict):
     conn = get_db_connection()
