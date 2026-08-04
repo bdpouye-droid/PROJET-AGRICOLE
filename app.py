@@ -147,7 +147,7 @@ def afficher_boutons_export(df: pd.DataFrame, nom_base: str, titre_pdf: str = No
 
 def pill_statut(statut: str) -> str:
     s = str(statut).lower()
-    if "validé" in s or "financé" in s or "approuvé" in s:
+    if "validé" in s or "financé" in s or "approuvé" in s or "signé" in s:
         classe = "pill-valide"
     elif "refusé" in s:
         classe = "pill-refuse"
@@ -556,40 +556,54 @@ def afficher_module_cdc(nom_departement, type_profil):
 
 
 # ==========================================
-# 3. MODULE BESOINS & ACHATS (STRICT & SÉCURISÉ)
+# 3. MODULE BESOINS & ACHATS (WORKFLOW CORRIGÉ)
 # ==========================================
 
 def afficher_module_achats(nom_departement, type_profil):
-    st.subheader("🛒 Gestion des Demandes d'Achat & Validations")
+    st.subheader("🛒 Gestion des Demandes d'Achat & Workflow de Validation")
     
-    tab_achats_1, tab_achats_2, tab_achats_3 = st.tabs(["📋 Soumettre & Suivi des Demandes", "📥 Validation Achats & Sourcing", "🗄️ Archives Demandes"])
+    # Adaptation des onglets selon le profil connecté
+    if type_profil == "achats":
+        onglets_achats = ["📋 Soumettre & Suivi", "📥 Validation Achats & Sourcing", "🗄️ Archives"]
+    elif type_profil == "finance":
+        onglets_achats = ["📋 Soumettre & Suivi", "💰 Validation Financière & Budgétaire", "🗄️ Archives"]
+    elif type_profil == "fondateur":
+        onglets_achats = ["📋 Soumettre & Suivi", "✍️ Validation Finale & Signature", "🗄️ Archives"]
+    else:
+        onglets_achats = ["📋 Soumettre & Suivi des Demandes", "🗄️ Archives Demandes"]
+
+    tabs_res = st.tabs(onglets_achats)
     
-    with tab_achats_1:
-        if type_profil != "achats":
+    # ----------------------------------------------------
+    # ONGLET 1 : SOUMETTRE & SUIVI
+    # ----------------------------------------------------
+    with tabs_res[0]:
+        if type_profil != "achats" and type_profil != "finance" and type_profil != "fondateur":
             with st.expander("➕ Émettre une nouvelle demande d'achat", expanded=False):
                 with st.form("form_nouvelle_demande"):
-                    titre_demande = st.text_input("Titre de la demande / Objet")
-                    cahier_charges_ref = st.text_input("Référence ou lien du Cahier des Charges associé")
-                    montant_estime = st.number_input("Montant estimé (€ - minimum 100€ recommandé)", min_value=0.0, step=100.0, value=100.0)
-                    fournisseur_propose = st.text_input("Fournisseur pressenti (optionnel)")
-                    fichier_devis = st.file_uploader("Joindre un devis / document (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"])
+                    titre_demande = st.text_input("Intitulé de la demande")
+                    besoins_specifiques = st.text_area("Besoins spécifiques de la demande")
+                    cahier_charges_ref = st.text_input("Référence ou lien du Cahier des Charges / Étude associée (optionnel)")
+                    fournisseur_presenti = st.text_input("Fournisseur pressenti (optionnel)")
+                    fichier_devis = st.file_uploader("Joindre un devis initial / document descriptif (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"])
                     
                     soumettre = st.form_submit_button("Soumettre la demande")
                     if soumettre:
-                        if not titre_demande.strip():
-                            st.warning("Veuillez renseigner un titre pour la demande.")
+                        if not titre_demande.strip() or not besoins_specifiques.strip():
+                            st.warning("Veuillez renseigner l'intitulé de la demande ainsi que les besoins spécifiques.")
                         else:
                             nom_fichier_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_devis)
                             conn = get_db_connection()
                             cursor = conn.cursor()
+                            # Le workflow commence par l'étape Achats
                             cursor.execute(
                                 """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive)
                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
-                                (nom_departement, titre_demande, cahier_charges_ref, montant_estime, fournisseur_propose, "En attente Achats", "Achats", "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "")
+                                (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", 0.0, fournisseur_presenti, "En attente Achats", "Achats", "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "", "")
                             )
                             conn.commit()
                             conn.close()
-                            ajouter_log("Création Demande d'Achat", nom_departement, f"Demande '{titre_demande}' soumise pour {montant_estime}€")
+                            ajouter_log("Création Demande d'Achat", nom_departement, f"Demande '{titre_demande}' soumise.")
                             st.success("✅ Demande transmise aux Achats avec succès !")
                             st.rerun()
 
@@ -609,7 +623,6 @@ def afficher_module_achats(nom_departement, type_profil):
             for d in demandes:
                 did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu = d
                 
-                # Conversion sécurisée du montant pour éviter le TypeError
                 try:
                     montant_aff = float(d_montant) if d_montant is not None else 0.0
                 except (ValueError, TypeError):
@@ -619,24 +632,48 @@ def afficher_module_achats(nom_departement, type_profil):
                     st.markdown(f"""
                         <div class="stCard">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <div><b>[{d_dept}] {d_titre}</b></div>
+                                <div><b>[{d_dept}] {d_titre}</b> (Étape actuelle : <i>{d_etape}</i>)</div>
                                 <div>{pill_statut(d_statut)}</div>
                             </div>
                             <div style="color: var(--text-muted); font-size: 0.9rem; margin-top: 5px;">
-                                Montant estimé : <b>{montant_aff:,.2f} €</b> | Date : {d_date}
+                                Montant validé : <b>{montant_aff:,.2f} €</b> | Date : {d_date}
                             </div>
                         </div>
                     """, unsafe_allow_html=True)
                     
                     c_det, c_arch = st.columns([4, 1])
                     with c_det:
-                        with st.expander("🔍 Voir les détails & historique"):
-                            st.write(f"- **Cahier des charges associé** : {d_cc or 'Aucun'}")
+                        with st.expander("🔍 Voir les détails complets & historique"):
+                            st.write(f"- **Besoins spécifiques & Détails** : {d_cc}")
                             st.write(f"- **Fournisseur** : {fournisseur_affiche(d_fournisseur, d_f_retenu)}")
                             st.write(f"- **Avis Achats** : {d_avis_a} | **Avis Finance** : {d_avis_f}")
                             if d_motif:
-                                st.warning(f"Motif / Remarque : {d_motif}")
-                            proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📎 Télécharger le devis / pièce jointe", f"dl_devis_{did}")
+                                st.warning(f"Motif / Remarque (Modification ou Refus) : {d_motif}")
+                            proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📎 Télécharger la pièce jointe / devis", f"dl_devis_{did}")
+                            
+                            # Si une modification est demandée, permettre à l'émetteur de modifier et resoumettre
+                            if d_statut == "Modif demandée" and d_dept == nom_departement:
+                                st.markdown("---")
+                                st.info("🔄 Cette demande nécessite une modification suite à un retour.")
+                                with st.form(f"form_modif_demandeur_{did}"):
+                                    nouveau_titre = st.text_input("Modifier l'intitulé", value=d_titre)
+                                    nouveaux_besoins = st.text_area("Modifier les besoins spécifiques", value=d_cc)
+                                    nouveau_fichier = st.file_uploader("Remplacer le document / devis (optionnel)", type=["pdf", "png", "jpg", "jpeg"], key=f"file_mod_{did}")
+                                    resoumettre = st.form_submit_button("Modifier et resoumettre aux Achats")
+                                    if resoumettre:
+                                        fich_final = enregistrer_fichier_securise(DOSSIER_UPLOADS, nouveau_fichier) if nouveau_fichier else d_fich
+                                        conn_m = get_db_connection()
+                                        cur_m = conn_m.cursor()
+                                        cur_m.execute(
+                                            """UPDATE demandes SET titre = ?, cahier_charges = ?, statut = ?, etape_actuelle = ?, motif_refus = ?, fichier_devis = ? WHERE id = ?""",
+                                            (nouveau_titre, nouveaux_besoins, "En attente Achats", "Achats", "", fich_final, did)
+                                        )
+                                        conn_m.commit()
+                                        conn_m.close()
+                                        ajouter_log("Resoumission Demande", nom_departement, f"Demande {did} modifiée et resoumise.")
+                                        st.success("Demande modifiée et transmise de nouveau aux Achats !")
+                                        st.rerun()
+
                     with c_arch:
                         if st.button("🗄️ Archiver", key=f"btn_archiver_{did}", use_container_width=True):
                             conn = get_db_connection()
@@ -649,70 +686,201 @@ def afficher_module_achats(nom_departement, type_profil):
                             st.success("Demande archivée avec succès.")
                             st.rerun()
 
-    with tab_achats_2:
-        # Restriction stricte aux achats
-        if type_profil != "achats" and type_profil != "fondateur":
-            st.warning("🔒 Espace strictement réservé au Département des Achats pour le traitement et la validation du sourcing.")
-        else:
-            st.markdown("### 📥 Boîte de réception des demandes Achats")
+    # ----------------------------------------------------
+    # ONGLET 2 : VALIDATION ACHATS & SOURCING (Pour DEP12)
+    # ----------------------------------------------------
+    if type_profil == "achats":
+        with tabs_res[1]:
+            st.markdown("### 📥 Traitement & Sourcing (Département Achats)")
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu FROM demandes WHERE archive = 0 AND (etape_actuelle = 'Achats' OR statut = 'En attente Achats') ORDER BY id DESC")
-            demandes_a_traiter = cursor.fetchall()
+            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu FROM demandes WHERE archive = 0 AND etape_actuelle = 'Achats' ORDER BY id DESC")
+            demandes_achats = cursor.fetchall()
             conn.close()
 
-            if not demandes_a_traiter:
-                st.info("Aucune demande en attente de traitement aux Achats.")
+            if not demandes_achats:
+                st.info("Aucune demande en attente de sourcing aux Achats.")
             else:
-                for d in demandes_a_traiter:
+                for d in demandes_achats:
                     did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu = d
-                    
-                    try:
-                        montant_chiffre = float(d_montant) if d_montant is not None else 0.0
-                    except (ValueError, TypeError):
-                        montant_chiffre = 0.0
 
-                    with st.expander(f"🛒 [{d_dept}] {d_titre} — {montant_chiffre:,.2f} €"):
-                        st.write(f"**Date de soumission** : {d_date}")
-                        st.write(f"**Cahier des charges** : {d_cc or 'N/A'}")
-                        st.write(f"**Fournisseur pressenti par émetteur** : {d_fournisseur or 'Aucun'}")
-                        proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📎 Télécharger le devis émetteur", f"dl_achats_{did}")
+                    with st.expander(f"🛒 [{d_dept}] {d_titre}"):
+                        st.write(f"**Émetteur** : {d_dept} | **Date** : {d_date}")
+                        st.write(f"**Besoins spécifiques & Cahier des charges** : {d_cc}")
+                        st.write(f"**Fournisseur pressenti (émetteur)** : {d_fournisseur or 'Aucun'}")
+                        proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📎 Télécharger le devis / document initial", f"dl_achats_{did}")
                         
                         with st.form(f"form_traitement_achats_{did}"):
-                            nouveau_montant_ajuste = st.number_input("Ajuster le prix définitif après sourcing (€)", value=montant_chiffre, step=10.0, key=f"mnt_ajust_{did}")
-                            fournisseur_retenu_saisie = st.text_input("Définir le fournisseur retenu", value=d_f_retenu or d_fournisseur, key=f"fourn_ret_{did}")
-                            action_achat = st.selectbox("Action Achats", ["Valider et transmettre à la Finance", "Demander modification", "Refuser"], key=f"act_achats_{did}")
-                            motif_achat = st.text_area("Commentaire / Motif", key=f"motif_achats_{did}")
+                            fournisseur_retenu_saisie = st.text_input("Définir le fournisseur retenu (Sourcing)", value=d_f_retenu or d_fournisseur)
+                            montant_definitif = st.number_input("Saisir le prix définitif négocié (€)", min_value=0.0, step=10.0, value=float(d_montant or 0.0))
+                            nouveau_fichier_achat = st.file_uploader("Ajouter / Remplacer le devis achats consolidé (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"], key=f"f_achat_{did}")
+                            
+                            action_achat = st.selectbox("Décision Achats", ["Valider et transmettre à la Finance", "Demander une modification", "Refuser définitivement"])
+                            motif_achat = st.text_area("Commentaire / Motif (obligatoire en cas de modification ou refus)")
                             
                             valider_action = st.form_submit_button("Appliquer la décision Achats")
                             if valider_action:
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
+                                fich_u = enregistrer_fichier_securise(DOSSIER_UPLOADS, nouveau_fichier_achat) if nouveau_fichier_achat else d_fich
+                                
                                 if action_achat == "Valider et transmettre à la Finance":
                                     nouveau_statut = "En attente Finance"
                                     nouvelle_etape = "Finance"
                                     avis_a = "Validé"
-                                elif action_achat == "Demander modification":
+                                    motif_maj = ""
+                                elif action_achat == "Demander une modification":
                                     nouveau_statut = "Modif demandée"
                                     nouvelle_etape = "Émetteur"
                                     avis_a = "Modification demandée"
+                                    motif_maj = f"[Achats] {motif_achat}"
                                 else:
                                     nouveau_statut = "Refusé"
                                     nouvelle_etape = "Clôturé"
                                     avis_a = "Refusé"
+                                    motif_maj = f"[Achats] {motif_achat}"
                                     
                                 cursor.execute(
-                                    """UPDATE demandes SET montant = ?, fournisseur_retenu = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ? WHERE id = ?""",
-                                    (nouveau_montant_ajuste, fournisseur_retenu_saisie, nouveau_statut, nouvelle_etape, avis_a, motif_achat, did)
+                                    """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ? WHERE id = ?""",
+                                    (fournisseur_retenu_saisie, montant_definitif, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, did)
                                 )
                                 conn.commit()
                                 conn.close()
-                                ajouter_log("Traitement Achats", nom_departement, f"Demande {did} traitée : {action_achat}")
+                                ajouter_log("Validation Achats", nom_departement, f"Demande {did} traitée : {action_achat}")
                                 st.success("Décision enregistrée avec succès !")
                                 st.rerun()
 
-    with tab_achats_3:
-        st.markdown("### 🗄️ Archives de vos demandes d'achat")
+    # ----------------------------------------------------
+    # ONGLET 2 (Finance) : VALIDATION FINANCIÈRE & BUDGÉTAIRE (Pour DEP13)
+    # ----------------------------------------------------
+    if type_profil == "finance":
+        with tabs_res[1]:
+            st.markdown("### 💰 Analyse & Validation Budgétaire (Finance & Comptabilité)")
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu FROM demandes WHERE archive = 0 AND etape_actuelle = 'Finance' ORDER BY id DESC")
+            demandes_finance = cursor.fetchall()
+            conn.close()
+
+            if not demandes_finance:
+                st.info("Aucune demande en attente d'analyse financière.")
+            else:
+                for d in demandes_finance:
+                    did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu = d
+
+                    with st.expander(f"💰 [{d_dept}] {d_titre} — {float(d_montant or 0):,.2f} €"):
+                        st.markdown(f"**Analyse complète du dossier :**")
+                        st.write(f"- **Département émetteur** : {d_dept}")
+                        st.write(f"- **Description du besoin / CDC** : {d_cc}")
+                        st.write(f"- **Fournisseur retenu (Achats)** : {fournisseur_affiche(d_fournisseur, d_f_retenu)}")
+                        st.write(f"- **Prix définitif proposé** : {float(d_montant or 0):,.2f} €")
+                        st.write(f"- **Avis Achats** : {d_avis_a}")
+                        proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📎 Télécharger le devis / document joint", f"dl_fin_{did}")
+                        
+                        with st.form(f"form_traitement_finance_{did}"):
+                            action_fin = st.selectbox("Décision Finance", ["Valider le déblocage et transmettre à la Direction Générale", "Demander une modification", "Refuser (problème budgétaire)"])
+                            motif_fin = st.text_area("Commentaire / Motif financier")
+                            
+                            valider_fin = st.form_submit_button("Appliquer la décision financière")
+                            if valider_fin:
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                
+                                if action_fin == "Valider le déblocage et transmettre à la Direction Générale":
+                                    nouveau_statut = "En attente Direction"
+                                    nouvelle_etape = "Direction Générale"
+                                    avis_f = "Validé"
+                                    motif_maj = ""
+                                elif action_fin == "Demander une modification":
+                                    nouveau_statut = "Modif demandée"
+                                    nouvelle_etape = "Émetteur"
+                                    avis_f = "Modification demandée"
+                                    motif_maj = f"[Finance] {motif_fin}"
+                                else:
+                                    nouveau_statut = "Refusé"
+                                    nouvelle_etape = "Clôturé"
+                                    avis_f = "Refusé"
+                                    motif_maj = f"[Finance] {motif_fin}"
+                                    
+                                cursor.execute(
+                                    """UPDATE demandes SET statut = ?, etape_actuelle = ?, avis_finance = ?, motif_refus = ? WHERE id = ?""",
+                                    (nouveau_statut, nouvelle_etape, avis_f, motif_maj, did)
+                                )
+                                conn.commit()
+                                conn.close()
+                                ajouter_log("Validation Finance", nom_departement, f"Demande {did} traitée : {action_fin}")
+                                st.success("Décision financière enregistrée !")
+                                st.rerun()
+
+    # ----------------------------------------------------
+    # ONGLET 2 (Fondateur) : VALIDATION FINALE & SIGNATURE (Direction Générale)
+    # ----------------------------------------------------
+    if type_profil == "fondateur":
+        with tabs_res[1]:
+            st.markdown("### ✍️ Validation Finale & Signature (Direction Générale)")
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu FROM demandes WHERE archive = 0 AND etape_actuelle = 'Direction Générale' ORDER BY id DESC")
+            demandes_dir = cursor.fetchall()
+            conn.close()
+
+            if not demandes_dir:
+                st.info("Aucune demande en attente de validation finale.")
+            else:
+                for d in demandes_dir:
+                    did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu = d
+
+                    with st.expander(f"✍️ [{d_dept}] {d_titre} — {float(d_montant or 0):,.2f} €"):
+                        st.markdown(f"**Dossier complet soumis pour arbitrage final :**")
+                        st.write(f"- **Émetteur** : {d_dept}")
+                        st.write(f"- **Besoins spécifiques** : {d_cc}")
+                        st.write(f"- **Fournisseur retenu** : {fournisseur_affiche(d_fournisseur, d_f_retenu)}")
+                        st.write(f"- **Montant validé** : {float(d_montant or 0):,.2f} €")
+                        st.write(f"- **Avis Achats** : {d_avis_a} | **Avis Finance** : {d_avis_f}")
+                        proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📎 Télécharger le dossier / devis complet", f"dl_dir_{did}")
+                        
+                        with st.form(f"form_traitement_dir_{did}"):
+                            action_dir = st.selectbox("Décision Direction Générale", ["Valider et signer (Exécution finale)", "Demander une modification", "Refuser définitivement"])
+                            motif_dir = st.text_area("Commentaire / Motif de la Direction")
+                            
+                            valider_dir = st.form_submit_button("Appliquer la décision finale")
+                            if valider_dir:
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                
+                                if action_dir == "Valider et signer (Exécution finale)":
+                                    nouveau_statut = "Validé & Signé"
+                                    nouvelle_etape = "Clôturé"
+                                    motif_maj = ""
+                                    # Mise à jour automatique du solde global si nécessaire
+                                    solde_actuel = get_valeur_globale("solde_restant")
+                                    montant_dem = float(d_montant or 0)
+                                    set_valeur_globale("solde_restant", max(0.0, solde_actuel - montant_dem))
+                                elif action_dir == "Demander une modification":
+                                    nouveau_statut = "Modif demandée"
+                                    nouvelle_etape = "Émetteur"
+                                    motif_maj = f"[Direction] {motif_dir}"
+                                else:
+                                    nouveau_statut = "Refusé"
+                                    nouvelle_etape = "Clôturé"
+                                    motif_maj = f"[Direction] {motif_dir}"
+                                    
+                                cursor.execute(
+                                    """UPDATE demandes SET statut = ?, etape_actuelle = ?, motif_refus = ? WHERE id = ?""",
+                                    (nouveau_statut, nouvelle_etape, motif_maj, did)
+                                )
+                                conn.commit()
+                                conn.close()
+                                ajouter_log("Validation Direction Générale", nom_departement, f"Demande {did} traitée : {action_dir}")
+                                st.success("Décision finale enregistrée avec succès !")
+                                st.rerun()
+
+    # ----------------------------------------------------
+    # ONGLET ARCHIVES
+    # ----------------------------------------------------
+    idx_arch = 2 if len(tabs_res) > 2 else 1
+    with tabs_res[idx_arch]:
+        st.markdown("### 🗄️ Archives des demandes d'achat")
         conn = get_db_connection()
         cursor = conn.cursor()
         if type_profil == "fondateur":
@@ -947,7 +1115,6 @@ def afficher_module_statistiques():
     if df_dem.empty:
         st.info("Pas assez de données pour afficher les statistiques.")
     else:
-        # Conversion forcée pour s'assurer qu'il n'y ait pas de plantage de graphe
         df_dem['montant'] = pd.to_numeric(df_dem['montant'], errors='coerce').fillna(0)
         df_stats = df_dem.groupby("departement").sum().reset_index()
         st.bar_chart(df_stats, x="departement", y="montant")
