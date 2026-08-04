@@ -378,6 +378,18 @@ def ajouter_log(action, acteur, details):
     conn.commit()
     conn.close()
 
+def _assurer_table_notifications(cursor):
+    """Filet de sécurité : garantit que la table existe, quel que soit l'état
+    de la base sur l'environnement de déploiement."""
+    cursor.execute('''CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        destinataire_dept TEXT,
+        message TEXT,
+        type TEXT,
+        date TEXT,
+        lue INTEGER DEFAULT 0
+    )''')
+
 def creer_notification(destinataire_dept, message, type_notif="info"):
     """Crée une notification pour le département cible (destinataire_dept doit
     correspondre exactement au champ 'dept' d'un profil de UTILISATEURS)."""
@@ -385,6 +397,7 @@ def creer_notification(destinataire_dept, message, type_notif="info"):
         return
     conn = get_db_connection()
     cursor = conn.cursor()
+    _assurer_table_notifications(cursor)
     cursor.execute(
         "INSERT INTO notifications (destinataire_dept, message, type, date, lue) VALUES (?, ?, ?, ?, 0)",
         (destinataire_dept, message, type_notif, datetime.now().strftime("%Y-%m-%d %H:%M"))
@@ -395,25 +408,30 @@ def creer_notification(destinataire_dept, message, type_notif="info"):
 def compter_notifications_non_lues(dept):
     conn = get_db_connection()
     cursor = conn.cursor()
+    _assurer_table_notifications(cursor)
     cursor.execute("SELECT COUNT(*) FROM notifications WHERE destinataire_dept = ? AND lue = 0", (dept,))
     n = cursor.fetchone()[0]
+    conn.commit()
     conn.close()
     return n
 
 def recuperer_notifications(dept, limite=20):
     conn = get_db_connection()
     cursor = conn.cursor()
+    _assurer_table_notifications(cursor)
     cursor.execute(
         "SELECT id, message, type, date, lue FROM notifications WHERE destinataire_dept = ? ORDER BY id DESC LIMIT ?",
         (dept, limite)
     )
     rows = cursor.fetchall()
+    conn.commit()
     conn.close()
     return rows
 
 def marquer_notifications_lues(dept):
     conn = get_db_connection()
     cursor = conn.cursor()
+    _assurer_table_notifications(cursor)
     cursor.execute("UPDATE notifications SET lue = 1 WHERE destinataire_dept = ? AND lue = 0", (dept,))
     conn.commit()
     conn.close()
