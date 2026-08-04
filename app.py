@@ -57,7 +57,9 @@ st.markdown("""
       padding: 1rem;
       border-radius: 8px;
       margin-bottom: 0.8rem;
+      color: #e8e8ec;
     }
+    .stCard * { color: #e8e8ec; }
     .pill-valide { background-color: #2ea043; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8rem; }
     .pill-refuse { background-color: #f85149; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8rem; }
     .pill-modif { background-color: #d29922; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8rem; }
@@ -95,6 +97,15 @@ st.markdown("""
       85%  { opacity: 1; transform: scale(1) translateY(0); }
       100% { opacity: 0; transform: scale(0.95) translateY(-6px); }
     }
+    [data-testid="stTabs"] [data-baseweb="tab-panel"] {
+      background-color: #ffffff;
+      color: #1a1a1a;
+      border-radius: 0 12px 12px 12px;
+      padding: 1.2rem;
+      box-shadow: 0 4px 18px rgba(0,0,0,0.08);
+      margin-top: -1px;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab-panel"] * { color: inherit; }
   </style>
 """, unsafe_allow_html=True)
 
@@ -216,6 +227,14 @@ def pill_statut(statut: str) -> str:
         classe = "pill-attente"
     return f'<span class="{classe}">{statut}</span>'
 
+def date_du_jour_fr() -> str:
+    """Formate la date du jour en français, sans dépendre de la locale du serveur."""
+    jours = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+    mois = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+            "août", "septembre", "octobre", "novembre", "décembre"]
+    maintenant = datetime.now()
+    return f"{jours[maintenant.weekday()]} {maintenant.day} {mois[maintenant.month - 1]} {maintenant.year}"
+
 def fournisseur_affiche(fournisseur_propose: str, fournisseur_retenu: str) -> str:
     if fournisseur_retenu:
         return f"{fournisseur_retenu} ✅ (retenu par les Achats)"
@@ -292,6 +311,14 @@ def init_db():
         action TEXT,
         details TEXT
     )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        destinataire_dept TEXT,
+        message TEXT,
+        type TEXT,
+        date TEXT,
+        lue INTEGER DEFAULT 0
+    )''')
     conn.commit()
     conn.close()
 
@@ -351,6 +378,46 @@ def ajouter_log(action, acteur, details):
     conn.commit()
     conn.close()
 
+def creer_notification(destinataire_dept, message, type_notif="info"):
+    """Crée une notification pour le département cible (destinataire_dept doit
+    correspondre exactement au champ 'dept' d'un profil de UTILISATEURS)."""
+    if not destinataire_dept:
+        return
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO notifications (destinataire_dept, message, type, date, lue) VALUES (?, ?, ?, ?, 0)",
+        (destinataire_dept, message, type_notif, datetime.now().strftime("%Y-%m-%d %H:%M"))
+    )
+    conn.commit()
+    conn.close()
+
+def compter_notifications_non_lues(dept):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM notifications WHERE destinataire_dept = ? AND lue = 0", (dept,))
+    n = cursor.fetchone()[0]
+    conn.close()
+    return n
+
+def recuperer_notifications(dept, limite=20):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, message, type, date, lue FROM notifications WHERE destinataire_dept = ? ORDER BY id DESC LIMIT ?",
+        (dept, limite)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def marquer_notifications_lues(dept):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE notifications SET lue = 1 WHERE destinataire_dept = ? AND lue = 0", (dept,))
+    conn.commit()
+    conn.close()
+
 def archiver_dans_corbeille(departement_auteur, type_element, resume, details_dict):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -405,6 +472,11 @@ UTILISATEURS = {
     "fondateur": {"nom": "Direction Générale - Pilotage Stratégique", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
 }
 
+# Constantes réutilisées pour cibler les notifications par département
+DEPT_ACHATS = UTILISATEURS["DEP12"]["dept"]
+DEPT_FINANCE = UTILISATEURS["DEP13"]["dept"]
+DEPT_DIRECTION = UTILISATEURS["fondateur"]["dept"]
+
 # ==========================================
 # GESTION DE LA SESSION
 # ==========================================
@@ -420,32 +492,74 @@ afficher_notification_centre()
 # AUTHENTIFICATION & BARRE LATÉRALE
 # ==========================================
 
+if st.session_state.user_connecte is None:
+    # Écran de connexion : sidebar masquée, carte centrée sur fond dégradé
+    st.markdown("""
+    <style>
+      [data-testid="stAppViewContainer"] {
+        background: linear-gradient(135deg, #f6f5f1 0%, #eae7e0 100%);
+      }
+      [data-testid="stSidebar"] { display: none; }
+      [data-testid="stVerticalBlockBorderWrapper"] {
+        background-color: #ffffff;
+        border-radius: 18px;
+        box-shadow: 0 14px 40px rgba(0,0,0,0.14);
+        border: none;
+        padding: 0.5rem;
+      }
+      div.stButton > button {
+        background-color: #7c9473;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-weight: 600;
+        padding: 0.5rem 0;
+      }
+      div.stButton > button:hover {
+        background-color: #6a8062;
+        color: white;
+        border: none;
+      }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height: 9vh;'></div>", unsafe_allow_html=True)
+    col_g, col_c, col_d = st.columns([1, 1.2, 1])
+    with col_c:
+        with st.container(border=True):
+            if os.path.exists(CHEMIN_LOGO):
+                lg1, lg2, lg3 = st.columns([1, 1.4, 1])
+                with lg2:
+                    st.image(CHEMIN_LOGO, use_container_width=True)
+            else:
+                st.markdown("<h2 style='text-align:center;'>🏢 Bureau d'Études</h2>", unsafe_allow_html=True)
+            st.markdown("<div style='height:0.4rem;'></div>", unsafe_allow_html=True)
+            username = st.text_input("Identifiant")
+            password = st.text_input("Mot de passe", type="password")
+            if st.button("Se connecter", use_container_width=True):
+                if username in UTILISATEURS and UTILISATEURS[username]["mdp"] == password:
+                    st.session_state.user_connecte = username
+                    st.session_state.heure_connexion = datetime.now()
+                    ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
+                    notifier_succes("Connexion établie avec succès !", icon="✅")
+                    st.rerun()
+                else:
+                    st.error("Identifiant ou mot de passe incorrect.")
+    st.stop()
+
+# Écran connecté : logo + infos dans la sidebar normale
 if os.path.exists(CHEMIN_LOGO):
     st.sidebar.image(CHEMIN_LOGO, use_container_width=True)
 else:
     st.sidebar.markdown("## 🏢 Bureau d'Études")
 st.sidebar.markdown("---")
 
-if st.session_state.user_connecte is None:
-    st.sidebar.subheader("Connexion Collaborateur")
-    username = st.sidebar.text_input("Identifiant")
-    password = st.sidebar.text_input("Mot de passe", type="password")
-    if st.sidebar.button("Se connecter"):
-        if username in UTILISATEURS and UTILISATEURS[username]["mdp"] == password:
-            st.session_state.user_connecte = username
-            st.session_state.heure_connexion = datetime.now()
-            ajouter_log("Connexion", UTILISATEURS[username]["nom"], "Connexion réussie")
-            notifier_succes("Connexion établie avec succès !", icon="✅")
-            st.rerun()
-        else:
-            st.sidebar.error("Identifiant ou mot de passe incorrect.")
-    st.stop()
-
 user_key = st.session_state.user_connecte
 profil = UTILISATEURS[user_key]
 nom_dept = profil["dept"]
 
 st.sidebar.success(f"Connecté : {profil['nom']}")
+st.sidebar.caption(f"📅 {date_du_jour_fr()}")
 st.sidebar.markdown("---")
 
 if st.sidebar.button("Se déconnecter"):
@@ -459,7 +573,31 @@ if st.sidebar.button("Se déconnecter"):
     notifier_succes("Déconnexion effectuée.", icon="ℹ️")
     st.rerun()
 
-st.title(f"Tableau de Bord - {profil['nom']}")
+col_titre, col_cloche = st.columns([6, 1])
+with col_titre:
+    st.title(f"Tableau de Bord - {profil['nom']}")
+with col_cloche:
+    st.markdown("<div style='height: 2.1rem;'></div>", unsafe_allow_html=True)
+    nb_non_lues = compter_notifications_non_lues(nom_dept)
+    libelle_cloche = f"🔔 {nb_non_lues}" if nb_non_lues > 0 else "🔔"
+    with st.popover(libelle_cloche, use_container_width=True):
+        st.markdown("#### 🔔 Notifications")
+        liste_notifs = recuperer_notifications(nom_dept)
+        if not liste_notifs:
+            st.caption("Aucune notification pour le moment.")
+        else:
+            icones_notif = {"demande": "📦", "etude": "📘", "cdc": "📋", "modification": "✏️", "refus": "❌", "suivi": "🔄"}
+            for notif_id, notif_msg, notif_type, notif_date, notif_lue in liste_notifs:
+                icone = icones_notif.get(notif_type, "🔔")
+                poids = "600" if not notif_lue else "400"
+                st.markdown(
+                    f"<div style='font-weight:{poids}; padding:6px 0; border-bottom:1px solid var(--border);'>"
+                    f"{icone} {notif_msg}<br><span style='color:var(--text-muted); font-size:0.75rem;'>{notif_date}</span></div>",
+                    unsafe_allow_html=True
+                )
+            if nb_non_lues > 0 and st.button("Tout marquer comme lu", use_container_width=True):
+                marquer_notifications_lues(nom_dept)
+                st.rerun()
 
 if profil["type"] in ["finance", "fondateur"]:
     b_total = get_valeur_globale("budget_global")
@@ -523,6 +661,8 @@ def afficher_module_etudes(nom_departement, type_profil):
                     conn.commit()
                     conn.close()
                     ajouter_log("Création Étude", nom_departement, f"Étude: {titre}")
+                    for dest in destinataires:
+                        creer_notification(dest, f"Nouvelle étude partagée par {nom_departement} : « {titre} »", "etude")
                     notifier_succes("Étude enregistrée et partagée avec succès !", icon="✅")
                     st.rerun()
 
@@ -627,6 +767,8 @@ def afficher_module_cdc(nom_departement, type_profil):
                 conn.commit()
                 conn.close()
                 ajouter_log("Création CDC", nom_departement, f"Cahier des charges: {titre}")
+                for dest in destinataires:
+                    creer_notification(dest, f"Nouveau cahier des charges publié par {nom_departement} : « {titre} »", "cdc")
                 notifier_succes("Cahier des charges publié avec succès.", icon="✅")
                 st.rerun()
 
@@ -682,6 +824,7 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.commit()
                         conn.close()
                         ajouter_log("Création Demande d'Achat", nom_departement, f"Demande '{titre_demande}' soumise.")
+                        creer_notification(DEPT_ACHATS, f"Nouvelle demande d'achat de {nom_departement} : « {titre_demande} »", "demande")
                         notifier_succes("Demande transmise aux Achats avec succès !")
                         st.rerun()
 
@@ -710,6 +853,7 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.commit()
                         conn.close()
                         ajouter_log("Création Demande d'Achat (Achats)", nom_departement, f"Demande '{titre_demande}' transmise directement en Finance.")
+                        creer_notification(DEPT_FINANCE, f"Nouvelle demande (circuit direct) des Achats : « {titre_demande} »", "demande")
                         notifier_succes("Demande transmise directement à la Finance avec succès !")
                         st.rerun()
 
@@ -737,6 +881,7 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.commit()
                         conn.close()
                         ajouter_log("Création Demande d'Achat (Finance)", nom_departement, f"Demande '{titre_demande}' transmise aux Achats.")
+                        creer_notification(DEPT_ACHATS, f"Nouvelle demande d'achat de {nom_departement} (Finance) : « {titre_demande} »", "demande")
                         notifier_succes("Demande transmise aux Achats avec succès !", icon="✅")
                         st.rerun()
 
@@ -764,6 +909,7 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.commit()
                         conn.close()
                         ajouter_log("Création Demande d'Achat (Direction)", nom_departement, f"Demande '{titre_demande}' transmise aux Achats.")
+                        creer_notification(DEPT_ACHATS, f"Nouvelle demande d'achat de la Direction : « {titre_demande} »", "demande")
                         notifier_succes("Demande transmise aux Achats avec succès !", icon="✅")
                         st.rerun()
 
@@ -829,6 +975,14 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 ajouter_log("Validation Achats", nom_departement, f"Demande {did} traitée : {action_achat}")
+                                if action_achat == "Valider":
+                                    creer_notification(DEPT_DIRECTION if nouvelle_etape == "Direction Générale" else DEPT_FINANCE,
+                                                        f"Demande « {d_titre} » ({d_dept}) validée par les Achats, à traiter.", "demande")
+                                    creer_notification(d_dept, f"Votre demande « {d_titre} » est passée à l'étape {nouvelle_etape}.", "suivi")
+                                elif action_achat == "Demander une modification":
+                                    creer_notification(d_dept, f"Votre demande « {d_titre} » nécessite une modification (retour des Achats).", "modification")
+                                else:
+                                    creer_notification(d_dept, f"Votre demande « {d_titre} » a été refusée par les Achats.", "refus")
                                 notifier_succes("Décision enregistrée avec succès !", icon="✅")
                                 st.rerun()
 
@@ -881,6 +1035,13 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 ajouter_log("Validation Finance", nom_departement, f"Demande {did} traitée : {action_fin}")
+                                if action_fin == "Valider":
+                                    creer_notification(DEPT_DIRECTION, f"Demande « {d_titre} » ({d_dept}) validée par la Finance, à traiter.", "demande")
+                                    creer_notification(d_dept, f"Votre demande « {d_titre} » est passée à l'étape Direction Générale.", "suivi")
+                                elif action_fin == "Demander une modification":
+                                    creer_notification(d_dept, f"Votre demande « {d_titre} » nécessite une modification (retour de la Finance).", "modification")
+                                else:
+                                    creer_notification(d_dept, f"Votre demande « {d_titre} » a été refusée par la Finance.", "refus")
                                 notifier_succes("Décision financière enregistrée !", icon="✅")
                                 st.rerun()
 
@@ -933,6 +1094,12 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.commit()
                                 conn.close()
                                 ajouter_log("Validation Direction Générale", nom_departement, f"Demande {did} traitée : {action_dir}")
+                                if action_dir == "Valider et signer (Exécution finale)":
+                                    creer_notification(d_dept, f"Votre demande « {d_titre} » a été validée et signée par la Direction.", "suivi")
+                                elif action_dir == "Demander une modification":
+                                    creer_notification(d_dept, f"Votre demande « {d_titre} » nécessite une modification (retour de la Direction).", "modification")
+                                else:
+                                    creer_notification(d_dept, f"Votre demande « {d_titre} » a été refusée par la Direction.", "refus")
                                 notifier_succes("Décision finale enregistrée avec succès !", icon="✅")
                                 st.rerun()
 
@@ -1005,6 +1172,8 @@ def afficher_module_achats(nom_departement, type_profil):
                                         conn_m.commit()
                                         conn_m.close()
                                         ajouter_log("Resoumission Demande", nom_departement, f"Demande {did} modifiée et resoumise.")
+                                        creer_notification(DEPT_FINANCE if prochaine_etape == "Finance" else DEPT_ACHATS,
+                                                            f"Demande « {nouveau_titre} » ({nom_departement}) modifiée et resoumise.", "demande")
                                         notifier_succes("Demande modifiée et transmise avec succès !", icon="✅")
                                         st.rerun()
 
