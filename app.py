@@ -186,6 +186,43 @@ def exporter_pdf_bytes(df: pd.DataFrame, titre="Export", colonnes_max=8):
     doc.build(elements)
     return buffer.getvalue()
 
+def generer_pdf_bon_commande(demande: dict) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elements = [
+        Paragraph("BON DE COMMANDE", styles["Title"]),
+        Paragraph(f"Référence demande n°{demande['id']}", styles["Normal"]),
+        Spacer(1, 0.6 * cm),
+    ]
+    data = [
+        ["Département demandeur", demande["departement"]],
+        ["Intitulé", demande["titre"]],
+        ["Besoins spécifiques", demande["besoins"]],
+        ["Fournisseur retenu", demande["fournisseur"] or "—"],
+        ["Montant", f"{float(demande['montant'] or 0):,.2f} {demande.get('devise', 'EUR')}"],
+        ["Date de validation Direction", demande["date_validation"]],
+        ["Modalités de paiement", demande.get("modalites_texte", "—")],
+    ]
+    t = Table(data, colWidths=[6 * cm, 11 * cm])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#7c9473')),
+        ('TEXTCOLOR', (0, 0), (0, -1), colors.whitesmoke),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(t)
+    elements.append(Spacer(1, 1 * cm))
+    elements.append(Paragraph(
+        f"Document généré automatiquement le {datetime.now().strftime('%d/%m/%Y à %H:%M')} "
+        f"suite à la validation finale de la Direction Générale.", styles["Italic"]
+    ))
+    doc.build(elements)
+    return buffer.getvalue()
+
 def afficher_boutons_export(df: pd.DataFrame, nom_base: str, titre_pdf: str = None, key_prefix: str = ""):
     if df is None or df.empty:
         return
@@ -273,6 +310,15 @@ def compter_nouveaux_elements(nom_dept, type_profil):
     except sqlite3.OperationalError:
         pass
     return total
+
+def formater_modalites_paiement(modalites_json: str) -> str:
+    try:
+        tranches = json.loads(modalites_json) if modalites_json else []
+    except (json.JSONDecodeError, TypeError):
+        return "—"
+    if not tranches:
+        return "—"
+    return " | ".join([f"{t.get('pourcentage', 0)}% — {t.get('declencheur', '')}" for t in tranches])
 
 def fournisseur_affiche(fournisseur_propose: str, fournisseur_retenu: str) -> str:
     if fournisseur_retenu:
@@ -364,6 +410,21 @@ def migrer_schema():
         ("etudes_metier", "archive", "INTEGER DEFAULT 0"),
         ("cahiers_charges", "archive", "INTEGER DEFAULT 0"),
         ("cahiers_charges", "fichier_cdc", "TEXT DEFAULT ''"),
+        # --- Bon de commande, paiement par tranches, budget engagé/décaissé ---
+        ("demandes", "devise", "TEXT DEFAULT 'EUR'"),
+        ("demandes", "modalites_paiement_json", "TEXT DEFAULT '[]'"),
+        ("demandes", "statut_paiement", "TEXT DEFAULT 'Non payée'"),
+        ("demandes", "bon_commande_genere", "INTEGER DEFAULT 0"),
+        ("demandes", "bon_commande_date", "TEXT DEFAULT ''"),
+        ("demandes", "montant_engage", "REAL DEFAULT 0"),
+        # --- Circuit de réception / clôture ---
+        ("demandes", "receptions_json", "TEXT DEFAULT '[]'"),
+        ("demandes", "statut_reception", "TEXT DEFAULT ''"),
+        ("demandes", "suivi_litige", "TEXT DEFAULT ''"),
+        # --- Seuil d'approbation simplifiée & annulations/avoirs ---
+        ("demandes", "annulee", "INTEGER DEFAULT 0"),
+        ("demandes", "motif_annulation", "TEXT DEFAULT ''"),
+        ("demandes", "avoir_json", "TEXT DEFAULT ''"),
     ]
     for table, colonne, type_def in migrations:
         cursor.execute(f"PRAGMA table_info({table})")
@@ -595,10 +656,14 @@ st.title(f"Tableau de Bord - {profil['nom']}")
 
 if profil["type"] in ["finance", "fondateur"]:
     b_total = get_valeur_globale("budget_global")
-    b_solde = get_valeur_globale("solde_restant")
-    c_b1, c_b2 = st.columns(2)
+    b_engage = get_valeur_globale("budget_engage")
+    b_decaisse = get_valeur_globale("budget_decaisse")
+    b_solde = max(0.0, b_total - b_engage)
+    c_b1, c_b2, c_b3 = st.columns(3)
     c_b1.metric("Budget Global Allocation", f"{b_total:,.2f} €")
-    c_b2.metric("Solde Restant Disponible", f"{b_solde:,.2f} €")
+    c_b2.metric("Budget Engagé", f"{b_engage:,.2f} €", help="Montant des demandes validées par la Direction, virement ou non encore effectué.")
+    c_b3.metric("Solde Disponible", f"{b_solde:,.2f} €", help="Budget Global − Budget Engagé.")
+    st.caption(f"💳 Budget décaissé (virements confirmés) : {b_decaisse:,.2f} €")
     st.markdown("---")
 
 # ==========================================
@@ -919,7 +984,16 @@ def afficher_module_achats(nom_departement, type_profil):
                             fournisseur_retenu_saisie = st.text_input("Définir le fournisseur retenu (Sourcing)", value=d_f_retenu or d_fournisseur)
                             montant_definitif = st.number_input("Saisir le prix définitif négocié (€)", min_value=0.0, step=10.0, value=float(d_montant or 0.0))
                             nouveau_fichier_achat = st.file_uploader("Ajouter / Remplacer le devis achats consolidé (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"], key=f"f_achat_{did}")
-                            
+
+                            st.markdown("**Modalités de paiement** (utilisées uniquement si la demande est validée)")
+                            nb_tranches = st.selectbox("Nombre de tranches de paiement", [1, 2], key=f"nb_tranches_{did}")
+                            declencheurs_possibles = ["Acompte à la signature (validation Direction)", "À l'envoi du bon de commande", "À la réception", "Date fixe / Autre"]
+                            declencheur_1 = st.selectbox("Déclencheur — Tranche 1", declencheurs_possibles, key=f"decl1_{did}")
+                            pourcentage_1 = st.number_input("% — Tranche 1", min_value=0, max_value=100, value=100 if nb_tranches == 1 else 50, key=f"pct1_{did}")
+                            if nb_tranches == 2:
+                                declencheur_2 = st.selectbox("Déclencheur — Tranche 2", declencheurs_possibles, index=2, key=f"decl2_{did}")
+                                pourcentage_2 = st.number_input("% — Tranche 2", min_value=0, max_value=100, value=50, key=f"pct2_{did}")
+
                             action_achat = st.selectbox("Décision Achats", ["Valider", "Demander une modification", "Refuser définitivement"])
                             motif_achat = st.text_area("Commentaire / Motif (obligatoire en cas de modification ou refus)")
                             
@@ -938,21 +1012,33 @@ def afficher_module_achats(nom_departement, type_profil):
                                         nouvelle_etape = "Finance"
                                     avis_a = "Validé"
                                     motif_maj = ""
+                                    tranches = [{"declencheur": declencheur_1, "pourcentage": pourcentage_1, "statut": "en_attente", "reference": "", "date_execution": "", "note": ""}]
+                                    if nb_tranches == 2:
+                                        tranches.append({"declencheur": declencheur_2, "pourcentage": pourcentage_2, "statut": "en_attente", "reference": "", "date_execution": "", "note": ""})
+                                    modalites_json = json.dumps(tranches)
                                 elif action_achat == "Demander une modification":
                                     nouveau_statut = "Modif demandée"
                                     nouvelle_etape = "Émetteur"
                                     avis_a = "Modification demandée"
                                     motif_maj = f"[Achats] {motif_achat}"
+                                    modalites_json = None
                                 else:
                                     nouveau_statut = "Refusé"
                                     nouvelle_etape = "Clôturé"
                                     avis_a = "Refusé"
                                     motif_maj = f"[Achats] {motif_achat}"
+                                    modalites_json = None
                                     
-                                cursor.execute(
-                                    """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ? WHERE id = ?""",
-                                    (fournisseur_retenu_saisie, montant_definitif, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, did)
-                                )
+                                if modalites_json is not None:
+                                    cursor.execute(
+                                        """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ?, modalites_paiement_json = ? WHERE id = ?""",
+                                        (fournisseur_retenu_saisie, montant_definitif, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, modalites_json, did)
+                                    )
+                                else:
+                                    cursor.execute(
+                                        """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ? WHERE id = ?""",
+                                        (fournisseur_retenu_saisie, montant_definitif, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, did)
+                                    )
                                 conn.commit()
                                 conn.close()
                                 notifier_succes("Décision enregistrée avec succès !", icon="✅")
@@ -1009,6 +1095,75 @@ def afficher_module_achats(nom_departement, type_profil):
                                 notifier_succes("Décision financière enregistrée !", icon="✅")
                                 st.rerun()
 
+            st.markdown("---")
+            st.markdown("#### 💳 Virements à traiter")
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT id, departement, titre, fournisseur_retenu, montant, devise, modalites_paiement_json, statut_paiement, statut_reception
+                   FROM demandes WHERE archive = 0 AND etape_actuelle = 'Exécution' AND statut_paiement != 'Entièrement payée' ORDER BY id DESC"""
+            )
+            demandes_virements = cursor.fetchall()
+            conn.close()
+
+            if not demandes_virements:
+                st.caption("Aucun virement en attente pour le moment.")
+            else:
+                for dv in demandes_virements:
+                    dv_id, dv_dept, dv_titre, dv_fournisseur, dv_montant, dv_devise, dv_modalites_json, dv_statut_paie, dv_statut_reception = dv
+                    try:
+                        tranches = json.loads(dv_modalites_json) if dv_modalites_json else []
+                    except (json.JSONDecodeError, TypeError):
+                        tranches = []
+                    with st.expander(f"💳 [{dv_dept}] {dv_titre} — {float(dv_montant or 0):,.2f} {dv_devise} — {dv_statut_paie}"):
+                        st.write(f"**Fournisseur :** {dv_fournisseur or '—'}")
+                        for i, tr in enumerate(tranches):
+                            declencheur = tr.get("declencheur", "")
+                            deja_payee = tr.get("statut") == "payee"
+                            # Une tranche "À la réception" n'est déverrouillée qu'une fois la réception clôturée par les Achats
+                            verrouillee = (declencheur == "À la réception" and dv_statut_reception != "Clôturée")
+                            montant_tranche = float(dv_montant or 0) * float(tr.get("pourcentage", 0)) / 100
+
+                            if deja_payee:
+                                st.success(f"✅ Tranche {i+1} ({tr.get('pourcentage')}% — {declencheur}) payée le {tr.get('date_execution', '')} — Réf. {tr.get('reference', '')}")
+                            elif verrouillee:
+                                st.info(f"🔒 Tranche {i+1} ({tr.get('pourcentage')}% — {declencheur}) — pas encore déclenchée (en attente de la réception, module à venir).")
+                            else:
+                                st.markdown(f"**🔓 Tranche {i+1} prête à payer — {tr.get('pourcentage')}% — {declencheur} — {montant_tranche:,.2f} {dv_devise}**")
+                                with st.form(f"form_virement_{dv_id}_{i}"):
+                                    reference_vir = st.text_input("Référence du virement", key=f"ref_{dv_id}_{i}")
+                                    date_vir = st.date_input("Date d'exécution", value=date.today(), key=f"date_{dv_id}_{i}")
+                                    montant_vir = st.number_input("Montant réellement viré", min_value=0.0, value=montant_tranche, step=10.0, key=f"mont_{dv_id}_{i}")
+                                    preuve_vir = st.file_uploader("Preuve du virement (capture d'écran, PDF)", type=["pdf", "png", "jpg", "jpeg"], key=f"preuve_{dv_id}_{i}")
+                                    note_vir = st.text_area("Note / modalités (optionnel)", key=f"note_{dv_id}_{i}")
+                                    confirmer_vir = st.form_submit_button("Confirmer ce virement")
+                                    if confirmer_vir:
+                                        fich_preuve = enregistrer_fichier_securise(DOSSIER_UPLOADS, preuve_vir) if preuve_vir else ""
+                                        tranches[i]["statut"] = "payee"
+                                        tranches[i]["reference"] = reference_vir
+                                        tranches[i]["date_execution"] = date_vir.strftime("%Y-%m-%d")
+                                        tranches[i]["montant_verse"] = montant_vir
+                                        tranches[i]["preuve"] = fich_preuve
+                                        tranches[i]["note"] = note_vir
+
+                                        toutes_payees = all(t.get("statut") == "payee" for t in tranches)
+                                        nouveau_statut_paiement = "Entièrement payée" if toutes_payees else "Partiellement payée"
+
+                                        conn_v = get_db_connection()
+                                        cur_v = conn_v.cursor()
+                                        cur_v.execute(
+                                            "UPDATE demandes SET modalites_paiement_json = ?, statut_paiement = ? WHERE id = ?",
+                                            (json.dumps(tranches), nouveau_statut_paiement, dv_id)
+                                        )
+                                        conn_v.commit()
+                                        conn_v.close()
+
+                                        budget_decaisse_actuel = get_valeur_globale("budget_decaisse")
+                                        set_valeur_globale("budget_decaisse", budget_decaisse_actuel + montant_vir)
+
+                                        notifier_succes("Virement enregistré avec succès !", icon="✅")
+                                        st.rerun()
+
         elif type_profil == "fondateur":
             st.markdown("#### ✍️ Demandes en attente de validation finale (Direction Générale)")
             conn = get_db_connection()
@@ -1037,23 +1192,29 @@ def afficher_module_achats(nom_departement, type_profil):
                                 cursor = conn.cursor()
                                 if action_dir == "Valider et signer (Exécution finale)":
                                     nouveau_statut = "Validé & Signé"
-                                    nouvelle_etape = "Clôturé"
+                                    nouvelle_etape = "Exécution"
                                     motif_maj = ""
-                                    solde_actuel = get_valeur_globale("solde_restant")
                                     montant_dem = float(d_montant or 0)
-                                    set_valeur_globale("solde_restant", max(0.0, solde_actuel - montant_dem))
+                                    budget_engage_actuel = get_valeur_globale("budget_engage")
+                                    set_valeur_globale("budget_engage", budget_engage_actuel + montant_dem)
+                                    bc_genere = 1
+                                    bc_date = datetime.now().strftime("%Y-%m-%d %H:%M")
                                 elif action_dir == "Demander une modification":
                                     nouveau_statut = "Modif demandée"
                                     nouvelle_etape = "Émetteur"
                                     motif_maj = f"[Direction] {motif_dir}"
+                                    bc_genere = 0
+                                    bc_date = ""
                                 else:
                                     nouveau_statut = "Refusé"
                                     nouvelle_etape = "Clôturé"
                                     motif_maj = f"[Direction] {motif_dir}"
+                                    bc_genere = 0
+                                    bc_date = ""
                                     
                                 cursor.execute(
-                                    """UPDATE demandes SET statut = ?, etape_actuelle = ?, motif_refus = ? WHERE id = ?""",
-                                    (nouveau_statut, nouvelle_etape, motif_maj, did)
+                                    """UPDATE demandes SET statut = ?, etape_actuelle = ?, motif_refus = ?, bon_commande_genere = ?, bon_commande_date = ?, montant_engage = ? WHERE id = ?""",
+                                    (nouveau_statut, nouvelle_etape, motif_maj, bc_genere, bc_date, float(d_montant or 0) if bc_genere else 0, did)
                                 )
                                 conn.commit()
                                 conn.close()
@@ -1064,9 +1225,9 @@ def afficher_module_achats(nom_departement, type_profil):
         conn = get_db_connection()
         cursor = conn.cursor()
         if type_profil == "fondateur":
-            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu FROM demandes WHERE archive = 0 ORDER BY id DESC")
+            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise FROM demandes WHERE archive = 0 ORDER BY id DESC")
         else:
-            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu FROM demandes WHERE departement = ? AND archive = 0 ORDER BY id DESC", (nom_departement,))
+            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise FROM demandes WHERE departement = ? AND archive = 0 ORDER BY id DESC", (nom_departement,))
         demandes = cursor.fetchall()
         conn.close()
 
@@ -1074,7 +1235,7 @@ def afficher_module_achats(nom_departement, type_profil):
             st.info("Aucune demande active en cours.")
         else:
             for d in demandes:
-                did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu = d
+                did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu, d_bc_genere, d_bc_date, d_modalites, d_statut_paiement, d_devise = d
                 try:
                     montant_aff = float(d_montant) if d_montant is not None else 0.0
                 except (ValueError, TypeError):
@@ -1102,7 +1263,21 @@ def afficher_module_achats(nom_departement, type_profil):
                             if d_motif:
                                 st.warning(f"Motif / Remarque : {d_motif}")
                             proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📎 Télécharger le devis", f"dl_devis_{did}")
-                            
+
+                            if d_bc_genere:
+                                st.markdown("---")
+                                st.success(f"📄 Bon de commande généré le {d_bc_date}")
+                                pdf_bc = generer_pdf_bon_commande({
+                                    "id": did, "departement": d_dept, "titre": d_titre, "besoins": d_cc,
+                                    "fournisseur": d_f_retenu or d_fournisseur, "montant": d_montant, "devise": d_devise,
+                                    "date_validation": d_bc_date, "modalites_texte": formater_modalites_paiement(d_modalites),
+                                })
+                                st.download_button(
+                                    "📥 Télécharger le bon de commande (PDF)", data=pdf_bc,
+                                    file_name=f"Bon_Commande_{did}.pdf", mime="application/pdf", key=f"dl_bc_{did}"
+                                )
+                                st.caption(f"💳 Statut paiement : {d_statut_paiement} — Modalités : {formater_modalites_paiement(d_modalites)}")
+
                             if d_statut == "Modif demandée" and d_dept == nom_departement:
                                 st.markdown("---")
                                 st.info("🔄 Cette demande nécessite une modification suite à un retour.")
@@ -1237,7 +1412,8 @@ def afficher_dialogue_detail_demande(id_demande):
     cursor = conn.cursor()
     cursor.execute(
         """SELECT departement, titre, cahier_charges, montant, fournisseur, fournisseur_retenu,
-                  statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date
+                  statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date,
+                  bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise
            FROM demandes WHERE id = ?""",
         (id_demande,)
     )
@@ -1249,7 +1425,8 @@ def afficher_dialogue_detail_demande(id_demande):
         return
 
     (dept, titre, besoins, montant, fournisseur_pressenti, fournisseur_retenu,
-     statut, etape, avis_achats, avis_finance, motif, date_demande) = d
+     statut, etape, avis_achats, avis_finance, motif, date_demande,
+     bc_genere, bc_date, modalites_json, statut_paiement, devise) = d
 
     st.markdown(f"### #{id_demande} — {titre}")
     st.markdown(f"**Département demandeur :** {dept}")
@@ -1259,7 +1436,7 @@ def afficher_dialogue_detail_demande(id_demande):
     st.markdown("---")
     st.markdown("**Besoins spécifiques :**")
     st.write(besoins or "—")
-    st.markdown(f"**Montant :** {montant:,.2f} €" if montant else "**Montant :** —")
+    st.markdown(f"**Montant :** {montant:,.2f} {devise}" if montant else "**Montant :** —")
     st.markdown(f"**Fournisseur pressenti :** {fournisseur_pressenti or '—'}")
     if fournisseur_retenu:
         st.markdown(f"**Fournisseur retenu :** {fournisseur_retenu}")
@@ -1269,6 +1446,18 @@ def afficher_dialogue_detail_demande(id_demande):
         st.markdown(f"**Avis Finance :** {avis_finance}")
     if motif:
         st.markdown(f"**Motif (refus / modification demandée) :** {motif}")
+
+    if bc_genere:
+        st.markdown("---")
+        st.markdown(f"**📄 Bon de commande** généré le {bc_date}")
+        st.markdown(f"**💳 Statut paiement :** {statut_paiement} — {formater_modalites_paiement(modalites_json)}")
+        pdf_bc = generer_pdf_bon_commande({
+            "id": id_demande, "departement": dept, "titre": titre, "besoins": besoins,
+            "fournisseur": fournisseur_retenu or fournisseur_pressenti, "montant": montant, "devise": devise,
+            "date_validation": bc_date, "modalites_texte": formater_modalites_paiement(modalites_json),
+        })
+        st.download_button("📥 Télécharger le bon de commande (PDF)", data=pdf_bc,
+                            file_name=f"Bon_Commande_{id_demande}.pdf", mime="application/pdf", key=f"dl_bc_dialog_{id_demande}")
 
 
 # ==========================================
@@ -1317,7 +1506,8 @@ def afficher_module_audit():
                     conn.commit()
                     conn.close()
                     set_valeur_globale("budget_global", 100000.0)
-                    set_valeur_globale("solde_restant", 100000.0)
+                    set_valeur_globale("budget_engage", 0.0)
+                    set_valeur_globale("budget_decaisse", 0.0)
                     notifier_succes("Application réinitialisée à zéro avec succès !", icon="✅")
                     st.rerun()
                 else:
