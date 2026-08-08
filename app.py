@@ -578,14 +578,6 @@ st.sidebar.markdown(
     f"📅 {date_du_jour_fr()}</div>",
     unsafe_allow_html=True
 )
-nb_nouveaux = compter_nouveaux_elements(nom_dept, profil["type"])
-if nb_nouveaux > 0:
-    st.sidebar.markdown(
-        f"<div style='display:inline-flex; align-items:center; gap:6px; background-color:rgba(217,119,87,0.18); "
-        f"color:#f0b79c; padding:4px 10px; border-radius:14px; font-size:0.82rem; margin-left:6px;'>"
-        f"🆕 {nb_nouveaux} nouveau(x)</div>",
-        unsafe_allow_html=True
-    )
 st.sidebar.markdown("---")
 
 if st.sidebar.button("Se déconnecter"):
@@ -789,7 +781,7 @@ def afficher_module_cdc(nom_departement, type_profil):
 # ==========================================
 
 def afficher_module_achats(nom_departement, type_profil):
-    st.subheader("🛒 Gestion des Demandes d'Achat & Workflow de Validation")
+    st.subheader("🛒 Espace Demandes d'Achat")
     
     # 3 onglets bien distincts comme demandé
     onglets_achats = ["📋 Soumettre une demande", "📊 Suivi des demandes", "🗄️ Archives des demandes"]
@@ -1221,8 +1213,62 @@ def afficher_module_suivi_global_controle():
         return
 
     df_suivi = pd.DataFrame(rows, columns=["ID", "Département", "Titre", "Montant", "Statut", "Étape Actuelle", "Date"])
-    st.dataframe(df_suivi, use_container_width=True)
+
+    st.caption("💡 Cliquez sur une ligne pour voir le détail complet de la demande.")
+    evenement = st.dataframe(
+        df_suivi,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+    )
+
+    lignes_selectionnees = evenement.selection.rows if evenement and evenement.selection else []
+    if lignes_selectionnees:
+        id_demande_selectionnee = int(df_suivi.iloc[lignes_selectionnees[0]]["ID"])
+        afficher_dialogue_detail_demande(id_demande_selectionnee)
+
     afficher_boutons_export(df_suivi, "Suivi_Global_Controle", "Supervision Globale")
+
+
+@st.dialog("Détail de la demande")
+def afficher_dialogue_detail_demande(id_demande):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT departement, titre, cahier_charges, montant, fournisseur, fournisseur_retenu,
+                  statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date
+           FROM demandes WHERE id = ?""",
+        (id_demande,)
+    )
+    d = cursor.fetchone()
+    conn.close()
+
+    if not d:
+        st.warning("Cette demande n'existe plus (elle a peut-être été archivée ou supprimée).")
+        return
+
+    (dept, titre, besoins, montant, fournisseur_pressenti, fournisseur_retenu,
+     statut, etape, avis_achats, avis_finance, motif, date_demande) = d
+
+    st.markdown(f"### #{id_demande} — {titre}")
+    st.markdown(f"**Département demandeur :** {dept}")
+    st.markdown(f"**Date de la demande :** {date_demande}")
+    st.markdown(f"**Statut :** {pill_statut(statut)}", unsafe_allow_html=True)
+    st.markdown(f"**Étape actuelle :** {etape}")
+    st.markdown("---")
+    st.markdown("**Besoins spécifiques :**")
+    st.write(besoins or "—")
+    st.markdown(f"**Montant :** {montant:,.2f} €" if montant else "**Montant :** —")
+    st.markdown(f"**Fournisseur pressenti :** {fournisseur_pressenti or '—'}")
+    if fournisseur_retenu:
+        st.markdown(f"**Fournisseur retenu :** {fournisseur_retenu}")
+    if avis_achats and avis_achats != "En attente":
+        st.markdown(f"**Avis Achats :** {avis_achats}")
+    if avis_finance and avis_finance != "En attente":
+        st.markdown(f"**Avis Finance :** {avis_finance}")
+    if motif:
+        st.markdown(f"**Motif (refus / modification demandée) :** {motif}")
 
 
 # ==========================================
