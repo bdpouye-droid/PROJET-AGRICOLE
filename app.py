@@ -348,6 +348,69 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
     doc.build(elements)
     return buffer.getvalue()
 
+def generer_pdf_bon_reception(demande: dict) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
+    styles = getSampleStyleSheet()
+    style_n = styles["Normal"]
+    style_b = ParagraphStyle("bloc_bold_r", parent=style_n, fontName="Helvetica-Bold")
+    style_titre = ParagraphStyle("titre_br", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#2b3542"))
+
+    numero_br = f"BR-{datetime.now().year}-{int(demande['id']):05d}"
+    elements = []
+
+    if os.path.exists(CHEMIN_LOGO):
+        logo_cell = Image(CHEMIN_LOGO, width=3.2 * cm, height=3.2 * cm, kind="proportional")
+    else:
+        logo_cell = Paragraph("<b>NATIKA GROUP</b>", styles["Heading2"])
+    bloc_titre = [
+        Paragraph("BON DE RÉCEPTION", style_titre),
+        Paragraph(f"<b>N° {numero_br}</b>", style_n),
+        Paragraph(f"Clôturé le : {demande.get('date_cloture', '—')}", style_n),
+    ]
+    entete = Table([[logo_cell, bloc_titre]], colWidths=[4 * cm, 12.7 * cm])
+    entete.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    elements.append(entete)
+    elements.append(Spacer(1, 0.9 * cm))
+
+    elements.append(Paragraph(f"<b>Référence demande :</b> n°{demande['id']}", style_n))
+    elements.append(Paragraph(f"<b>Département :</b> {demande.get('departement', '—')}", style_n))
+    elements.append(Paragraph(f"<b>Intitulé :</b> {demande.get('titre', '—')}", style_n))
+    elements.append(Paragraph(f"<b>Fournisseur :</b> {demande.get('fournisseur', '—')}", style_n))
+    elements.append(Spacer(1, 0.6 * cm))
+
+    elements.append(Paragraph("<b>Historique des réceptions déclarées</b>", style_b))
+    elements.append(Spacer(1, 0.2 * cm))
+    receptions = demande.get("receptions") or []
+    if receptions:
+        data_r = [["Date", "Conformité", "Motif", "Remarque"]]
+        for r in receptions:
+            data_r.append([r.get("date", ""), r.get("conformite", ""), r.get("motif", "") or "—", r.get("remarque", "") or "—"])
+        r_tbl = Table(data_r, colWidths=[3 * cm, 3 * cm, 4 * cm, 6.7 * cm])
+        r_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7c9473")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        elements.append(r_tbl)
+    else:
+        elements.append(Paragraph("—", style_n))
+    elements.append(Spacer(1, 0.6 * cm))
+
+    elements.append(Paragraph(f"<b>Statut final :</b> {demande.get('statut_final', '—')}", style_n))
+    if demande.get("suivi_litige"):
+        elements.append(Paragraph(f"<b>Suivi / commentaire Achats :</b> {demande.get('suivi_litige')}", style_n))
+    elements.append(Spacer(1, 1.2 * cm))
+    elements.append(Paragraph(
+        f"Document généré automatiquement le {datetime.now().strftime('%d/%m/%Y à %H:%M')} — clôturé par les Achats, "
+        f"trace interne de réception, n'engage pas le fournisseur.", styles["Italic"]
+    ))
+
+    doc.build(elements)
+    return buffer.getvalue()
+
 def afficher_boutons_export(df: pd.DataFrame, nom_base: str, titre_pdf: str = None, key_prefix: str = ""):
     if df is None or df.empty:
         return
@@ -441,6 +504,9 @@ def parser_tranches(modalites_json) -> list:
         return json.loads(modalites_json) if modalites_json else []
     except (json.JSONDecodeError, TypeError):
         return []
+
+def parser_receptions(receptions_json) -> list:
+    return parser_tranches(receptions_json)
 
 def formater_modalites_paiement(modalites_json: str) -> str:
     try:
@@ -1356,9 +1422,9 @@ def afficher_module_achats(nom_departement, type_profil):
         conn = get_db_connection()
         cursor = conn.cursor()
         if type_profil == "fondateur":
-            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise FROM demandes WHERE archive = 0 ORDER BY id DESC")
+            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise, statut_reception, receptions_json, suivi_litige FROM demandes WHERE archive = 0 ORDER BY id DESC")
         else:
-            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise FROM demandes WHERE departement = ? AND archive = 0 ORDER BY id DESC", (nom_departement,))
+            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise, statut_reception, receptions_json, suivi_litige FROM demandes WHERE departement = ? AND archive = 0 ORDER BY id DESC", (nom_departement,))
         demandes = cursor.fetchall()
         conn.close()
 
@@ -1366,7 +1432,7 @@ def afficher_module_achats(nom_departement, type_profil):
             st.info("Aucune demande active en cours.")
         else:
             for d in demandes:
-                did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu, d_bc_genere, d_bc_date, d_modalites, d_statut_paiement, d_devise = d
+                did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu, d_bc_genere, d_bc_date, d_modalites, d_statut_paiement, d_devise, d_statut_reception, d_receptions_json, d_suivi_litige = d
                 try:
                     montant_aff = float(d_montant) if d_montant is not None else 0.0
                 except (ValueError, TypeError):
@@ -1408,6 +1474,19 @@ def afficher_module_achats(nom_departement, type_profil):
                                     file_name=f"Bon_Commande_{did}.pdf", mime="application/pdf", key=f"dl_bc_{did}"
                                 )
                                 st.caption(f"💳 Statut paiement : {d_statut_paiement} — Modalités : {formater_modalites_paiement(d_modalites)}")
+
+                            if d_statut_reception == "Clôturée":
+                                st.markdown("---")
+                                st.success("🚚 Réception clôturée")
+                                pdf_br = generer_pdf_bon_reception({
+                                    "id": did, "departement": d_dept, "titre": d_titre, "fournisseur": d_f_retenu or d_fournisseur,
+                                    "receptions": parser_receptions(d_receptions_json), "statut_final": d_statut,
+                                    "suivi_litige": d_suivi_litige, "date_cloture": d_date,
+                                })
+                                st.download_button(
+                                    "📥 Télécharger le bon de réception (PDF)", data=pdf_br,
+                                    file_name=f"Bon_Reception_{did}.pdf", mime="application/pdf", key=f"dl_br_{did}"
+                                )
 
                             if d_statut == "Modif demandée" and d_dept == nom_departement:
                                 st.markdown("---")
@@ -1455,14 +1534,14 @@ def afficher_module_achats(nom_departement, type_profil):
         cursor = conn.cursor()
         if type_profil in ["achats", "finance", "fondateur"]:
             cursor.execute(
-                """SELECT id, departement, titre, fournisseur_retenu, montant, devise, statut, bon_commande_date,
-                          modalites_paiement_json, statut_paiement, statut_reception
+                """SELECT id, departement, titre, cahier_charges, fournisseur_retenu, montant, devise, statut, bon_commande_date,
+                          modalites_paiement_json, statut_paiement, statut_reception, receptions_json, suivi_litige
                    FROM demandes WHERE archive = 0 AND etape_actuelle = 'Exécution' ORDER BY id DESC"""
             )
         else:
             cursor.execute(
-                """SELECT id, departement, titre, fournisseur_retenu, montant, devise, statut, bon_commande_date,
-                          modalites_paiement_json, statut_paiement, statut_reception
+                """SELECT id, departement, titre, cahier_charges, fournisseur_retenu, montant, devise, statut, bon_commande_date,
+                          modalites_paiement_json, statut_paiement, statut_reception, receptions_json, suivi_litige
                    FROM demandes WHERE archive = 0 AND etape_actuelle = 'Exécution' AND departement = ? ORDER BY id DESC""",
                 (nom_departement,)
             )
@@ -1473,11 +1552,14 @@ def afficher_module_achats(nom_departement, type_profil):
             st.info("Aucune demande en cours d'exécution actuellement.")
         else:
             for de in demandes_execution:
-                de_id, de_dept, de_titre, de_fourn, de_montant, de_devise, de_statut, de_bc_date, de_modalites, de_statut_paiement, de_statut_reception = de
+                (de_id, de_dept, de_titre, de_besoins, de_fourn, de_montant, de_devise, de_statut, de_bc_date,
+                 de_modalites, de_statut_paiement, de_statut_reception, de_receptions_json, de_suivi_litige) = de
                 tranches = parser_tranches(de_modalites)
                 nb_payees = sum(1 for t in tranches if t.get("statut") == "payee")
                 nb_total = len(tranches) if tranches else 1
-                reception_affichee = de_statut_reception or "Non renseignée (module à venir)"
+                receptions = parser_receptions(de_receptions_json)
+                reception_affichee = de_statut_reception or "En attente de livraison"
+
                 with st.container():
                     st.markdown(f"""
                         <div class="stCard">
@@ -1492,7 +1574,7 @@ def afficher_module_achats(nom_departement, type_profil):
                     """, unsafe_allow_html=True)
                     with st.expander("🔍 Voir le détail complet"):
                         pdf_bc_suivi = generer_pdf_bon_commande({
-                            "id": de_id, "departement": de_dept, "titre": de_titre, "besoins": "",
+                            "id": de_id, "departement": de_dept, "titre": de_titre, "besoins": de_besoins,
                             "fournisseur": de_fourn, "montant": de_montant, "devise": de_devise,
                             "date_validation": de_bc_date, "tranches": tranches,
                         })
@@ -1501,7 +1583,130 @@ def afficher_module_achats(nom_departement, type_profil):
                         for i, t in enumerate(tranches):
                             etat = "✅ Payée" if t.get("statut") == "payee" else "🔒 En attente"
                             st.write(f"- Tranche {i+1} ({t.get('pourcentage')}% — {t.get('declencheur')}) : {etat}")
-                        st.caption("Le circuit de réception (import du bon de livraison, contrôle et clôture par les Achats) arrive dans un prochain module.")
+
+                        st.markdown("---")
+                        st.markdown("#### 🚚 Réception")
+
+                        if receptions:
+                            for r in receptions:
+                                st.write(f"- **{r.get('date')}** — {r.get('conformite')}"
+                                         + (f" ({r.get('motif')})" if r.get('motif') else "")
+                                         + (f" — _{r.get('remarque')}_" if r.get('remarque') else ""))
+                                proposer_telechargement(DOSSIER_UPLOADS, r.get("fichier", ""), "📎 Bon de livraison importé", f"dl_bl_{de_id}_{r.get('date','')}")
+                        else:
+                            st.caption("Aucun bon de livraison importé pour le moment.")
+
+                        if de_suivi_litige:
+                            st.info(f"📝 Suivi Achats : {de_suivi_litige}")
+
+                        # --- ÉMETTEUR : importer le bon de livraison et déclarer la conformité ---
+                        if de_dept == nom_departement and de_statut_reception in ("", "Rejetée — nouvelle livraison attendue"):
+                            st.markdown("##### 📥 Réception de la commande")
+                            with st.form(f"form_reception_{de_id}"):
+                                conformite = st.selectbox("Conformité de la livraison reçue", ["Conforme", "Non conforme", "Partiel"], key=f"conf_{de_id}")
+                                motif_nc = ""
+                                if conformite != "Conforme":
+                                    motif_nc = st.selectbox("Motif", ["Quantité incomplète", "Produit endommagé", "Mauvaise référence livrée", "Autre"], key=f"motifnc_{de_id}")
+                                remarque_reception = st.text_area("Remarque (optionnel)", key=f"remarque_{de_id}")
+                                fichier_bl = st.file_uploader("Bon de livraison (pièce jointe, scan/photo)", type=["pdf", "png", "jpg", "jpeg"], key=f"fichierbl_{de_id}")
+                                valider_reception = st.form_submit_button("Confirmer la réception")
+                                if valider_reception:
+                                    fich_bl = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_bl) if fichier_bl else ""
+                                    receptions.append({
+                                        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                        "conformite": conformite, "motif": motif_nc,
+                                        "remarque": remarque_reception, "fichier": fich_bl,
+                                    })
+                                    nouveau_statut_reception = "En attente de contrôle" if conformite == "Conforme" else "Réception contestée"
+                                    conn_r = get_db_connection()
+                                    cur_r = conn_r.cursor()
+                                    cur_r.execute("UPDATE demandes SET receptions_json = ?, statut_reception = ? WHERE id = ?",
+                                                  (json.dumps(receptions), nouveau_statut_reception, de_id))
+                                    conn_r.commit()
+                                    conn_r.close()
+                                    notifier_succes("Réception confirmée et transmise aux Achats !", icon="✅")
+                                    st.rerun()
+
+                        # --- ACHATS : contrôle et clôture ---
+                        if type_profil == "achats" and de_statut_reception in ("En attente de contrôle", "Réception contestée"):
+                            st.markdown("##### ✅ Contrôle Achats")
+                            if de_statut_reception == "En attente de contrôle":
+                                if st.button("Contrôler et clôturer la demande", key=f"cloture_ok_{de_id}"):
+                                    pdf_br = generer_pdf_bon_reception({
+                                        "id": de_id, "departement": de_dept, "titre": de_titre, "fournisseur": de_fourn,
+                                        "receptions": receptions, "statut_final": "Clôturée", "suivi_litige": de_suivi_litige,
+                                        "date_cloture": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                    })
+                                    conn_c = get_db_connection()
+                                    cur_c = conn_c.cursor()
+                                    cur_c.execute("UPDATE demandes SET etape_actuelle = 'Clôturé', statut = 'Clôturée', statut_reception = 'Clôturée' WHERE id = ?", (de_id,))
+                                    conn_c.commit()
+                                    conn_c.close()
+                                    notifier_succes("Demande contrôlée et clôturée !", icon="✅")
+                                    st.rerun()
+                            else:
+                                st.warning("Réception contestée — traiter avec le fournisseur (canal externe) avant de trancher.")
+                                with st.form(f"form_litige_{de_id}"):
+                                    nouveau_suivi = st.text_area("Statut du traitement (visible par tous)", value=de_suivi_litige, key=f"suivi_{de_id}")
+                                    maj_suivi = st.form_submit_button("Mettre à jour le suivi")
+                                    if maj_suivi:
+                                        conn_s = get_db_connection()
+                                        cur_s = conn_s.cursor()
+                                        cur_s.execute("UPDATE demandes SET suivi_litige = ? WHERE id = ?", (nouveau_suivi, de_id))
+                                        conn_s.commit()
+                                        conn_s.close()
+                                        notifier_succes("Suivi mis à jour.", icon="✅")
+                                        st.rerun()
+
+                                c_cl, c_rj, c_esc = st.columns(3)
+                                with c_cl:
+                                    if st.button("Clôturer avec réserve", key=f"cloture_reserve_{de_id}", use_container_width=True):
+                                        pdf_br = generer_pdf_bon_reception({
+                                            "id": de_id, "departement": de_dept, "titre": de_titre, "fournisseur": de_fourn,
+                                            "receptions": receptions, "statut_final": "Clôturée avec réserve", "suivi_litige": de_suivi_litige,
+                                            "date_cloture": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                        })
+                                        conn_c = get_db_connection()
+                                        cur_c = conn_c.cursor()
+                                        cur_c.execute("UPDATE demandes SET etape_actuelle = 'Clôturé', statut = 'Clôturée avec réserve', statut_reception = 'Clôturée' WHERE id = ?", (de_id,))
+                                        conn_c.commit()
+                                        conn_c.close()
+                                        notifier_succes("Demande clôturée avec réserve.", icon="✅")
+                                        st.rerun()
+                                with c_rj:
+                                    if st.button("Rejeter (redemander livraison)", key=f"rejeter_{de_id}", use_container_width=True):
+                                        conn_c = get_db_connection()
+                                        cur_c = conn_c.cursor()
+                                        cur_c.execute("UPDATE demandes SET statut_reception = ? WHERE id = ?", ("Rejetée — nouvelle livraison attendue", de_id))
+                                        conn_c.commit()
+                                        conn_c.close()
+                                        notifier_succes("Livraison rejetée, en attente d'une nouvelle réception.", icon="✅")
+                                        st.rerun()
+                                with c_esc:
+                                    if st.button("Escalader à la Direction", key=f"escalade_{de_id}", use_container_width=True):
+                                        conn_c = get_db_connection()
+                                        cur_c = conn_c.cursor()
+                                        cur_c.execute("UPDATE demandes SET statut_reception = ? WHERE id = ?", ("Escaladée à la Direction", de_id))
+                                        conn_c.commit()
+                                        conn_c.close()
+                                        notifier_succes("Litige escaladé à la Direction.", icon="✅")
+                                        st.rerun()
+
+                        # --- DIRECTION : trancher un litige escaladé ---
+                        if type_profil == "fondateur" and de_statut_reception == "Escaladée à la Direction":
+                            st.markdown("##### ⚖️ Litige escaladé — décision Direction")
+                            with st.form(f"form_direction_litige_{de_id}"):
+                                note_direction = st.text_area("Décision / instruction de la Direction", key=f"notedir_{de_id}")
+                                trancher = st.form_submit_button("Renvoyer aux Achats avec instruction")
+                                if trancher:
+                                    suivi_maj = (de_suivi_litige + "\n" if de_suivi_litige else "") + f"[Direction] {note_direction}"
+                                    conn_d = get_db_connection()
+                                    cur_d = conn_d.cursor()
+                                    cur_d.execute("UPDATE demandes SET suivi_litige = ?, statut_reception = 'Réception contestée' WHERE id = ?", (suivi_maj, de_id))
+                                    conn_d.commit()
+                                    conn_d.close()
+                                    notifier_succes("Instruction transmise aux Achats.", icon="✅")
+                                    st.rerun()
 
     with tabs_res[3]:
         st.markdown("### 🗄️ Archives des demandes d'achat")
