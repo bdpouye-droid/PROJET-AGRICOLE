@@ -9,7 +9,7 @@ import streamlit as st
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, HRFlowable
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 # ==========================================
@@ -236,41 +236,83 @@ def montant_en_lettres(montant: float, devise: str = "EUR") -> str:
 
 def generer_pdf_bon_commande(demande: dict) -> bytes:
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.3 * cm, bottomMargin=1.3 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
     styles = getSampleStyleSheet()
+    couleur_verte = colors.HexColor("#7c9473")
+    couleur_fonce = colors.HexColor("#2b3542")
     style_n = styles["Normal"]
     style_b = ParagraphStyle("bloc_bold", parent=style_n, fontName="Helvetica-Bold")
-    style_titre = ParagraphStyle("titre_bc", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#2b3542"))
+    style_titre = ParagraphStyle("titre_bc", parent=styles["Title"], fontSize=20, textColor=couleur_fonce)
 
     montant_total = float(demande.get("montant") or 0)
+    montant_ht = demande.get("montant_ht")
+    taux_tva = demande.get("taux_tva")
     devise = demande.get("devise") or "EUR"
-    numero_bc = f"BC-{datetime.now().year}-{int(demande['id']):05d}"
+
+    date_creation = demande.get("date_creation") or demande.get("date_validation") or ""
+    annee_creation = date_creation[:4] if date_creation else str(datetime.now().year)
+    annee_validation = (demande.get("date_validation") or "")[:4] or str(datetime.now().year)
+    numero_da = f"DA-{annee_creation}-{int(demande['id']):05d}"
+    numero_bc = f"BC-{annee_validation}-{int(demande['id']):05d}"
 
     elements = []
 
-    # --- En-tête : logo + numéro/date ---
+    # --- En-tête : logo + titre/numéro/statut ---
     if os.path.exists(CHEMIN_LOGO):
-        logo_cell = Image(CHEMIN_LOGO, width=3.2 * cm, height=3.2 * cm, kind="proportional")
+        logo_cell = Image(CHEMIN_LOGO, width=4 * cm, height=4 * cm, kind="proportional")
     else:
         logo_cell = Paragraph("<b>NATIKA GROUP</b>", styles["Heading2"])
+    badge_statut = Table([["Statut : VALIDÉ"]], colWidths=[3.5 * cm])
+    badge_statut.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#e4efe0")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), couleur_verte),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
     bloc_titre = [
         Paragraph("BON DE COMMANDE", style_titre),
         Paragraph(f"<b>N° {numero_bc}</b>", style_n),
+        Paragraph(f"Réf. demande d'achat : {numero_da}", style_n),
         Paragraph(f"Date d'émission : {demande.get('date_validation', '—')}", style_n),
+        Spacer(1, 0.15 * cm),
+        badge_statut,
     ]
-    entete = Table([[logo_cell, bloc_titre]], colWidths=[4 * cm, 12.7 * cm])
+    entete = Table([[logo_cell, bloc_titre]], colWidths=[4.5 * cm, 12.2 * cm])
     entete.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
     elements.append(entete)
-    elements.append(Spacer(1, 0.9 * cm))
+    elements.append(Spacer(1, 0.3 * cm))
+    elements.append(HRFlowable(width="100%", thickness=1.5, color=couleur_verte, spaceAfter=0.5 * cm))
 
-    # --- Vendeur / Acheteur ---
-    bloc_vendeur = [Paragraph("<b>FOURNISSEUR</b>", style_b), Paragraph(demande.get("fournisseur") or "—", style_n)]
+    # --- Fournisseur / Acheteur ---
+    fourn = demande.get("fournisseur_infos") or {}
+    lignes_fournisseur = [Paragraph("<b>FOURNISSEUR</b>", style_b), Paragraph(demande.get("fournisseur") or "—", style_n)]
+    if fourn:
+        if fourn.get("adresse"):
+            lignes_fournisseur.append(Paragraph(f"Adresse : {fourn['adresse']}", style_n))
+        if fourn.get("telephone"):
+            lignes_fournisseur.append(Paragraph(f"Tél : {fourn['telephone']}", style_n))
+        if fourn.get("email"):
+            lignes_fournisseur.append(Paragraph(f"Email : {fourn['email']}", style_n))
+        if fourn.get("nif"):
+            lignes_fournisseur.append(Paragraph(f"NIF : {fourn['nif']}", style_n))
+        if fourn.get("rccm"):
+            lignes_fournisseur.append(Paragraph(f"RCCM : {fourn['rccm']}", style_n))
+        if fourn.get("contact_commercial"):
+            lignes_fournisseur.append(Paragraph(f"Contact : {fourn['contact_commercial']}", style_n))
+    else:
+        lignes_fournisseur.append(Paragraph("<i>Coordonnées non enregistrées dans la Base Fournisseurs.</i>", style_n))
+
     bloc_acheteur = [
         Paragraph("<b>ACHETEUR</b>", style_b),
         Paragraph("Natika Group", style_n),
         Paragraph(f"Département : {demande.get('departement', '—')}", style_n),
     ]
-    parties = Table([[bloc_vendeur, bloc_acheteur]], colWidths=[8.35 * cm, 8.35 * cm])
+    if demande.get("nom_demandeur"):
+        bloc_acheteur.append(Paragraph(f"Demandeur : {demande['nom_demandeur']}", style_n))
+
+    parties = Table([[lignes_fournisseur, bloc_acheteur]], colWidths=[8.35 * cm, 8.35 * cm])
     parties.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("BOX", (0, 0), (0, 0), 0.6, colors.HexColor("#c7c4ba")),
@@ -283,12 +325,12 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
 
     # --- Objet de la commande ---
     objet = Table([
-        ["Désignation", "Montant"],
+        ["Désignation", "Montant HT"],
         [Paragraph(f"<b>{demande.get('titre', '')}</b><br/>{demande.get('besoins') or ''}", style_n),
-         f"{montant_total:,.2f} {devise}"],
+         f"{(montant_ht if montant_ht is not None else montant_total):,.2f} {devise}"],
     ], colWidths=[13 * cm, 3.7 * cm])
     objet.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7c9473")),
+        ("BACKGROUND", (0, 0), (-1, 0), couleur_verte),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
@@ -297,11 +339,24 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
         ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
     ]))
     elements.append(objet)
-    elements.append(Spacer(1, 0.4 * cm))
+    elements.append(Spacer(1, 0.25 * cm))
 
-    total_tbl = Table([["TOTAL À PAYER", f"{montant_total:,.2f} {devise}"]], colWidths=[13 * cm, 3.7 * cm])
+    # --- Récapitulatif HT / TVA / TTC ---
+    if montant_ht is not None and taux_tva is not None:
+        montant_tva_calc = montant_ht * taux_tva / 100
+        recap = Table([
+            ["Sous-total HT", f"{montant_ht:,.2f} {devise}"],
+            [f"TVA ({taux_tva:g}%)", f"{montant_tva_calc:,.2f} {devise}"],
+        ], colWidths=[13 * cm, 3.7 * cm])
+        recap.setStyle(TableStyle([
+            ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(recap)
+
+    total_tbl = Table([["TOTAL TTC À PAYER", f"{montant_total:,.2f} {devise}"]], colWidths=[13 * cm, 3.7 * cm])
     total_tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#2b3542")),
+        ("BACKGROUND", (0, 0), (-1, -1), couleur_fonce),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.whitesmoke),
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 12),
@@ -314,7 +369,7 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
     elements.append(Spacer(1, 0.9 * cm))
 
     # --- Échéancier de paiement ---
-    elements.append(Paragraph("<b>Modalités de paiement</b>", style_b))
+    elements.append(Paragraph("<b>CONDITIONS DE PAIEMENT</b>", ParagraphStyle("cond_paie", parent=style_b, textColor=couleur_verte)))
     elements.append(Spacer(1, 0.2 * cm))
     tranches = demande.get("tranches") or []
     if tranches:
@@ -324,7 +379,7 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
             data_tr.append([f"Tranche {i + 1}", t.get("declencheur", ""), f"{pct}%", f"{montant_total * pct / 100:,.2f} {devise}"])
         tr_tbl = Table(data_tr, colWidths=[2.3 * cm, 8 * cm, 1.4 * cm, 5 * cm])
         tr_tbl.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#5b8def")),
+            ("BACKGROUND", (0, 0), (-1, 0), couleur_verte),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
@@ -333,16 +388,17 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
         elements.append(tr_tbl)
     else:
         elements.append(Paragraph("—", style_n))
-    elements.append(Spacer(1, 1.4 * cm))
+    elements.append(Spacer(1, 1.2 * cm))
 
     # --- Signature ---
+    elements.append(HRFlowable(width="100%", thickness=0.8, color=colors.HexColor("#c7c4ba"), spaceAfter=0.4 * cm))
     elements.append(Paragraph(
         "Date et signature de l'acheteur, précédée de la mention « Bon pour accord »", style_n
     ))
-    elements.append(Spacer(1, 2 * cm))
+    elements.append(Spacer(1, 1.8 * cm))
     elements.append(Paragraph(
         f"Document généré automatiquement le {datetime.now().strftime('%d/%m/%Y à %H:%M')} suite à la validation "
-        f"finale de la Direction Générale — Référence interne demande n°{demande['id']}.", styles["Italic"]
+        f"finale de la Direction Générale — {numero_bc} / {numero_da}.", styles["Italic"]
     ))
 
     doc.build(elements)
@@ -593,6 +649,18 @@ def init_db():
         action TEXT,
         details TEXT
     )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS fournisseurs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nom TEXT,
+        adresse TEXT,
+        telephone TEXT,
+        email TEXT,
+        nif TEXT,
+        rccm TEXT,
+        contact_commercial TEXT,
+        conditions_paiement TEXT,
+        date_ajout TEXT
+    )''')
     conn.commit()
     conn.close()
 
@@ -622,6 +690,11 @@ def migrer_schema():
         ("demandes", "annulee", "INTEGER DEFAULT 0"),
         ("demandes", "motif_annulation", "TEXT DEFAULT ''"),
         ("demandes", "avoir_json", "TEXT DEFAULT ''"),
+        # --- Nom du demandeur, HT/TVA/TTC, fournisseur enregistré ---
+        ("demandes", "nom_demandeur", "TEXT DEFAULT ''"),
+        ("demandes", "montant_ht", "REAL DEFAULT 0"),
+        ("demandes", "taux_tva", "REAL DEFAULT 18.0"),
+        ("demandes", "fournisseur_id", "INTEGER"),
     ]
     for table, colonne, type_def in migrations:
         cursor.execute(f"PRAGMA table_info({table})")
@@ -721,6 +794,7 @@ UTILISATEURS = {
     "DEP9": {"nom": "Commercial & Marketing", "mdp": "DEP123", "type": "standard", "dept": "Commercial & Marketing"},
     "DEP10": {"nom": "IT & Data", "mdp": "DEP123", "type": "standard", "dept": "IT & Data"},
     "DEP11": {"nom": "Logistique", "mdp": "DEP123", "type": "standard", "dept": "Logistique"},
+    "DEP14": {"nom": "Juridique & Conformité", "mdp": "DEP123", "type": "standard", "dept": "Juridique & Conformité"},
     "DEP12": {"nom": "Achats & Approvisionnements", "mdp": "DEP123", "type": "achats", "dept": "Achats & Approvisionnements"},
     "DEP13": {"nom": "Finance & Comptabilité", "mdp": "DEP123", "type": "finance", "dept": "Finance & Comptabilité"},
     "fondateur": {"nom": "Direction Générale - Pilotage Stratégique", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
@@ -868,8 +942,11 @@ if profil["type"] in ["finance", "fondateur"]:
 # ==========================================
 
 onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "📖 Journal de Bord", "🔍 Recherche Globale"]
-if profil["type"] in ["achats", "finance", "fondateur"]:
+if profil["type"] in ["achats", "finance", "fondateur"] or nom_dept == "Juridique & Conformité":
     onglets_possibles.append("📊 Pôle de Contrôle (Suivi Global)")
+if profil["type"] in ["achats", "finance", "fondateur"] or nom_dept == "Juridique & Conformité":
+    onglets_possibles.append("🗂️ Base Fournisseurs")
+if profil["type"] in ["achats", "finance", "fondateur"]:
     onglets_possibles.append("📈 Statistiques")
 if profil["type"] == "fondateur":
     onglets_possibles.append("🕵️ Audit & Traçabilité")
@@ -1039,6 +1116,78 @@ def afficher_module_cdc(nom_departement, type_profil):
 
 
 # ==========================================
+# MODULE BASE FOURNISSEURS
+# ==========================================
+
+def obtenir_fournisseurs():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, nom, adresse, telephone, email, nif, rccm, contact_commercial, conditions_paiement FROM fournisseurs ORDER BY nom ASC")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def obtenir_fournisseur_par_id(fournisseur_id):
+    if not fournisseur_id:
+        return None
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT nom, adresse, telephone, email, nif, rccm, contact_commercial, conditions_paiement FROM fournisseurs WHERE id = ?", (fournisseur_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"nom": row[0], "adresse": row[1], "telephone": row[2], "email": row[3], "nif": row[4], "rccm": row[5], "contact_commercial": row[6], "conditions_paiement": row[7]}
+
+def afficher_module_fournisseurs(nom_departement, type_profil):
+    st.subheader("🗂️ Base Fournisseurs")
+    st.caption("Informations légales et commerciales des fournisseurs, réutilisées automatiquement sur les bons de commande.")
+
+    fournisseurs = obtenir_fournisseurs()
+
+    if type_profil == "achats":
+        with st.expander("➕ Ajouter un nouveau fournisseur"):
+            with st.form("form_ajout_fournisseur", clear_on_submit=True):
+                nom_f = st.text_input("Nom de l'entreprise")
+                adresse_f = st.text_area("Adresse")
+                telephone_f = st.text_input("Téléphone")
+                email_f = st.text_input("Email")
+                nif_f = st.text_input("Numéro d'identification fiscale (NIF)")
+                rccm_f = st.text_input("Registre du Commerce (RCCM)")
+                contact_f = st.text_input("Contact commercial (nom)")
+                conditions_f = st.text_input("Conditions de paiement usuelles (ex: 50% commande / 50% réception)")
+                ajouter_f = st.form_submit_button("Enregistrer le fournisseur")
+                if ajouter_f:
+                    if not nom_f.strip():
+                        st.warning("Le nom de l'entreprise est obligatoire.")
+                    else:
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            """INSERT INTO fournisseurs (nom, adresse, telephone, email, nif, rccm, contact_commercial, conditions_paiement, date_ajout)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (nom_f, adresse_f, telephone_f, email_f, nif_f, rccm_f, contact_f, conditions_f, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                        )
+                        conn.commit()
+                        conn.close()
+                        notifier_succes("Fournisseur enregistré avec succès !", icon="✅")
+                        st.rerun()
+
+    st.markdown("---")
+    if not fournisseurs:
+        st.info("Aucun fournisseur enregistré pour le moment.")
+    else:
+        for f in fournisseurs:
+            f_id, f_nom, f_adresse, f_tel, f_email, f_nif, f_rccm, f_contact, f_conditions = f
+            with st.expander(f"🏢 {f_nom}"):
+                st.write(f"**Adresse :** {f_adresse or '—'}")
+                st.write(f"**Téléphone :** {f_tel or '—'} — **Email :** {f_email or '—'}")
+                st.write(f"**NIF :** {f_nif or '—'} — **RCCM :** {f_rccm or '—'}")
+                st.write(f"**Contact commercial :** {f_contact or '—'}")
+                st.write(f"**Conditions de paiement usuelles :** {f_conditions or '—'}")
+
+
+# ==========================================
 # 3. MODULE BESOINS & ACHATS (WORKFLOW ADAPTÉ 3 DÉPARTEMENTS PILOTES)
 # ==========================================
 
@@ -1054,6 +1203,7 @@ def afficher_module_achats(nom_departement, type_profil):
         
         if type_profil != "achats" and type_profil != "finance" and type_profil != "fondateur":
             with st.form("form_nouvelle_demande", clear_on_submit=True):
+                nom_demandeur_saisi = st.text_input("Nom du demandeur")
                 titre_demande = st.text_input("Intitulé de la demande")
                 besoins_specifiques = st.text_area("Besoins spécifiques de la demande")
                 cahier_charges_ref = st.text_input("Référence ou lien du Cahier des Charges / Étude associée (optionnel)")
@@ -1068,9 +1218,9 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn = get_db_connection()
                         cursor = conn.cursor()
                         cursor.execute(
-                            """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", 0.0, fournisseur_presenti, "En attente Achats", "Achats", "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "", 0)
+                            """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive, nom_demandeur)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", 0.0, fournisseur_presenti, "En attente Achats", "Achats", "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "", 0, nom_demandeur_saisi)
                         )
                         conn.commit()
                         conn.close()
@@ -1079,11 +1229,13 @@ def afficher_module_achats(nom_departement, type_profil):
 
         elif type_profil == "achats":
             with st.form("form_nouvelle_demande_achats", clear_on_submit=True):
+                nom_demandeur_saisi = st.text_input("Nom du demandeur")
                 titre_demande = st.text_input("Intitulé de la demande")
                 besoins_specifiques = st.text_area("Besoins spécifiques de la demande")
                 cahier_charges_ref = st.text_input("Référence ou lien associé (optionnel)")
                 fournisseur_retenu_saisie = st.text_input("Fournisseur retenu")
-                montant_defini = st.number_input("Prix définitif (€)", min_value=0.0, step=10.0)
+                montant_ht_saisi = st.number_input("Montant HT (€)", min_value=0.0, step=10.0)
+                taux_tva_saisi = st.number_input("Taux de TVA (%)", min_value=0.0, max_value=100.0, value=18.0, step=0.5)
                 fichier_devis = st.file_uploader("Joindre le devis / document justificatif (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"])
                 
                 soumettre_achats = st.form_submit_button("Soumettre la demande (Circuit direct Finance)")
@@ -1091,13 +1243,14 @@ def afficher_module_achats(nom_departement, type_profil):
                     if not titre_demande.strip() or not besoins_specifiques.strip():
                         st.warning("Veuillez renseigner l'intitulé et les besoins spécifiques.")
                     else:
+                        montant_ttc_calc = montant_ht_saisi * (1 + taux_tva_saisi / 100)
                         nom_fichier_devis = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_devis)
                         conn = get_db_connection()
                         cursor = conn.cursor()
                         cursor.execute(
-                            """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
-                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", montant_defini, fournisseur_retenu_saisie, "En attente Finance", "Finance", "Validé", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", fournisseur_retenu_saisie, "")
+                            """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive, nom_demandeur, montant_ht, taux_tva)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", montant_ttc_calc, fournisseur_retenu_saisie, "En attente Finance", "Finance", "Validé", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", fournisseur_retenu_saisie, nom_demandeur_saisi, montant_ht_saisi, taux_tva_saisi)
                         )
                         conn.commit()
                         conn.close()
@@ -1106,6 +1259,7 @@ def afficher_module_achats(nom_departement, type_profil):
 
         elif type_profil == "finance":
             with st.form("form_nouvelle_demande_finance", clear_on_submit=True):
+                nom_demandeur_saisi = st.text_input("Nom du demandeur")
                 titre_demande = st.text_input("Intitulé de la demande")
                 besoins_specifiques = st.text_area("Besoins spécifiques de la demande")
                 cahier_charges_ref = st.text_input("Référence ou lien associé (optionnel)")
@@ -1121,9 +1275,9 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn = get_db_connection()
                         cursor = conn.cursor()
                         cursor.execute(
-                            """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
-                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", 0.0, fournisseur_presenti, "En attente Achats", "Achats", "En attente", "Validé", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "", "")
+                            """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive, nom_demandeur)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", 0.0, fournisseur_presenti, "En attente Achats", "Achats", "En attente", "Validé", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "", nom_demandeur_saisi)
                         )
                         conn.commit()
                         conn.close()
@@ -1132,6 +1286,7 @@ def afficher_module_achats(nom_departement, type_profil):
 
         elif type_profil == "fondateur":
             with st.form("form_nouvelle_demande_dir", clear_on_submit=True):
+                nom_demandeur_saisi = st.text_input("Nom du demandeur")
                 titre_demande = st.text_input("Intitulé de la demande")
                 besoins_specifiques = st.text_area("Besoins spécifiques de la demande")
                 cahier_charges_ref = st.text_input("Référence ou lien associé (optionnel)")
@@ -1147,9 +1302,9 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn = get_db_connection()
                         cursor = conn.cursor()
                         cursor.execute(
-                            """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
-                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", 0.0, fournisseur_presenti, "En attente Achats", "Achats", "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "", "")
+                            """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive, nom_demandeur)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", 0.0, fournisseur_presenti, "En attente Achats", "Achats", "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", "", nom_demandeur_saisi)
                         )
                         conn.commit()
                         conn.close()
@@ -1177,9 +1332,18 @@ def afficher_module_achats(nom_departement, type_profil):
                         st.write(f"**Fournisseur pressenti (émetteur)** : {d_fournisseur or 'Aucun'}")
                         proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📎 Télécharger le devis / document initial", f"dl_achats_{did}")
                         
+                        noms_fournisseurs_enreg = [f[1] for f in obtenir_fournisseurs()]
+                        fournisseur_choisi = st.selectbox(
+                            "Sélectionner un fournisseur enregistré (optionnel — laisser sur Saisie libre sinon)",
+                            ["— Saisie libre —"] + noms_fournisseurs_enreg, key=f"select_fourn_{did}"
+                        )
+                        valeur_defaut_fournisseur = fournisseur_choisi if fournisseur_choisi != "— Saisie libre —" else (d_f_retenu or d_fournisseur)
+
                         with st.form(f"form_traitement_achats_{did}"):
-                            fournisseur_retenu_saisie = st.text_input("Définir le fournisseur retenu (Sourcing)", value=d_f_retenu or d_fournisseur)
-                            montant_definitif = st.number_input("Saisir le prix définitif négocié (€)", min_value=0.0, step=10.0, value=float(d_montant or 0.0))
+                            fournisseur_retenu_saisie = st.text_input("Définir le fournisseur retenu (Sourcing)", value=valeur_defaut_fournisseur)
+                            montant_ht_saisi = st.number_input("Montant HT (€)", min_value=0.0, step=10.0, value=float(d_montant or 0.0))
+                            taux_tva_saisi = st.number_input("Taux de TVA (%)", min_value=0.0, max_value=100.0, value=18.0, step=0.5, key=f"tva_{did}")
+                            st.caption(f"💰 Montant TTC calculé : {montant_ht_saisi * (1 + taux_tva_saisi / 100):,.2f} €")
                             nouveau_fichier_achat = st.file_uploader("Ajouter / Remplacer le devis achats consolidé (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"], key=f"f_achat_{did}")
 
                             st.markdown("**Modalités de paiement** (utilisées uniquement si la demande est validée)")
@@ -1199,6 +1363,10 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
                                 fich_u = enregistrer_fichier_securise(DOSSIER_UPLOADS, nouveau_fichier_achat) if nouveau_fichier_achat else d_fich
+                                montant_definitif = montant_ht_saisi * (1 + taux_tva_saisi / 100)
+                                cursor.execute("SELECT id FROM fournisseurs WHERE nom = ?", (fournisseur_retenu_saisie,))
+                                match_fournisseur = cursor.fetchone()
+                                fournisseur_id_associe = match_fournisseur[0] if match_fournisseur else None
                                 
                                 if action_achat == "Valider":
                                     if d_dept == "Finance & Comptabilité":
@@ -1228,13 +1396,13 @@ def afficher_module_achats(nom_departement, type_profil):
                                     
                                 if modalites_json is not None:
                                     cursor.execute(
-                                        """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ?, modalites_paiement_json = ? WHERE id = ?""",
-                                        (fournisseur_retenu_saisie, montant_definitif, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, modalites_json, did)
+                                        """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, montant_ht = ?, taux_tva = ?, fournisseur_id = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ?, modalites_paiement_json = ? WHERE id = ?""",
+                                        (fournisseur_retenu_saisie, montant_definitif, montant_ht_saisi, taux_tva_saisi, fournisseur_id_associe, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, modalites_json, did)
                                     )
                                 else:
                                     cursor.execute(
-                                        """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ? WHERE id = ?""",
-                                        (fournisseur_retenu_saisie, montant_definitif, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, did)
+                                        """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, montant_ht = ?, taux_tva = ?, fournisseur_id = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ? WHERE id = ?""",
+                                        (fournisseur_retenu_saisie, montant_definitif, montant_ht_saisi, taux_tva_saisi, fournisseur_id_associe, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, did)
                                     )
                                 conn.commit()
                                 conn.close()
@@ -1422,9 +1590,9 @@ def afficher_module_achats(nom_departement, type_profil):
         conn = get_db_connection()
         cursor = conn.cursor()
         if type_profil == "fondateur":
-            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise, statut_reception, receptions_json, suivi_litige FROM demandes WHERE archive = 0 ORDER BY id DESC")
+            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise, statut_reception, receptions_json, suivi_litige, nom_demandeur, montant_ht, taux_tva, fournisseur_id FROM demandes WHERE archive = 0 ORDER BY id DESC")
         else:
-            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise, statut_reception, receptions_json, suivi_litige FROM demandes WHERE departement = ? AND archive = 0 ORDER BY id DESC", (nom_departement,))
+            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise, statut_reception, receptions_json, suivi_litige, nom_demandeur, montant_ht, taux_tva, fournisseur_id FROM demandes WHERE departement = ? AND archive = 0 ORDER BY id DESC", (nom_departement,))
         demandes = cursor.fetchall()
         conn.close()
 
@@ -1432,7 +1600,7 @@ def afficher_module_achats(nom_departement, type_profil):
             st.info("Aucune demande active en cours.")
         else:
             for d in demandes:
-                did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu, d_bc_genere, d_bc_date, d_modalites, d_statut_paiement, d_devise, d_statut_reception, d_receptions_json, d_suivi_litige = d
+                did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu, d_bc_genere, d_bc_date, d_modalites, d_statut_paiement, d_devise, d_statut_reception, d_receptions_json, d_suivi_litige, d_nom_demandeur, d_montant_ht, d_taux_tva, d_fournisseur_id = d
                 try:
                     montant_aff = float(d_montant) if d_montant is not None else 0.0
                 except (ValueError, TypeError):
@@ -1464,10 +1632,12 @@ def afficher_module_achats(nom_departement, type_profil):
                             if d_bc_genere:
                                 st.markdown("---")
                                 st.success(f"📄 Bon de commande généré le {d_bc_date}")
+                                fourn_infos_gen = obtenir_fournisseur_par_id(d_fournisseur_id)
                                 pdf_bc = generer_pdf_bon_commande({
                                     "id": did, "departement": d_dept, "titre": d_titre, "besoins": d_cc,
-                                    "fournisseur": d_f_retenu or d_fournisseur, "montant": d_montant, "devise": d_devise,
-                                    "date_validation": d_bc_date, "tranches": parser_tranches(d_modalites),
+                                    "fournisseur": d_f_retenu or d_fournisseur, "montant": d_montant, "montant_ht": d_montant_ht,
+                                    "taux_tva": d_taux_tva, "devise": d_devise, "date_validation": d_bc_date, "date_creation": d_date,
+                                    "nom_demandeur": d_nom_demandeur, "fournisseur_infos": fourn_infos_gen, "tranches": parser_tranches(d_modalites),
                                 })
                                 st.download_button(
                                     "📥 Télécharger le bon de commande (PDF)", data=pdf_bc,
@@ -1535,13 +1705,15 @@ def afficher_module_achats(nom_departement, type_profil):
         if type_profil in ["achats", "finance", "fondateur"]:
             cursor.execute(
                 """SELECT id, departement, titre, cahier_charges, fournisseur_retenu, montant, devise, statut, bon_commande_date,
-                          modalites_paiement_json, statut_paiement, statut_reception, receptions_json, suivi_litige
+                          modalites_paiement_json, statut_paiement, statut_reception, receptions_json, suivi_litige,
+                          nom_demandeur, montant_ht, taux_tva, fournisseur_id, avis_achats, avis_finance, date
                    FROM demandes WHERE archive = 0 AND etape_actuelle = 'Exécution' ORDER BY id DESC"""
             )
         else:
             cursor.execute(
                 """SELECT id, departement, titre, cahier_charges, fournisseur_retenu, montant, devise, statut, bon_commande_date,
-                          modalites_paiement_json, statut_paiement, statut_reception, receptions_json, suivi_litige
+                          modalites_paiement_json, statut_paiement, statut_reception, receptions_json, suivi_litige,
+                          nom_demandeur, montant_ht, taux_tva, fournisseur_id, avis_achats, avis_finance, date
                    FROM demandes WHERE archive = 0 AND etape_actuelle = 'Exécution' AND departement = ? ORDER BY id DESC""",
                 (nom_departement,)
             )
@@ -1553,7 +1725,8 @@ def afficher_module_achats(nom_departement, type_profil):
         else:
             for de in demandes_execution:
                 (de_id, de_dept, de_titre, de_besoins, de_fourn, de_montant, de_devise, de_statut, de_bc_date,
-                 de_modalites, de_statut_paiement, de_statut_reception, de_receptions_json, de_suivi_litige) = de
+                 de_modalites, de_statut_paiement, de_statut_reception, de_receptions_json, de_suivi_litige,
+                 de_nom_demandeur, de_montant_ht, de_taux_tva, de_fournisseur_id, de_avis_achats, de_avis_finance, de_date_creation) = de
                 tranches = parser_tranches(de_modalites)
                 nb_payees = sum(1 for t in tranches if t.get("statut") == "payee")
                 nb_total = len(tranches) if tranches else 1
@@ -1573,16 +1746,33 @@ def afficher_module_achats(nom_departement, type_profil):
                         </div>
                     """, unsafe_allow_html=True)
                     with st.expander("🔍 Voir le détail complet"):
+                        fourn_infos = obtenir_fournisseur_par_id(de_fournisseur_id)
                         pdf_bc_suivi = generer_pdf_bon_commande({
                             "id": de_id, "departement": de_dept, "titre": de_titre, "besoins": de_besoins,
-                            "fournisseur": de_fourn, "montant": de_montant, "devise": de_devise,
-                            "date_validation": de_bc_date, "tranches": tranches,
+                            "fournisseur": de_fourn, "montant": de_montant, "montant_ht": de_montant_ht, "taux_tva": de_taux_tva,
+                            "devise": de_devise, "date_validation": de_bc_date, "date_creation": de_date_creation,
+                            "nom_demandeur": de_nom_demandeur, "fournisseur_infos": fourn_infos, "tranches": tranches,
                         })
                         st.download_button("📥 Télécharger le bon de commande (PDF)", data=pdf_bc_suivi,
                                             file_name=f"Bon_Commande_{de_id}.pdf", mime="application/pdf", key=f"dl_bc_suivi_{de_id}")
+
+                        st.write(f"**Avis Achats :** {de_avis_achats or '—'} | **Avis Finance :** {de_avis_finance or '—'}")
+                        if de_nom_demandeur:
+                            st.write(f"**Demandeur :** {de_nom_demandeur}")
+
+                        st.markdown("###### 💳 Détail des tranches de paiement")
                         for i, t in enumerate(tranches):
-                            etat = "✅ Payée" if t.get("statut") == "payee" else "🔒 En attente"
-                            st.write(f"- Tranche {i+1} ({t.get('pourcentage')}% — {t.get('declencheur')}) : {etat}")
+                            if t.get("statut") == "payee":
+                                st.success(
+                                    f"✅ Tranche {i+1} ({t.get('pourcentage')}% — {t.get('declencheur')}) — "
+                                    f"payée le {t.get('date_execution', '—')} — Réf. {t.get('reference', '—')} — "
+                                    f"Montant versé : {float(t.get('montant_verse', 0) or 0):,.2f} {de_devise}"
+                                    + (f" — Note : {t.get('note')}" if t.get('note') else "")
+                                )
+                                if t.get("preuve"):
+                                    proposer_telechargement(DOSSIER_UPLOADS, t.get("preuve"), "📎 Preuve du virement", f"dl_preuve_{de_id}_{i}")
+                            else:
+                                st.info(f"🔒 Tranche {i+1} ({t.get('pourcentage')}% — {t.get('declencheur')}) — en attente de paiement.")
 
                         st.markdown("---")
                         st.markdown("#### 🚚 Réception")
@@ -1804,7 +1994,8 @@ def afficher_dialogue_detail_demande(id_demande):
     cursor.execute(
         """SELECT departement, titre, cahier_charges, montant, fournisseur, fournisseur_retenu,
                   statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date,
-                  bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise
+                  bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise,
+                  nom_demandeur, montant_ht, taux_tva, fournisseur_id, statut_reception, receptions_json, suivi_litige
            FROM demandes WHERE id = ?""",
         (id_demande,)
     )
@@ -1817,10 +2008,11 @@ def afficher_dialogue_detail_demande(id_demande):
 
     (dept, titre, besoins, montant, fournisseur_pressenti, fournisseur_retenu,
      statut, etape, avis_achats, avis_finance, motif, date_demande,
-     bc_genere, bc_date, modalites_json, statut_paiement, devise) = d
+     bc_genere, bc_date, modalites_json, statut_paiement, devise,
+     nom_demandeur, montant_ht, taux_tva, fournisseur_id, statut_reception, receptions_json, suivi_litige) = d
 
     st.markdown(f"### #{id_demande} — {titre}")
-    st.markdown(f"**Département demandeur :** {dept}")
+    st.markdown(f"**Département demandeur :** {dept}" + (f" — Demandeur : {nom_demandeur}" if nom_demandeur else ""))
     st.markdown(f"**Date de la demande :** {date_demande}")
     st.markdown(f"**Statut :** {pill_statut(statut)}", unsafe_allow_html=True)
     st.markdown(f"**Étape actuelle :** {etape}")
@@ -1842,13 +2034,31 @@ def afficher_dialogue_detail_demande(id_demande):
         st.markdown("---")
         st.markdown(f"**📄 Bon de commande** généré le {bc_date}")
         st.markdown(f"**💳 Statut paiement :** {statut_paiement} — {formater_modalites_paiement(modalites_json)}")
+        for i, t in enumerate(parser_tranches(modalites_json)):
+            if t.get("statut") == "payee":
+                st.caption(f"✅ Tranche {i+1} payée le {t.get('date_execution','—')} — Réf. {t.get('reference','—')} — {float(t.get('montant_verse', 0) or 0):,.2f} {devise}")
+        fourn_infos_dialog = obtenir_fournisseur_par_id(fournisseur_id)
         pdf_bc = generer_pdf_bon_commande({
             "id": id_demande, "departement": dept, "titre": titre, "besoins": besoins,
-            "fournisseur": fournisseur_retenu or fournisseur_pressenti, "montant": montant, "devise": devise,
-            "date_validation": bc_date, "tranches": parser_tranches(modalites_json),
+            "fournisseur": fournisseur_retenu or fournisseur_pressenti, "montant": montant, "montant_ht": montant_ht,
+            "taux_tva": taux_tva, "devise": devise, "date_validation": bc_date, "date_creation": date_demande,
+            "nom_demandeur": nom_demandeur, "fournisseur_infos": fourn_infos_dialog, "tranches": parser_tranches(modalites_json),
         })
         st.download_button("📥 Télécharger le bon de commande (PDF)", data=pdf_bc,
                             file_name=f"Bon_Commande_{id_demande}.pdf", mime="application/pdf", key=f"dl_bc_dialog_{id_demande}")
+
+    if statut_reception:
+        st.markdown("---")
+        st.markdown(f"**🚚 Statut de réception :** {statut_reception}")
+        if suivi_litige:
+            st.info(f"📝 Suivi Achats : {suivi_litige}")
+        if statut_reception == "Clôturée":
+            pdf_br = generer_pdf_bon_reception({
+                "id": id_demande, "departement": dept, "titre": titre, "fournisseur": fournisseur_retenu or fournisseur_pressenti,
+                "receptions": parser_receptions(receptions_json), "statut_final": statut, "suivi_litige": suivi_litige, "date_cloture": date_demande,
+            })
+            st.download_button("📥 Télécharger le bon de réception (PDF)", data=pdf_br,
+                                file_name=f"Bon_Reception_{id_demande}.pdf", mime="application/pdf", key=f"dl_br_dialog_{id_demande}")
 
 
 # ==========================================
@@ -2018,6 +2228,8 @@ elif st.session_state.tab_actif == "📖 Journal de Bord":
     afficher_module_journal_bord(nom_dept)
 elif st.session_state.tab_actif == "📊 Pôle de Contrôle (Suivi Global)":
     afficher_module_suivi_global_controle()
+elif st.session_state.tab_actif == "🗂️ Base Fournisseurs":
+    afficher_module_fournisseurs(nom_dept, profil["type"])
 elif st.session_state.tab_actif == "🔍 Recherche Globale":
     afficher_module_recherche_globale(nom_dept, profil["type"])
 elif st.session_state.tab_actif == "📈 Statistiques":
