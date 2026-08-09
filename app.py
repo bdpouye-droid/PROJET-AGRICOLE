@@ -304,8 +304,6 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
             lignes_fournisseur.append(Paragraph(f"{lib_rc} : {fourn['rccm']}", style_n))
         if fourn.get("contact_commercial"):
             lignes_fournisseur.append(Paragraph(f"Contact : {fourn['contact_commercial']}", style_n))
-    else:
-        lignes_fournisseur.append(Paragraph("<i>Coordonnées non enregistrées dans la Base Fournisseurs.</i>", style_n))
 
     bloc_acheteur = [
         Paragraph("<b>ACHETEUR</b>", style_b),
@@ -324,7 +322,22 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
         ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
     ]))
     elements.append(parties)
-    elements.append(Spacer(1, 0.9 * cm))
+    elements.append(Spacer(1, 0.3 * cm))
+
+    if not fourn:
+        alerte = Table([["⚠ Fournisseur non enregistré dans la Base Fournisseurs — coordonnées légales absentes du présent document."]], colWidths=[16.7 * cm])
+        alerte.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f7dcc4")),
+            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#8a4b12")),
+            ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#e0a862")),
+            ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(alerte)
+        elements.append(Spacer(1, 0.3 * cm))
+    elements.append(Spacer(1, 0.6 * cm))
 
     # --- Objet de la commande ---
     objet = Table([
@@ -369,18 +382,21 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
     elements.append(total_tbl)
     elements.append(Spacer(1, 0.3 * cm))
     elements.append(Paragraph(f"<i>Arrêté à la somme de : {montant_en_lettres(montant_total, devise)}.</i>", style_n))
-    elements.append(Spacer(1, 0.9 * cm))
+    elements.append(Spacer(1, 0.8 * cm))
 
-    # --- Échéancier de paiement ---
+    # --- Échéancier de paiement (simplifié) ---
     elements.append(Paragraph("<b>CONDITIONS DE PAIEMENT</b>", ParagraphStyle("cond_paie", parent=style_b, textColor=couleur_verte)))
     elements.append(Spacer(1, 0.2 * cm))
     tranches = demande.get("tranches") or []
-    if tranches:
-        data_tr = [["Tranche", "Déclencheur", "%", "Montant"]]
+    if len(tranches) == 1:
+        t = tranches[0]
+        elements.append(Paragraph(f"Conditions : {t.get('pourcentage', 0)}% {libelle_court_declencheur(t.get('declencheur', ''))}.", style_n))
+    elif tranches:
+        data_tr = [["Tranche", "Conditions", "Montant"]]
         for i, t in enumerate(tranches):
             pct = t.get("pourcentage", 0)
-            data_tr.append([f"Tranche {i + 1}", t.get("declencheur", ""), f"{pct}%", f"{montant_total * pct / 100:,.2f} {devise}"])
-        tr_tbl = Table(data_tr, colWidths=[2.3 * cm, 8 * cm, 1.4 * cm, 5 * cm])
+            data_tr.append([f"{i + 1}", f"{pct}% {libelle_court_declencheur(t.get('declencheur', ''))}", f"{montant_total * pct / 100:,.2f} {devise}"])
+        tr_tbl = Table(data_tr, colWidths=[1.5 * cm, 10.2 * cm, 5 * cm])
         tr_tbl.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), couleur_verte),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
@@ -391,17 +407,43 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
         elements.append(tr_tbl)
     else:
         elements.append(Paragraph("—", style_n))
+    elements.append(Spacer(1, 0.8 * cm))
+
+    # --- Traçabilité du workflow ---
+    elements.append(Paragraph("<b>SUIVI DE VALIDATION</b>", ParagraphStyle("suivi_wf", parent=style_b, textColor=couleur_verte)))
+    elements.append(Spacer(1, 0.2 * cm))
+    avis_achats = demande.get("avis_achats") or "En attente"
+    avis_finance = demande.get("avis_finance") or "En attente"
+    def _puce(label, valeur):
+        ok = valeur not in ("En attente", "", None)
+        symbole = "✔" if ok else "○"
+        couleur_hex = "#7c9473" if ok else "#999999"
+        return Paragraph(f"<font color='{couleur_hex}'>{symbole}</font> <b>{label}</b> — {valeur}", style_n)
+    data_wf = [[
+        _puce("Demandeur", demande.get("nom_demandeur") or demande.get("departement", "—")),
+        _puce("Validation Achats", avis_achats),
+        _puce("Validation Finance", avis_finance),
+    ]]
+    wf_tbl = Table(data_wf, colWidths=[5.57 * cm, 5.57 * cm, 5.57 * cm])
+    wf_tbl.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e0d8")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e0d8")),
+        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(wf_tbl)
     elements.append(Spacer(1, 1.2 * cm))
 
-    # --- Signature ---
+    # --- Signature (zone unique) ---
     elements.append(HRFlowable(width="100%", thickness=0.8, color=colors.HexColor("#c7c4ba"), spaceAfter=0.4 * cm))
     elements.append(Paragraph(
         "Date et signature de l'acheteur, précédée de la mention « Bon pour accord »", style_n
     ))
-    elements.append(Spacer(1, 1.8 * cm))
+    elements.append(Spacer(1, 1.6 * cm))
     elements.append(Paragraph(
-        f"Document généré automatiquement le {datetime.now().strftime('%d/%m/%Y à %H:%M')} suite à la validation "
-        f"finale de la Direction Générale — {numero_bc} / {numero_da}.", styles["Italic"]
+        f"Document {numero_bc} (réf. {numero_da}) généré automatiquement le {datetime.now().strftime('%d/%m/%Y à %H:%M')} "
+        f"suite à la validation finale de la Direction Générale.", styles["Italic"]
     ))
 
     doc.build(elements)
@@ -486,6 +528,75 @@ def generer_pdf_bon_reception(demande: dict) -> bytes:
     elements.append(Paragraph(
         f"Document généré automatiquement le {datetime.now().strftime('%d/%m/%Y à %H:%M')} — clôturé par les Achats, "
         f"trace interne de réception, n'engage pas le fournisseur.", styles["Italic"]
+    ))
+
+    doc.build(elements)
+    return buffer.getvalue()
+
+def generer_pdf_quittance_paiement(info: dict) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
+    styles = getSampleStyleSheet()
+    style_n = styles["Normal"]
+    style_b = ParagraphStyle("bloc_bold_q", parent=style_n, fontName="Helvetica-Bold")
+    style_titre = ParagraphStyle("titre_q", parent=styles["Title"], fontSize=18, textColor=colors.HexColor("#2b3542"))
+    couleur_verte = colors.HexColor("#7c9473")
+
+    numero_q = f"QP-{datetime.now().year}-{int(info['id']):05d}-{info.get('tranche_num', 1)}"
+    elements = []
+
+    if os.path.exists(CHEMIN_LOGO):
+        logo_cell = Image(CHEMIN_LOGO, width=3.2 * cm, height=3.2 * cm, kind="proportional")
+    else:
+        logo_cell = Paragraph("<b>NATIKA GROUP</b>", styles["Heading2"])
+    bloc_titre = [
+        Paragraph("QUITTANCE DE PAIEMENT", style_titre),
+        Paragraph(f"<b>N° {numero_q}</b>", style_n),
+        Paragraph(f"Émise le : {datetime.now().strftime('%d/%m/%Y')}", style_n),
+    ]
+    entete = Table([[logo_cell, bloc_titre]], colWidths=[4 * cm, 12.7 * cm])
+    entete.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    elements.append(entete)
+    elements.append(Spacer(1, 0.3 * cm))
+    elements.append(HRFlowable(width="100%", thickness=1.5, color=couleur_verte, spaceAfter=0.6 * cm))
+
+    elements.append(Paragraph(
+        "Ce document est à faire signer par le fournisseur pour attester la réception du paiement "
+        "correspondant à la tranche décrite ci-dessous, puis à réimporter signé dans le dossier de la demande.",
+        style_n
+    ))
+    elements.append(Spacer(1, 0.6 * cm))
+
+    data = [
+        ["Fournisseur", info.get("fournisseur", "—")],
+        ["Référence demande", f"n°{info['id']} — {info.get('titre', '')}"],
+        ["Référence bon de commande", info.get("numero_bc", "—")],
+        ["Tranche concernée", f"{info.get('pourcentage', 0)}% — {libelle_court_declencheur(info.get('declencheur', ''))}"],
+        ["Montant versé", f"{float(info.get('montant_verse', 0) or 0):,.2f} {info.get('devise', 'EUR')}"],
+        ["Référence du virement", info.get("reference", "—")],
+        ["Date d'exécution", info.get("date_execution", "—")],
+    ]
+    t = Table(data, colWidths=[6 * cm, 10.7 * cm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), couleur_verte),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(t)
+    elements.append(Spacer(1, 1.6 * cm))
+
+    elements.append(HRFlowable(width="100%", thickness=0.8, color=colors.HexColor("#c7c4ba"), spaceAfter=0.4 * cm))
+    elements.append(Paragraph(
+        "Nom, cachet et signature du fournisseur, précédés de la mention « Reçu pour solde de tout compte sur cette tranche »",
+        style_n
+    ))
+    elements.append(Spacer(1, 2.2 * cm))
+    elements.append(Paragraph(
+        f"Document {numero_q} généré automatiquement par Natika Group le {datetime.now().strftime('%d/%m/%Y à %H:%M')}.",
+        styles["Italic"]
     ))
 
     doc.build(elements)
@@ -600,14 +711,21 @@ PAYS_DISPONIBLES = list(PAYS_LIBELLES_IDENTIFIANTS.keys()) + ["Autre"]
 def libelles_identifiants_pays(pays: str):
     return PAYS_LIBELLES_IDENTIFIANTS.get(pays, ("Identifiant fiscal", "Identifiant registre de commerce"))
 
+DECLENCHEUR_LIBELLE_COURT = {
+    "Acompte à la signature (validation Direction)": "acompte à la commande",
+    "À l'envoi du bon de commande": "à la commande",
+    "À la réception": "à la réception",
+    "Date fixe / Autre": "selon accord",
+}
+
+def libelle_court_declencheur(declencheur: str) -> str:
+    return DECLENCHEUR_LIBELLE_COURT.get(declencheur, declencheur)
+
 def formater_modalites_paiement(modalites_json: str) -> str:
-    try:
-        tranches = json.loads(modalites_json) if modalites_json else []
-    except (json.JSONDecodeError, TypeError):
-        return "—"
+    tranches = parser_tranches(modalites_json)
     if not tranches:
         return "—"
-    return " | ".join([f"{t.get('pourcentage', 0)}% — {t.get('declencheur', '')}" for t in tranches])
+    return " · ".join([f"{t.get('pourcentage', 0)}% {libelle_court_declencheur(t.get('declencheur', ''))}" for t in tranches])
 
 def fournisseur_affiche(fournisseur_propose: str, fournisseur_retenu: str) -> str:
     if fournisseur_retenu:
@@ -1721,6 +1839,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                     "fournisseur": d_f_retenu or d_fournisseur, "montant": d_montant, "montant_ht": d_montant_ht,
                                     "taux_tva": d_taux_tva, "devise": d_devise, "date_validation": d_bc_date, "date_creation": d_date,
                                     "nom_demandeur": d_nom_demandeur, "fournisseur_infos": fourn_infos_gen, "tranches": parser_tranches(d_modalites),
+                                    "avis_achats": d_avis_a, "avis_finance": d_avis_f,
                                 })
                                 st.download_button(
                                     "📥 Télécharger le bon de commande (PDF)", data=pdf_bc,
@@ -1836,6 +1955,7 @@ def afficher_module_achats(nom_departement, type_profil):
                             "fournisseur": de_fourn, "montant": de_montant, "montant_ht": de_montant_ht, "taux_tva": de_taux_tva,
                             "devise": de_devise, "date_validation": de_bc_date, "date_creation": de_date_creation,
                             "nom_demandeur": de_nom_demandeur, "fournisseur_infos": fourn_infos, "tranches": tranches,
+                            "avis_achats": de_avis_achats, "avis_finance": de_avis_finance,
                         })
                         st.download_button("📥 Télécharger le bon de commande (PDF)", data=pdf_bc_suivi,
                                             file_name=f"Bon_Commande_{de_id}.pdf", mime="application/pdf", key=f"dl_bc_suivi_{de_id}")
@@ -1855,6 +1975,35 @@ def afficher_module_achats(nom_departement, type_profil):
                                 )
                                 if t.get("preuve"):
                                     proposer_telechargement(DOSSIER_UPLOADS, t.get("preuve"), "📎 Preuve du virement", f"dl_preuve_{de_id}_{i}")
+
+                                pdf_quittance = generer_pdf_quittance_paiement({
+                                    "id": de_id, "titre": de_titre, "fournisseur": de_fourn,
+                                    "numero_bc": f"BC-{(de_bc_date or '')[:4] or datetime.now().year}-{de_id:05d}",
+                                    "tranche_num": i + 1, "pourcentage": t.get("pourcentage"), "declencheur": t.get("declencheur"),
+                                    "montant_verse": t.get("montant_verse", 0), "devise": de_devise,
+                                    "reference": t.get("reference"), "date_execution": t.get("date_execution"),
+                                })
+                                col_q1, col_q2 = st.columns(2)
+                                with col_q1:
+                                    st.download_button("📄 Télécharger la quittance à faire signer", data=pdf_quittance,
+                                                        file_name=f"Quittance_{de_id}_T{i+1}.pdf", mime="application/pdf", key=f"dl_quitt_{de_id}_{i}")
+                                with col_q2:
+                                    if t.get("quittance_signee"):
+                                        proposer_telechargement(DOSSIER_UPLOADS, t.get("quittance_signee"), "✅ Quittance signée (reçue)", f"dl_quitt_signee_{de_id}_{i}")
+                                    else:
+                                        with st.form(f"form_quittance_{de_id}_{i}"):
+                                            fichier_quittance = st.file_uploader("Importer la quittance signée par le fournisseur", type=["pdf", "png", "jpg", "jpeg"], key=f"up_quitt_{de_id}_{i}")
+                                            valider_quittance = st.form_submit_button("Enregistrer la quittance signée")
+                                            if valider_quittance and fichier_quittance:
+                                                fich_q = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_quittance)
+                                                tranches[i]["quittance_signee"] = fich_q
+                                                conn_q = get_db_connection()
+                                                cur_q = conn_q.cursor()
+                                                cur_q.execute("UPDATE demandes SET modalites_paiement_json = ? WHERE id = ?", (json.dumps(tranches), de_id))
+                                                conn_q.commit()
+                                                conn_q.close()
+                                                notifier_succes("Quittance signée enregistrée !", icon="✅")
+                                                st.rerun()
                             else:
                                 st.info(f"🔒 Tranche {i+1} ({t.get('pourcentage')}% — {t.get('declencheur')}) — en attente de paiement.")
 
@@ -2129,6 +2278,7 @@ def afficher_dialogue_detail_demande(id_demande):
             "fournisseur": fournisseur_retenu or fournisseur_pressenti, "montant": montant, "montant_ht": montant_ht,
             "taux_tva": taux_tva, "devise": devise, "date_validation": bc_date, "date_creation": date_demande,
             "nom_demandeur": nom_demandeur, "fournisseur_infos": fourn_infos_dialog, "tranches": parser_tranches(modalites_json),
+            "avis_achats": avis_achats, "avis_finance": avis_finance,
         })
         st.download_button("📥 Télécharger le bon de commande (PDF)", data=pdf_bc,
                             file_name=f"Bon_Commande_{id_demande}.pdf", mime="application/pdf", key=f"dl_bc_dialog_{id_demande}")
