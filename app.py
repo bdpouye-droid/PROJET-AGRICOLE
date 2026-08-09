@@ -289,6 +289,9 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
     fourn = demande.get("fournisseur_infos") or {}
     lignes_fournisseur = [Paragraph("<b>FOURNISSEUR</b>", style_b), Paragraph(demande.get("fournisseur") or "—", style_n)]
     if fourn:
+        lib_fiscal, lib_rc = libelles_identifiants_pays(fourn.get("pays"))
+        if fourn.get("pays"):
+            lignes_fournisseur.append(Paragraph(f"Pays : {fourn['pays']}", style_n))
         if fourn.get("adresse"):
             lignes_fournisseur.append(Paragraph(f"Adresse : {fourn['adresse']}", style_n))
         if fourn.get("telephone"):
@@ -296,9 +299,9 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
         if fourn.get("email"):
             lignes_fournisseur.append(Paragraph(f"Email : {fourn['email']}", style_n))
         if fourn.get("nif"):
-            lignes_fournisseur.append(Paragraph(f"NIF : {fourn['nif']}", style_n))
+            lignes_fournisseur.append(Paragraph(f"{lib_fiscal} : {fourn['nif']}", style_n))
         if fourn.get("rccm"):
-            lignes_fournisseur.append(Paragraph(f"RCCM : {fourn['rccm']}", style_n))
+            lignes_fournisseur.append(Paragraph(f"{lib_rc} : {fourn['rccm']}", style_n))
         if fourn.get("contact_commercial"):
             lignes_fournisseur.append(Paragraph(f"Contact : {fourn['contact_commercial']}", style_n))
     else:
@@ -458,6 +461,27 @@ def generer_pdf_bon_reception(demande: dict) -> bytes:
     elements.append(Paragraph(f"<b>Statut final :</b> {demande.get('statut_final', '—')}", style_n))
     if demande.get("suivi_litige"):
         elements.append(Paragraph(f"<b>Suivi / commentaire Achats :</b> {demande.get('suivi_litige')}", style_n))
+    elements.append(Spacer(1, 0.6 * cm))
+
+    tranches = demande.get("tranches") or []
+    tranches_payees = [t for t in tranches if t.get("statut") == "payee"]
+    if tranches_payees:
+        elements.append(Paragraph("<b>Résumé des paiements</b>", style_b))
+        elements.append(Spacer(1, 0.2 * cm))
+        data_p = [["Tranche", "Référence", "Date", "Montant versé"]]
+        for i, t in enumerate(tranches):
+            if t.get("statut") == "payee":
+                data_p.append([f"Tranche {i + 1}", t.get("reference", "—"), t.get("date_execution", "—"),
+                                f"{float(t.get('montant_verse', 0) or 0):,.2f} {demande.get('devise', 'EUR')}"])
+        p_tbl = Table(data_p, colWidths=[2.5 * cm, 4.5 * cm, 3 * cm, 6.7 * cm])
+        p_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#5b8def")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        elements.append(p_tbl)
     elements.append(Spacer(1, 1.2 * cm))
     elements.append(Paragraph(
         f"Document généré automatiquement le {datetime.now().strftime('%d/%m/%Y à %H:%M')} — clôturé par les Achats, "
@@ -563,6 +587,18 @@ def parser_tranches(modalites_json) -> list:
 
 def parser_receptions(receptions_json) -> list:
     return parser_tranches(receptions_json)
+
+PAYS_LIBELLES_IDENTIFIANTS = {
+    "Sénégal": ("NIF (Identifiant fiscal)", "RCCM (Registre du Commerce)"),
+    "France": ("SIRET (Identifiant fiscal)", "SIREN (Registre du Commerce)"),
+    "Côte d'Ivoire": ("Compte Contribuable", "RCCM (Registre du Commerce)"),
+    "Mali": ("NIF (Identifiant fiscal)", "RCCM (Registre du Commerce)"),
+    "Maroc": ("Identifiant Fiscal (IF)", "Registre du Commerce (RC)"),
+}
+PAYS_DISPONIBLES = list(PAYS_LIBELLES_IDENTIFIANTS.keys()) + ["Autre"]
+
+def libelles_identifiants_pays(pays: str):
+    return PAYS_LIBELLES_IDENTIFIANTS.get(pays, ("Identifiant fiscal", "Identifiant registre de commerce"))
 
 def formater_modalites_paiement(modalites_json: str) -> str:
     try:
@@ -695,6 +731,8 @@ def migrer_schema():
         ("demandes", "montant_ht", "REAL DEFAULT 0"),
         ("demandes", "taux_tva", "REAL DEFAULT 18.0"),
         ("demandes", "fournisseur_id", "INTEGER"),
+        # --- Pays du fournisseur (libellés d'identifiants adaptatifs) ---
+        ("fournisseurs", "pays", "TEXT DEFAULT ''"),
     ]
     for table, colonne, type_def in migrations:
         cursor.execute(f"PRAGMA table_info({table})")
@@ -946,6 +984,8 @@ if profil["type"] in ["achats", "finance", "fondateur"] or nom_dept == "Juridiqu
     onglets_possibles.append("📊 Pôle de Contrôle (Suivi Global)")
 if profil["type"] in ["achats", "finance", "fondateur"] or nom_dept == "Juridique & Conformité":
     onglets_possibles.append("🗂️ Base Fournisseurs")
+if profil["type"] in ["finance", "fondateur"] or nom_dept == "Juridique & Conformité":
+    onglets_possibles.append("💳 Historique des Virements")
 if profil["type"] in ["achats", "finance", "fondateur"]:
     onglets_possibles.append("📈 Statistiques")
 if profil["type"] == "fondateur":
@@ -1122,7 +1162,7 @@ def afficher_module_cdc(nom_departement, type_profil):
 def obtenir_fournisseurs():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, nom, adresse, telephone, email, nif, rccm, contact_commercial, conditions_paiement FROM fournisseurs ORDER BY nom ASC")
+    cursor.execute("SELECT id, nom, adresse, telephone, email, nif, rccm, contact_commercial, conditions_paiement, pays FROM fournisseurs ORDER BY nom ASC")
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -1132,12 +1172,12 @@ def obtenir_fournisseur_par_id(fournisseur_id):
         return None
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT nom, adresse, telephone, email, nif, rccm, contact_commercial, conditions_paiement FROM fournisseurs WHERE id = ?", (fournisseur_id,))
+    cursor.execute("SELECT nom, adresse, telephone, email, nif, rccm, contact_commercial, conditions_paiement, pays FROM fournisseurs WHERE id = ?", (fournisseur_id,))
     row = cursor.fetchone()
     conn.close()
     if not row:
         return None
-    return {"nom": row[0], "adresse": row[1], "telephone": row[2], "email": row[3], "nif": row[4], "rccm": row[5], "contact_commercial": row[6], "conditions_paiement": row[7]}
+    return {"nom": row[0], "adresse": row[1], "telephone": row[2], "email": row[3], "nif": row[4], "rccm": row[5], "contact_commercial": row[6], "conditions_paiement": row[7], "pays": row[8]}
 
 def afficher_module_fournisseurs(nom_departement, type_profil):
     st.subheader("🗂️ Base Fournisseurs")
@@ -1147,13 +1187,15 @@ def afficher_module_fournisseurs(nom_departement, type_profil):
 
     if type_profil == "achats":
         with st.expander("➕ Ajouter un nouveau fournisseur"):
+            pays_choisi = st.selectbox("Pays", PAYS_DISPONIBLES, key="pays_nouveau_fournisseur")
+            libelle_fiscal, libelle_rc = libelles_identifiants_pays(pays_choisi)
             with st.form("form_ajout_fournisseur", clear_on_submit=True):
                 nom_f = st.text_input("Nom de l'entreprise")
                 adresse_f = st.text_area("Adresse")
                 telephone_f = st.text_input("Téléphone")
                 email_f = st.text_input("Email")
-                nif_f = st.text_input("Numéro d'identification fiscale (NIF)")
-                rccm_f = st.text_input("Registre du Commerce (RCCM)")
+                nif_f = st.text_input(libelle_fiscal)
+                rccm_f = st.text_input(libelle_rc)
                 contact_f = st.text_input("Contact commercial (nom)")
                 conditions_f = st.text_input("Conditions de paiement usuelles (ex: 50% commande / 50% réception)")
                 ajouter_f = st.form_submit_button("Enregistrer le fournisseur")
@@ -1164,9 +1206,9 @@ def afficher_module_fournisseurs(nom_departement, type_profil):
                         conn = get_db_connection()
                         cursor = conn.cursor()
                         cursor.execute(
-                            """INSERT INTO fournisseurs (nom, adresse, telephone, email, nif, rccm, contact_commercial, conditions_paiement, date_ajout)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (nom_f, adresse_f, telephone_f, email_f, nif_f, rccm_f, contact_f, conditions_f, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                            """INSERT INTO fournisseurs (nom, adresse, telephone, email, nif, rccm, contact_commercial, conditions_paiement, date_ajout, pays)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (nom_f, adresse_f, telephone_f, email_f, nif_f, rccm_f, contact_f, conditions_f, datetime.now().strftime("%Y-%m-%d %H:%M"), pays_choisi)
                         )
                         conn.commit()
                         conn.close()
@@ -1178,13 +1220,54 @@ def afficher_module_fournisseurs(nom_departement, type_profil):
         st.info("Aucun fournisseur enregistré pour le moment.")
     else:
         for f in fournisseurs:
-            f_id, f_nom, f_adresse, f_tel, f_email, f_nif, f_rccm, f_contact, f_conditions = f
-            with st.expander(f"🏢 {f_nom}"):
+            f_id, f_nom, f_adresse, f_tel, f_email, f_nif, f_rccm, f_contact, f_conditions, f_pays = f
+            lib_fiscal, lib_rc = libelles_identifiants_pays(f_pays)
+            with st.expander(f"🏢 {f_nom}" + (f" ({f_pays})" if f_pays else "")):
                 st.write(f"**Adresse :** {f_adresse or '—'}")
                 st.write(f"**Téléphone :** {f_tel or '—'} — **Email :** {f_email or '—'}")
-                st.write(f"**NIF :** {f_nif or '—'} — **RCCM :** {f_rccm or '—'}")
+                st.write(f"**{lib_fiscal} :** {f_nif or '—'} — **{lib_rc} :** {f_rccm or '—'}")
                 st.write(f"**Contact commercial :** {f_contact or '—'}")
                 st.write(f"**Conditions de paiement usuelles :** {f_conditions or '—'}")
+
+
+def afficher_module_historique_virements():
+    st.subheader("💳 Historique des Virements")
+    st.caption("Registre chronologique de tous les virements confirmés, tous départements confondus.")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT id, departement, titre, fournisseur_retenu, fournisseur, modalites_paiement_json, devise
+           FROM demandes WHERE modalites_paiement_json IS NOT NULL AND modalites_paiement_json != '' AND modalites_paiement_json != '[]'"""
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    lignes_virements = []
+    for did, dept, titre, f_retenu, f_pressenti, modalites_json, devise in rows:
+        for i, t in enumerate(parser_tranches(modalites_json)):
+            if t.get("statut") == "payee":
+                lignes_virements.append({
+                    "Date": t.get("date_execution", ""),
+                    "Référence": t.get("reference", ""),
+                    "Demande": f"#{did} — {titre}",
+                    "Département": dept,
+                    "Fournisseur": f_retenu or f_pressenti or "—",
+                    "Tranche": f"{i + 1} ({t.get('pourcentage')}% — {t.get('declencheur')})",
+                    "Montant versé": float(t.get("montant_verse", 0) or 0),
+                    "Devise": devise or "EUR",
+                    "Note": t.get("note", ""),
+                })
+
+    if not lignes_virements:
+        st.info("Aucun virement confirmé pour le moment.")
+        return
+
+    df_vir = pd.DataFrame(lignes_virements).sort_values("Date", ascending=False)
+    total_vir = df_vir["Montant versé"].sum()
+    st.metric("Total des virements enregistrés", f"{total_vir:,.2f} {df_vir['Devise'].iloc[0] if len(df_vir) else 'EUR'}")
+    st.dataframe(df_vir, use_container_width=True, hide_index=True)
+    afficher_boutons_export(df_vir, "Historique_Virements", "Historique des Virements")
 
 
 # ==========================================
@@ -1652,6 +1735,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                     "id": did, "departement": d_dept, "titre": d_titre, "fournisseur": d_f_retenu or d_fournisseur,
                                     "receptions": parser_receptions(d_receptions_json), "statut_final": d_statut,
                                     "suivi_litige": d_suivi_litige, "date_cloture": d_date,
+                                    "tranches": parser_tranches(d_modalites), "devise": d_devise,
                                 })
                                 st.download_button(
                                     "📥 Télécharger le bon de réception (PDF)", data=pdf_br,
@@ -1826,6 +1910,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                         "id": de_id, "departement": de_dept, "titre": de_titre, "fournisseur": de_fourn,
                                         "receptions": receptions, "statut_final": "Clôturée", "suivi_litige": de_suivi_litige,
                                         "date_cloture": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                        "tranches": tranches, "devise": de_devise,
                                     })
                                     conn_c = get_db_connection()
                                     cur_c = conn_c.cursor()
@@ -1855,6 +1940,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                             "id": de_id, "departement": de_dept, "titre": de_titre, "fournisseur": de_fourn,
                                             "receptions": receptions, "statut_final": "Clôturée avec réserve", "suivi_litige": de_suivi_litige,
                                             "date_cloture": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                            "tranches": tranches, "devise": de_devise,
                                         })
                                         conn_c = get_db_connection()
                                         cur_c = conn_c.cursor()
@@ -2056,6 +2142,7 @@ def afficher_dialogue_detail_demande(id_demande):
             pdf_br = generer_pdf_bon_reception({
                 "id": id_demande, "departement": dept, "titre": titre, "fournisseur": fournisseur_retenu or fournisseur_pressenti,
                 "receptions": parser_receptions(receptions_json), "statut_final": statut, "suivi_litige": suivi_litige, "date_cloture": date_demande,
+                "tranches": parser_tranches(modalites_json), "devise": devise,
             })
             st.download_button("📥 Télécharger le bon de réception (PDF)", data=pdf_br,
                                 file_name=f"Bon_Reception_{id_demande}.pdf", mime="application/pdf", key=f"dl_br_dialog_{id_demande}")
@@ -2230,6 +2317,8 @@ elif st.session_state.tab_actif == "📊 Pôle de Contrôle (Suivi Global)":
     afficher_module_suivi_global_controle()
 elif st.session_state.tab_actif == "🗂️ Base Fournisseurs":
     afficher_module_fournisseurs(nom_dept, profil["type"])
+elif st.session_state.tab_actif == "💳 Historique des Virements":
+    afficher_module_historique_virements()
 elif st.session_state.tab_actif == "🔍 Recherche Globale":
     afficher_module_recherche_globale(nom_dept, profil["type"])
 elif st.session_state.tab_actif == "📈 Statistiques":
