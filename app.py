@@ -9,8 +9,8 @@ import streamlit as st
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 # ==========================================
 # CONFIGURATION DE LA PAGE
@@ -186,40 +186,165 @@ def exporter_pdf_bytes(df: pd.DataFrame, titre="Export", colonnes_max=8):
     doc.build(elements)
     return buffer.getvalue()
 
+_UNITES_FR = ["zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix",
+              "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"]
+_DIZAINES_FR = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante-dix", "quatre-vingt", "quatre-vingt-dix"]
+
+def _trois_chiffres_en_lettres_fr(n: int) -> str:
+    mots = []
+    centaines, reste = divmod(n, 100)
+    if centaines > 0:
+        mots.append(("cent" if centaines == 1 else _UNITES_FR[centaines] + " cent") + ("s" if centaines > 1 and reste == 0 else ""))
+    if reste > 0:
+        if reste < 20:
+            mots.append(_UNITES_FR[reste])
+        else:
+            dizaine, unite = divmod(reste, 10)
+            if dizaine in (7, 9):
+                mots.append(_DIZAINES_FR[dizaine - 1] + "-" + _UNITES_FR[10 + unite])
+            elif unite == 0:
+                mots.append(_DIZAINES_FR[dizaine])
+            elif unite == 1 and dizaine != 8:
+                mots.append(_DIZAINES_FR[dizaine] + " et un")
+            else:
+                mots.append(_DIZAINES_FR[dizaine] + "-" + _UNITES_FR[unite])
+    return " ".join(mots)
+
+def nombre_en_lettres_fr(n: int) -> str:
+    if n == 0:
+        return "zéro"
+    groupes_noms = ["", " mille", " million", " milliard"]
+    parties = []
+    temp, i = n, 0
+    while temp > 0:
+        groupe = temp % 1000
+        if groupe > 0:
+            mot = "mille" if (i == 1 and groupe == 1) else _trois_chiffres_en_lettres_fr(groupe) + groupes_noms[i]
+            parties.insert(0, mot)
+        temp //= 1000
+        i += 1
+    return " ".join(parties)
+
+def montant_en_lettres(montant: float, devise: str = "EUR") -> str:
+    entier = int(montant)
+    centimes = round((montant - entier) * 100)
+    nom_devise = {"EUR": "euros", "USD": "dollars", "XOF": "francs CFA"}.get(devise, devise)
+    texte = f"{nombre_en_lettres_fr(entier)} {nom_devise}"
+    if centimes > 0:
+        texte += f" et {nombre_en_lettres_fr(centimes)} centime{'s' if centimes > 1 else ''}"
+    return texte[0].upper() + texte[1:]
+
 def generer_pdf_bon_commande(demande: dict) -> bytes:
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
     styles = getSampleStyleSheet()
-    elements = [
-        Paragraph("BON DE COMMANDE", styles["Title"]),
-        Paragraph(f"Référence demande n°{demande['id']}", styles["Normal"]),
-        Spacer(1, 0.6 * cm),
+    style_n = styles["Normal"]
+    style_b = ParagraphStyle("bloc_bold", parent=style_n, fontName="Helvetica-Bold")
+    style_titre = ParagraphStyle("titre_bc", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#2b3542"))
+
+    montant_total = float(demande.get("montant") or 0)
+    devise = demande.get("devise") or "EUR"
+    numero_bc = f"BC-{datetime.now().year}-{int(demande['id']):05d}"
+
+    elements = []
+
+    # --- En-tête : logo + numéro/date ---
+    if os.path.exists(CHEMIN_LOGO):
+        logo_cell = Image(CHEMIN_LOGO, width=3.2 * cm, height=3.2 * cm, kind="proportional")
+    else:
+        logo_cell = Paragraph("<b>NATIKA GROUP</b>", styles["Heading2"])
+    bloc_titre = [
+        Paragraph("BON DE COMMANDE", style_titre),
+        Paragraph(f"<b>N° {numero_bc}</b>", style_n),
+        Paragraph(f"Date d'émission : {demande.get('date_validation', '—')}", style_n),
     ]
-    data = [
-        ["Département demandeur", demande["departement"]],
-        ["Intitulé", demande["titre"]],
-        ["Besoins spécifiques", demande["besoins"]],
-        ["Fournisseur retenu", demande["fournisseur"] or "—"],
-        ["Montant", f"{float(demande['montant'] or 0):,.2f} {demande.get('devise', 'EUR')}"],
-        ["Date de validation Direction", demande["date_validation"]],
-        ["Modalités de paiement", demande.get("modalites_texte", "—")],
+    entete = Table([[logo_cell, bloc_titre]], colWidths=[4 * cm, 12.7 * cm])
+    entete.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    elements.append(entete)
+    elements.append(Spacer(1, 0.9 * cm))
+
+    # --- Vendeur / Acheteur ---
+    bloc_vendeur = [Paragraph("<b>FOURNISSEUR</b>", style_b), Paragraph(demande.get("fournisseur") or "—", style_n)]
+    bloc_acheteur = [
+        Paragraph("<b>ACHETEUR</b>", style_b),
+        Paragraph("Natika Group", style_n),
+        Paragraph(f"Département : {demande.get('departement', '—')}", style_n),
     ]
-    t = Table(data, colWidths=[6 * cm, 11 * cm])
-    t.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#7c9473')),
-        ('TEXTCOLOR', (0, 0), (0, -1), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
+    parties = Table([[bloc_vendeur, bloc_acheteur]], colWidths=[8.35 * cm, 8.35 * cm])
+    parties.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOX", (0, 0), (0, 0), 0.6, colors.HexColor("#c7c4ba")),
+        ("BOX", (1, 0), (1, 0), 0.6, colors.HexColor("#c7c4ba")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
     ]))
-    elements.append(t)
-    elements.append(Spacer(1, 1 * cm))
+    elements.append(parties)
+    elements.append(Spacer(1, 0.9 * cm))
+
+    # --- Objet de la commande ---
+    objet = Table([
+        ["Désignation", "Montant"],
+        [Paragraph(f"<b>{demande.get('titre', '')}</b><br/>{demande.get('besoins') or ''}", style_n),
+         f"{montant_total:,.2f} {devise}"],
+    ], colWidths=[13 * cm, 3.7 * cm])
+    objet.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7c9473")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(objet)
+    elements.append(Spacer(1, 0.4 * cm))
+
+    total_tbl = Table([["TOTAL À PAYER", f"{montant_total:,.2f} {devise}"]], colWidths=[13 * cm, 3.7 * cm])
+    total_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#2b3542")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 12),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    elements.append(total_tbl)
+    elements.append(Spacer(1, 0.3 * cm))
+    elements.append(Paragraph(f"<i>Arrêté à la somme de : {montant_en_lettres(montant_total, devise)}.</i>", style_n))
+    elements.append(Spacer(1, 0.9 * cm))
+
+    # --- Échéancier de paiement ---
+    elements.append(Paragraph("<b>Modalités de paiement</b>", style_b))
+    elements.append(Spacer(1, 0.2 * cm))
+    tranches = demande.get("tranches") or []
+    if tranches:
+        data_tr = [["Tranche", "Déclencheur", "%", "Montant"]]
+        for i, t in enumerate(tranches):
+            pct = t.get("pourcentage", 0)
+            data_tr.append([f"Tranche {i + 1}", t.get("declencheur", ""), f"{pct}%", f"{montant_total * pct / 100:,.2f} {devise}"])
+        tr_tbl = Table(data_tr, colWidths=[2.3 * cm, 8 * cm, 1.4 * cm, 5 * cm])
+        tr_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#5b8def")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+        ]))
+        elements.append(tr_tbl)
+    else:
+        elements.append(Paragraph("—", style_n))
+    elements.append(Spacer(1, 1.4 * cm))
+
+    # --- Signature ---
     elements.append(Paragraph(
-        f"Document généré automatiquement le {datetime.now().strftime('%d/%m/%Y à %H:%M')} "
-        f"suite à la validation finale de la Direction Générale.", styles["Italic"]
+        "Date et signature de l'acheteur, précédée de la mention « Bon pour accord »", style_n
     ))
+    elements.append(Spacer(1, 2 * cm))
+    elements.append(Paragraph(
+        f"Document généré automatiquement le {datetime.now().strftime('%d/%m/%Y à %H:%M')} suite à la validation "
+        f"finale de la Direction Générale — Référence interne demande n°{demande['id']}.", styles["Italic"]
+    ))
+
     doc.build(elements)
     return buffer.getvalue()
 
@@ -310,6 +435,12 @@ def compter_nouveaux_elements(nom_dept, type_profil):
     except sqlite3.OperationalError:
         pass
     return total
+
+def parser_tranches(modalites_json) -> list:
+    try:
+        return json.loads(modalites_json) if modalites_json else []
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 def formater_modalites_paiement(modalites_json: str) -> str:
     try:
@@ -848,8 +979,8 @@ def afficher_module_cdc(nom_departement, type_profil):
 def afficher_module_achats(nom_departement, type_profil):
     st.subheader("🛒 Espace Demandes d'Achat")
     
-    # 3 onglets bien distincts comme demandé
-    onglets_achats = ["📋 Soumettre une demande", "📊 Suivi des demandes", "🗄️ Archives des demandes"]
+    # 4 onglets bien distincts comme demandé
+    onglets_achats = ["📋 Soumettre une demande", "📊 Suivi des demandes", "📦 Suivi d'exécution", "🗄️ Archives des demandes"]
     tabs_res = st.tabs(onglets_achats)
     
     with tabs_res[0]:
@@ -1270,7 +1401,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                 pdf_bc = generer_pdf_bon_commande({
                                     "id": did, "departement": d_dept, "titre": d_titre, "besoins": d_cc,
                                     "fournisseur": d_f_retenu or d_fournisseur, "montant": d_montant, "devise": d_devise,
-                                    "date_validation": d_bc_date, "modalites_texte": formater_modalites_paiement(d_modalites),
+                                    "date_validation": d_bc_date, "tranches": parser_tranches(d_modalites),
                                 })
                                 st.download_button(
                                     "📥 Télécharger le bon de commande (PDF)", data=pdf_bc,
@@ -1318,6 +1449,61 @@ def afficher_module_achats(nom_departement, type_profil):
                             st.rerun()
 
     with tabs_res[2]:
+        st.markdown("### 📦 Suivi d'exécution — du bon de commande à la clôture")
+        st.caption("Toute demande dont le bon de commande a été généré reste ici tant qu'elle n'est pas entièrement soldée (paiement complet + réception confirmée). Elle ne part en Archives qu'une fois totalement exécutée.")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if type_profil in ["achats", "finance", "fondateur"]:
+            cursor.execute(
+                """SELECT id, departement, titre, fournisseur_retenu, montant, devise, statut, bon_commande_date,
+                          modalites_paiement_json, statut_paiement, statut_reception
+                   FROM demandes WHERE archive = 0 AND etape_actuelle = 'Exécution' ORDER BY id DESC"""
+            )
+        else:
+            cursor.execute(
+                """SELECT id, departement, titre, fournisseur_retenu, montant, devise, statut, bon_commande_date,
+                          modalites_paiement_json, statut_paiement, statut_reception
+                   FROM demandes WHERE archive = 0 AND etape_actuelle = 'Exécution' AND departement = ? ORDER BY id DESC""",
+                (nom_departement,)
+            )
+        demandes_execution = cursor.fetchall()
+        conn.close()
+
+        if not demandes_execution:
+            st.info("Aucune demande en cours d'exécution actuellement.")
+        else:
+            for de in demandes_execution:
+                de_id, de_dept, de_titre, de_fourn, de_montant, de_devise, de_statut, de_bc_date, de_modalites, de_statut_paiement, de_statut_reception = de
+                tranches = parser_tranches(de_modalites)
+                nb_payees = sum(1 for t in tranches if t.get("statut") == "payee")
+                nb_total = len(tranches) if tranches else 1
+                reception_affichee = de_statut_reception or "Non renseignée (module à venir)"
+                with st.container():
+                    st.markdown(f"""
+                        <div class="stCard">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div><b>[{de_dept}] {de_titre}</b> — Fournisseur : {de_fourn or '—'}</div>
+                                <div>{pill_statut(de_statut)}</div>
+                            </div>
+                            <div style="color: var(--text-muted); font-size: 0.9rem; margin-top: 5px;">
+                                📄 Bon de commande : {de_bc_date} | 💳 Paiement : {nb_payees}/{nb_total} tranche(s) — {de_statut_paiement} | 🚚 Réception : {reception_affichee}
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    with st.expander("🔍 Voir le détail complet"):
+                        pdf_bc_suivi = generer_pdf_bon_commande({
+                            "id": de_id, "departement": de_dept, "titre": de_titre, "besoins": "",
+                            "fournisseur": de_fourn, "montant": de_montant, "devise": de_devise,
+                            "date_validation": de_bc_date, "tranches": tranches,
+                        })
+                        st.download_button("📥 Télécharger le bon de commande (PDF)", data=pdf_bc_suivi,
+                                            file_name=f"Bon_Commande_{de_id}.pdf", mime="application/pdf", key=f"dl_bc_suivi_{de_id}")
+                        for i, t in enumerate(tranches):
+                            etat = "✅ Payée" if t.get("statut") == "payee" else "🔒 En attente"
+                            st.write(f"- Tranche {i+1} ({t.get('pourcentage')}% — {t.get('declencheur')}) : {etat}")
+                        st.caption("Le circuit de réception (import du bon de livraison, contrôle et clôture par les Achats) arrive dans un prochain module.")
+
+    with tabs_res[3]:
         st.markdown("### 🗄️ Archives des demandes d'achat")
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1454,7 +1640,7 @@ def afficher_dialogue_detail_demande(id_demande):
         pdf_bc = generer_pdf_bon_commande({
             "id": id_demande, "departement": dept, "titre": titre, "besoins": besoins,
             "fournisseur": fournisseur_retenu or fournisseur_pressenti, "montant": montant, "devise": devise,
-            "date_validation": bc_date, "modalites_texte": formater_modalites_paiement(modalites_json),
+            "date_validation": bc_date, "tranches": parser_tranches(modalites_json),
         })
         st.download_button("📥 Télécharger le bon de commande (PDF)", data=pdf_bc,
                             file_name=f"Bon_Commande_{id_demande}.pdf", mime="application/pdf", key=f"dl_bc_dialog_{id_demande}")
