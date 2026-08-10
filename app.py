@@ -980,7 +980,8 @@ UTILISATEURS = {
     "DEP14": {"nom": "Juridique & Conformité", "mdp": "DEP123", "type": "standard", "dept": "Juridique & Conformité"},
     "DEP12": {"nom": "Achats & Approvisionnements", "mdp": "DEP123", "type": "achats", "dept": "Achats & Approvisionnements"},
     "DEP13": {"nom": "Finance & Comptabilité", "mdp": "DEP123", "type": "finance", "dept": "Finance & Comptabilité"},
-    "fondateur": {"nom": "Direction Générale - Pilotage Stratégique", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"}
+    "fondateur": {"nom": "Direction Générale - Pilotage Stratégique", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"},
+    "DGA": {"nom": "Direction Générale Adjointe - Coordination Opérationnelle", "mdp": "DGA123", "type": "fondateur", "dept": "Direction Générale Adjointe"}
 }
 
 # Constantes réutilisées pour cibler les notifications par département
