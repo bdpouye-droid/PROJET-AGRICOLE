@@ -3,6 +3,7 @@ import json
 import os
 import uuid
 import io
+import time
 from datetime import datetime, date
 import pandas as pd
 import streamlit as st
@@ -871,15 +872,23 @@ def migrer_schema():
         ("demandes", "reference_produit", "TEXT DEFAULT ''"),
     ]
     for table, colonne, type_def in migrations:
-        cursor.execute(f"PRAGMA table_info({table})")
-        colonnes_existantes = [c[1] for c in cursor.fetchall()]
-        if colonne not in colonnes_existantes:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {colonne} {type_def}")
-    conn.commit()
+        for tentative in range(3):
+            try:
+                cursor.execute(f"PRAGMA table_info({table})")
+                colonnes_existantes = [c[1] for c in cursor.fetchall()]
+                if colonne not in colonnes_existantes:
+                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN {colonne} {type_def}")
+                    conn.commit()
+                break
+            except sqlite3.OperationalError:
+                time.sleep(0.3)
     conn.close()
 
-init_db()
-migrer_schema()
+try:
+    init_db()
+    migrer_schema()
+except sqlite3.OperationalError as e:
+    st.warning(f"⚠️ Initialisation de la base de données incomplète (l'application continue quand même) : {e}")
 
 def get_db_connection():
     conn = sqlite3.connect("database.db", check_same_thread=False, timeout=15)
