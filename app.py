@@ -240,6 +240,7 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
     styles = getSampleStyleSheet()
     couleur_verte = colors.HexColor("#7c9473")
     couleur_fonce = colors.HexColor("#2b3542")
+    couleur_fond_gris = colors.HexColor("#f2f1ed")
     style_n = styles["Normal"]
     style_b = ParagraphStyle("bloc_bold", parent=style_n, fontName="Helvetica-Bold")
     style_titre = ParagraphStyle("titre_bc", parent=styles["Title"], fontSize=20, textColor=couleur_fonce)
@@ -248,6 +249,9 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
     montant_ht = demande.get("montant_ht")
     taux_tva = demande.get("taux_tva")
     devise = demande.get("devise") or "EUR"
+    quantite = demande.get("quantite")
+    unite = demande.get("unite")
+    prix_unitaire_ht = demande.get("prix_unitaire_ht")
 
     date_creation = demande.get("date_creation") or demande.get("date_validation") or ""
     annee_creation = date_creation[:4] if date_creation else str(datetime.now().year)
@@ -257,35 +261,33 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
 
     elements = []
 
-    # --- En-tête : logo + titre/numéro/statut ---
+    # --- En-tête : logo + titre, métadonnées et statut sur une seule ligne ---
     if os.path.exists(CHEMIN_LOGO):
         logo_cell = Image(CHEMIN_LOGO, width=4 * cm, height=4 * cm, kind="proportional")
     else:
         logo_cell = Paragraph("<b>NATIKA GROUP</b>", styles["Heading2"])
-    badge_statut = Table([["Statut : VALIDÉ"]], colWidths=[3.5 * cm])
+    badge_statut = Table([["Statut : VALIDÉ"]], colWidths=[2.9 * cm])
     badge_statut.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#e4efe0")),
         ("TEXTCOLOR", (0, 0), (-1, -1), couleur_verte),
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
-    bloc_titre = [
-        Paragraph("BON DE COMMANDE", style_titre),
-        Paragraph(f"<b>N° {numero_bc}</b>", style_n),
-        Paragraph(f"Réf. demande d'achat : {numero_da}", style_n),
-        Paragraph(f"Date d'émission : {demande.get('date_validation', '—')}", style_n),
-        Spacer(1, 0.15 * cm),
-        badge_statut,
-    ]
+    date_courte = (demande.get("date_validation") or "—").split(" ")[0]
+    style_meta = ParagraphStyle("meta_bc", parent=style_n, fontSize=8.5)
+    meta_texte = Paragraph(f"<b>{numero_bc}</b> &nbsp;·&nbsp; {numero_da} &nbsp;·&nbsp; {date_courte}", style_meta)
+    ligne_meta = Table([[meta_texte, badge_statut]], colWidths=[9.3 * cm, 2.9 * cm])
+    ligne_meta.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    bloc_titre = [Paragraph("BON DE COMMANDE", style_titre), Spacer(1, 0.15 * cm), ligne_meta]
     entete = Table([[logo_cell, bloc_titre]], colWidths=[4.5 * cm, 12.2 * cm])
-    entete.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    entete.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     elements.append(entete)
     elements.append(Spacer(1, 0.3 * cm))
     elements.append(HRFlowable(width="100%", thickness=1.5, color=couleur_verte, spaceAfter=0.5 * cm))
 
-    # --- Fournisseur / Acheteur ---
+    # --- Fournisseur / Acheteur (encadrés grisés) ---
     fourn = demande.get("fournisseur_infos") or {}
     lignes_fournisseur = [Paragraph("<b>FOURNISSEUR</b>", style_b), Paragraph(demande.get("fournisseur") or "—", style_n)]
     if fourn:
@@ -304,6 +306,8 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
             lignes_fournisseur.append(Paragraph(f"{lib_rc} : {fourn['rccm']}", style_n))
         if fourn.get("contact_commercial"):
             lignes_fournisseur.append(Paragraph(f"Contact : {fourn['contact_commercial']}", style_n))
+    else:
+        lignes_fournisseur.append(Paragraph("<font color='#8a4b12'><b>⚠ Fournisseur non enregistré dans la Base Fournisseurs — coordonnées légales absentes.</b></font>", style_n))
 
     bloc_acheteur = [
         Paragraph("<b>ACHETEUR</b>", style_b),
@@ -316,49 +320,55 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
     parties = Table([[lignes_fournisseur, bloc_acheteur]], colWidths=[8.35 * cm, 8.35 * cm])
     parties.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BACKGROUND", (0, 0), (-1, -1), couleur_fond_gris),
         ("BOX", (0, 0), (0, 0), 0.6, colors.HexColor("#c7c4ba")),
         ("BOX", (1, 0), (1, 0), 0.6, colors.HexColor("#c7c4ba")),
         ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
         ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
     ]))
     elements.append(parties)
-    elements.append(Spacer(1, 0.3 * cm))
-
-    if not fourn:
-        alerte = Table([["⚠ Fournisseur non enregistré dans la Base Fournisseurs — coordonnées légales absentes du présent document."]], colWidths=[16.7 * cm])
-        alerte.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f7dcc4")),
-            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#8a4b12")),
-            ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#e0a862")),
-            ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ]))
-        elements.append(alerte)
-        elements.append(Spacer(1, 0.3 * cm))
     elements.append(Spacer(1, 0.6 * cm))
 
     # --- Objet de la commande ---
-    objet = Table([
-        ["Désignation", "Montant HT"],
-        [Paragraph(f"<b>{demande.get('titre', '')}</b><br/>{demande.get('besoins') or ''}", style_n),
-         f"{(montant_ht if montant_ht is not None else montant_total):,.2f} {devise}"],
-    ], colWidths=[13 * cm, 3.7 * cm])
-    objet.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), couleur_verte),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-    ]))
+    montant_ht_affiche = montant_ht if (montant_ht is not None and montant_ht > 0) else montant_total
+    style_cell_petit = ParagraphStyle("cell_petit", parent=style_n, fontSize=8.5)
+    style_entete_petit = ParagraphStyle("entete_petit", parent=style_n, fontSize=8.5, textColor=colors.whitesmoke, fontName="Helvetica-Bold")
+    if quantite is not None and prix_unitaire_ht is not None:
+        objet = Table([
+            [Paragraph("Désignation", style_entete_petit), Paragraph("Réf.", style_entete_petit), Paragraph("Qté", style_entete_petit),
+             Paragraph("Unité", style_entete_petit), Paragraph("P.U. HT", style_entete_petit), Paragraph("Montant HT", style_entete_petit)],
+            [Paragraph(f"<b>{demande.get('titre', '')}</b><br/>{demande.get('besoins') or ''}", style_cell_petit),
+             Paragraph(demande.get("reference_produit") or "—", style_cell_petit), Paragraph(f"{quantite:g}", style_cell_petit),
+             Paragraph(unite or "—", style_cell_petit), Paragraph(f"{prix_unitaire_ht:,.2f}", style_cell_petit),
+             Paragraph(f"{montant_ht_affiche:,.2f} {devise}", style_cell_petit)],
+        ], colWidths=[7.0 * cm, 2.0 * cm, 1.3 * cm, 1.9 * cm, 2.2 * cm, 2.3 * cm])
+        objet.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), couleur_verte),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+            ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ]))
+    else:
+        objet = Table([
+            ["Désignation", "Montant HT"],
+            [Paragraph(f"<b>{demande.get('titre', '')}</b><br/>{demande.get('besoins') or ''}", style_n),
+             f"{montant_ht_affiche:,.2f} {devise}"],
+        ], colWidths=[13 * cm, 3.7 * cm])
+        objet.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), couleur_verte),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]))
     elements.append(objet)
     elements.append(Spacer(1, 0.25 * cm))
 
-    # --- Récapitulatif HT / TVA / TTC ---
-    if montant_ht is not None and taux_tva is not None:
+    # --- Récapitulatif HT / TVA / TTC (uniquement si un HT réel existe) ---
+    if montant_ht is not None and montant_ht > 0 and taux_tva is not None:
         montant_tva_calc = montant_ht * taux_tva / 100
         recap = Table([
             ["Sous-total HT", f"{montant_ht:,.2f} {devise}"],
@@ -384,19 +394,26 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
     elements.append(Paragraph(f"<i>Arrêté à la somme de : {montant_en_lettres(montant_total, devise)}.</i>", style_n))
     elements.append(Spacer(1, 0.8 * cm))
 
-    # --- Échéancier de paiement (simplifié) ---
-    elements.append(Paragraph("<b>CONDITIONS DE PAIEMENT</b>", ParagraphStyle("cond_paie", parent=style_b, textColor=couleur_verte)))
-    elements.append(Spacer(1, 0.2 * cm))
+    # --- Échéancier de paiement (simplifié, encadré) ---
     tranches = demande.get("tranches") or []
     if len(tranches) == 1:
         t = tranches[0]
-        elements.append(Paragraph(f"Conditions : {t.get('pourcentage', 0)}% {libelle_court_declencheur(t.get('declencheur', ''))}.", style_n))
+        cond_texte = f"<b>CONDITIONS DE PAIEMENT</b><br/>Conditions : {t.get('pourcentage', 0)}% {libelle_court_declencheur(t.get('declencheur', ''))}."
+        cond_tbl = Table([[Paragraph(cond_texte, style_n)]], colWidths=[16.7 * cm])
+        cond_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), couleur_fond_gris),
+            ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ]))
+        elements.append(cond_tbl)
     elif tranches:
+        elements.append(Paragraph("<b>CONDITIONS DE PAIEMENT</b>", ParagraphStyle("cond_paie", parent=style_b, textColor=couleur_verte)))
+        elements.append(Spacer(1, 0.2 * cm))
         data_tr = [["Tranche", "Conditions", "Montant"]]
         for i, t in enumerate(tranches):
             pct = t.get("pourcentage", 0)
             data_tr.append([f"{i + 1}", f"{pct}% {libelle_court_declencheur(t.get('declencheur', ''))}", f"{montant_total * pct / 100:,.2f} {devise}"])
-        tr_tbl = Table(data_tr, colWidths=[1.5 * cm, 10.2 * cm, 5 * cm])
+        tr_tbl = Table(data_tr, colWidths=[1.8 * cm, 9.9 * cm, 5 * cm])
         tr_tbl.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), couleur_verte),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
@@ -405,35 +422,7 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
             ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
         ]))
         elements.append(tr_tbl)
-    else:
-        elements.append(Paragraph("—", style_n))
-    elements.append(Spacer(1, 0.8 * cm))
-
-    # --- Traçabilité du workflow ---
-    elements.append(Paragraph("<b>SUIVI DE VALIDATION</b>", ParagraphStyle("suivi_wf", parent=style_b, textColor=couleur_verte)))
-    elements.append(Spacer(1, 0.2 * cm))
-    avis_achats = demande.get("avis_achats") or "En attente"
-    avis_finance = demande.get("avis_finance") or "En attente"
-    def _puce(label, valeur):
-        ok = valeur not in ("En attente", "", None)
-        symbole = "✔" if ok else "○"
-        couleur_hex = "#7c9473" if ok else "#999999"
-        return Paragraph(f"<font color='{couleur_hex}'>{symbole}</font> <b>{label}</b> — {valeur}", style_n)
-    data_wf = [[
-        _puce("Demandeur", demande.get("nom_demandeur") or demande.get("departement", "—")),
-        _puce("Validation Achats", avis_achats),
-        _puce("Validation Finance", avis_finance),
-    ]]
-    wf_tbl = Table(data_wf, colWidths=[5.57 * cm, 5.57 * cm, 5.57 * cm])
-    wf_tbl.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e0d8")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e0d8")),
-        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-    ]))
-    elements.append(wf_tbl)
-    elements.append(Spacer(1, 1.2 * cm))
+    elements.append(Spacer(1, 1.4 * cm))
 
     # --- Signature (zone unique) ---
     elements.append(HRFlowable(width="100%", thickness=0.8, color=colors.HexColor("#c7c4ba"), spaceAfter=0.4 * cm))
@@ -451,33 +440,58 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
 
 def generer_pdf_bon_reception(demande: dict) -> bytes:
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.3 * cm, bottomMargin=1.3 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
     styles = getSampleStyleSheet()
+    couleur_verte = colors.HexColor("#7c9473")
+    couleur_fond_gris = colors.HexColor("#f2f1ed")
     style_n = styles["Normal"]
     style_b = ParagraphStyle("bloc_bold_r", parent=style_n, fontName="Helvetica-Bold")
     style_titre = ParagraphStyle("titre_br", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#2b3542"))
 
     numero_br = f"BR-{datetime.now().year}-{int(demande['id']):05d}"
+    numero_da = f"DA-{datetime.now().year}-{int(demande['id']):05d}"
     elements = []
 
     if os.path.exists(CHEMIN_LOGO):
-        logo_cell = Image(CHEMIN_LOGO, width=3.2 * cm, height=3.2 * cm, kind="proportional")
+        logo_cell = Image(CHEMIN_LOGO, width=4 * cm, height=4 * cm, kind="proportional")
     else:
         logo_cell = Paragraph("<b>NATIKA GROUP</b>", styles["Heading2"])
-    bloc_titre = [
-        Paragraph("BON DE RÉCEPTION", style_titre),
-        Paragraph(f"<b>N° {numero_br}</b>", style_n),
-        Paragraph(f"Clôturé le : {demande.get('date_cloture', '—')}", style_n),
-    ]
-    entete = Table([[logo_cell, bloc_titre]], colWidths=[4 * cm, 12.7 * cm])
-    entete.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    statut_final = demande.get("statut_final", "—")
+    couleur_badge = "#e4efe0" if "réserve" not in statut_final.lower() else "#f7dcc4"
+    couleur_texte_badge = couleur_verte if "réserve" not in statut_final.lower() else colors.HexColor("#8a4b12")
+    badge_statut = Table([[statut_final]], colWidths=[4.2 * cm])
+    badge_statut.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(couleur_badge)),
+        ("TEXTCOLOR", (0, 0), (-1, -1), couleur_texte_badge),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    style_meta = ParagraphStyle("meta_br", parent=style_n, fontSize=8.5)
+    meta_texte = Paragraph(f"<b>{numero_br}</b> &nbsp;·&nbsp; {numero_da} &nbsp;·&nbsp; {demande.get('date_cloture', '—')}", style_meta)
+    ligne_meta = Table([[meta_texte, badge_statut]], colWidths=[8 * cm, 4.2 * cm])
+    ligne_meta.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    bloc_titre = [Paragraph("BON DE RÉCEPTION", style_titre), Spacer(1, 0.15 * cm), ligne_meta]
+    entete = Table([[logo_cell, bloc_titre]], colWidths=[4.5 * cm, 12.2 * cm])
+    entete.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     elements.append(entete)
-    elements.append(Spacer(1, 0.9 * cm))
+    elements.append(Spacer(1, 0.3 * cm))
+    elements.append(HRFlowable(width="100%", thickness=1.5, color=couleur_verte, spaceAfter=0.5 * cm))
 
-    elements.append(Paragraph(f"<b>Référence demande :</b> n°{demande['id']}", style_n))
-    elements.append(Paragraph(f"<b>Département :</b> {demande.get('departement', '—')}", style_n))
-    elements.append(Paragraph(f"<b>Intitulé :</b> {demande.get('titre', '—')}", style_n))
-    elements.append(Paragraph(f"<b>Fournisseur :</b> {demande.get('fournisseur', '—')}", style_n))
+    info_bloc = [
+        Paragraph(f"<b>Département :</b> {demande.get('departement', '—')}", style_n),
+        Paragraph(f"<b>Intitulé :</b> {demande.get('titre', '—')}", style_n),
+        Paragraph(f"<b>Fournisseur :</b> {demande.get('fournisseur', '—')}", style_n),
+    ]
+    info_tbl = Table([[info_bloc]], colWidths=[16.7 * cm])
+    info_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), couleur_fond_gris),
+        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#c7c4ba")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    elements.append(info_tbl)
     elements.append(Spacer(1, 0.6 * cm))
 
     elements.append(Paragraph("<b>Historique des réceptions déclarées</b>", style_b))
@@ -500,10 +514,9 @@ def generer_pdf_bon_reception(demande: dict) -> bytes:
         elements.append(Paragraph("—", style_n))
     elements.append(Spacer(1, 0.6 * cm))
 
-    elements.append(Paragraph(f"<b>Statut final :</b> {demande.get('statut_final', '—')}", style_n))
     if demande.get("suivi_litige"):
         elements.append(Paragraph(f"<b>Suivi / commentaire Achats :</b> {demande.get('suivi_litige')}", style_n))
-    elements.append(Spacer(1, 0.6 * cm))
+        elements.append(Spacer(1, 0.6 * cm))
 
     tranches = demande.get("tranches") or []
     tranches_payees = [t for t in tranches if t.get("statut") == "payee"]
@@ -851,6 +864,11 @@ def migrer_schema():
         ("demandes", "fournisseur_id", "INTEGER"),
         # --- Pays du fournisseur (libellés d'identifiants adaptatifs) ---
         ("fournisseurs", "pays", "TEXT DEFAULT ''"),
+        # --- Quantité / Unité / Prix unitaire HT (ligne unique détaillée) ---
+        ("demandes", "quantite", "REAL"),
+        ("demandes", "unite", "TEXT DEFAULT ''"),
+        ("demandes", "prix_unitaire_ht", "REAL"),
+        ("demandes", "reference_produit", "TEXT DEFAULT ''"),
     ]
     for table, colonne, type_def in migrations:
         cursor.execute(f"PRAGMA table_info({table})")
@@ -1435,7 +1453,15 @@ def afficher_module_achats(nom_departement, type_profil):
                 besoins_specifiques = st.text_area("Besoins spécifiques de la demande")
                 cahier_charges_ref = st.text_input("Référence ou lien associé (optionnel)")
                 fournisseur_retenu_saisie = st.text_input("Fournisseur retenu")
-                montant_ht_saisi = st.number_input("Montant HT (€)", min_value=0.0, step=10.0)
+                col_q1, col_q2, col_q3 = st.columns(3)
+                with col_q1:
+                    quantite_saisie = st.number_input("Quantité", min_value=0.0, step=1.0, value=1.0)
+                with col_q2:
+                    unite_saisie = st.text_input("Unité (ex: unité, m², kg...)", value="unité")
+                with col_q3:
+                    prix_unitaire_saisi = st.number_input("Prix unitaire HT (€)", min_value=0.0, step=10.0)
+                montant_ht_saisi = quantite_saisie * prix_unitaire_saisi
+                st.caption(f"💰 Montant HT calculé : {montant_ht_saisi:,.2f} €")
                 taux_tva_saisi = st.number_input("Taux de TVA (%)", min_value=0.0, max_value=100.0, value=18.0, step=0.5)
                 fichier_devis = st.file_uploader("Joindre le devis / document justificatif (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"])
                 
@@ -1449,9 +1475,9 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn = get_db_connection()
                         cursor = conn.cursor()
                         cursor.execute(
-                            """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive, nom_demandeur, montant_ht, taux_tva)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
-                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", montant_ttc_calc, fournisseur_retenu_saisie, "En attente Finance", "Finance", "Validé", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", fournisseur_retenu_saisie, nom_demandeur_saisi, montant_ht_saisi, taux_tva_saisi)
+                            """INSERT INTO demandes (departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, archive, nom_demandeur, montant_ht, taux_tva, quantite, unite, prix_unitaire_ht)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)""",
+                            (nom_departement, titre_demande, f"Besoin: {besoins_specifiques} | Réf: {cahier_charges_ref}", montant_ttc_calc, fournisseur_retenu_saisie, "En attente Finance", "Finance", "Validé", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fichier_devis, "", fournisseur_retenu_saisie, nom_demandeur_saisi, montant_ht_saisi, taux_tva_saisi, quantite_saisie, unite_saisie, prix_unitaire_saisi)
                         )
                         conn.commit()
                         conn.close()
@@ -1542,7 +1568,17 @@ def afficher_module_achats(nom_departement, type_profil):
 
                         with st.form(f"form_traitement_achats_{did}"):
                             fournisseur_retenu_saisie = st.text_input("Définir le fournisseur retenu (Sourcing)", value=valeur_defaut_fournisseur)
-                            montant_ht_saisi = st.number_input("Montant HT (€)", min_value=0.0, step=10.0, value=float(d_montant or 0.0))
+                            reference_produit_saisie = st.text_input("Référence produit (optionnel)", key=f"refprod_{did}")
+                            col_q1, col_q2, col_q3 = st.columns(3)
+                            with col_q1:
+                                quantite_saisie = st.number_input("Quantité", min_value=0.0, step=1.0, value=1.0, key=f"qte_{did}")
+                            with col_q2:
+                                unite_saisie = st.text_input("Unité", value="unité", key=f"unite_{did}")
+                            with col_q3:
+                                valeur_pu_defaut = float(d_montant or 0.0) if quantite_saisie == 0 else float(d_montant or 0.0) / max(quantite_saisie, 1)
+                                prix_unitaire_saisi = st.number_input("Prix unitaire HT (€)", min_value=0.0, step=10.0, value=valeur_pu_defaut, key=f"pu_{did}")
+                            montant_ht_saisi = quantite_saisie * prix_unitaire_saisi
+                            st.caption(f"💰 Montant HT calculé : {montant_ht_saisi:,.2f} €")
                             taux_tva_saisi = st.number_input("Taux de TVA (%)", min_value=0.0, max_value=100.0, value=18.0, step=0.5, key=f"tva_{did}")
                             st.caption(f"💰 Montant TTC calculé : {montant_ht_saisi * (1 + taux_tva_saisi / 100):,.2f} €")
                             nouveau_fichier_achat = st.file_uploader("Ajouter / Remplacer le devis achats consolidé (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"], key=f"f_achat_{did}")
@@ -1597,13 +1633,13 @@ def afficher_module_achats(nom_departement, type_profil):
                                     
                                 if modalites_json is not None:
                                     cursor.execute(
-                                        """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, montant_ht = ?, taux_tva = ?, fournisseur_id = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ?, modalites_paiement_json = ? WHERE id = ?""",
-                                        (fournisseur_retenu_saisie, montant_definitif, montant_ht_saisi, taux_tva_saisi, fournisseur_id_associe, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, modalites_json, did)
+                                        """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, montant_ht = ?, taux_tva = ?, fournisseur_id = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ?, modalites_paiement_json = ?, quantite = ?, unite = ?, prix_unitaire_ht = ?, reference_produit = ? WHERE id = ?""",
+                                        (fournisseur_retenu_saisie, montant_definitif, montant_ht_saisi, taux_tva_saisi, fournisseur_id_associe, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, modalites_json, quantite_saisie, unite_saisie, prix_unitaire_saisi, reference_produit_saisie, did)
                                     )
                                 else:
                                     cursor.execute(
-                                        """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, montant_ht = ?, taux_tva = ?, fournisseur_id = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ? WHERE id = ?""",
-                                        (fournisseur_retenu_saisie, montant_definitif, montant_ht_saisi, taux_tva_saisi, fournisseur_id_associe, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, did)
+                                        """UPDATE demandes SET fournisseur_retenu = ?, montant = ?, montant_ht = ?, taux_tva = ?, fournisseur_id = ?, fichier_devis = ?, statut = ?, etape_actuelle = ?, avis_achats = ?, motif_refus = ?, quantite = ?, unite = ?, prix_unitaire_ht = ?, reference_produit = ? WHERE id = ?""",
+                                        (fournisseur_retenu_saisie, montant_definitif, montant_ht_saisi, taux_tva_saisi, fournisseur_id_associe, fich_u, nouveau_statut, nouvelle_etape, avis_a, motif_maj, quantite_saisie, unite_saisie, prix_unitaire_saisi, reference_produit_saisie, did)
                                     )
                                 conn.commit()
                                 conn.close()
@@ -1791,9 +1827,9 @@ def afficher_module_achats(nom_departement, type_profil):
         conn = get_db_connection()
         cursor = conn.cursor()
         if type_profil == "fondateur":
-            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise, statut_reception, receptions_json, suivi_litige, nom_demandeur, montant_ht, taux_tva, fournisseur_id FROM demandes WHERE archive = 0 ORDER BY id DESC")
+            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise, statut_reception, receptions_json, suivi_litige, nom_demandeur, montant_ht, taux_tva, fournisseur_id, quantite, unite, prix_unitaire_ht, reference_produit FROM demandes WHERE archive = 0 ORDER BY id DESC")
         else:
-            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise, statut_reception, receptions_json, suivi_litige, nom_demandeur, montant_ht, taux_tva, fournisseur_id FROM demandes WHERE departement = ? AND archive = 0 ORDER BY id DESC", (nom_departement,))
+            cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise, statut_reception, receptions_json, suivi_litige, nom_demandeur, montant_ht, taux_tva, fournisseur_id, quantite, unite, prix_unitaire_ht, reference_produit FROM demandes WHERE departement = ? AND archive = 0 ORDER BY id DESC", (nom_departement,))
         demandes = cursor.fetchall()
         conn.close()
 
@@ -1801,7 +1837,7 @@ def afficher_module_achats(nom_departement, type_profil):
             st.info("Aucune demande active en cours.")
         else:
             for d in demandes:
-                did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu, d_bc_genere, d_bc_date, d_modalites, d_statut_paiement, d_devise, d_statut_reception, d_receptions_json, d_suivi_litige, d_nom_demandeur, d_montant_ht, d_taux_tva, d_fournisseur_id = d
+                did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu, d_bc_genere, d_bc_date, d_modalites, d_statut_paiement, d_devise, d_statut_reception, d_receptions_json, d_suivi_litige, d_nom_demandeur, d_montant_ht, d_taux_tva, d_fournisseur_id, d_quantite, d_unite, d_prix_unitaire_ht, d_reference_produit = d
                 try:
                     montant_aff = float(d_montant) if d_montant is not None else 0.0
                 except (ValueError, TypeError):
@@ -1840,6 +1876,7 @@ def afficher_module_achats(nom_departement, type_profil):
                                     "taux_tva": d_taux_tva, "devise": d_devise, "date_validation": d_bc_date, "date_creation": d_date,
                                     "nom_demandeur": d_nom_demandeur, "fournisseur_infos": fourn_infos_gen, "tranches": parser_tranches(d_modalites),
                                     "avis_achats": d_avis_a, "avis_finance": d_avis_f,
+                                    "quantite": d_quantite, "unite": d_unite, "prix_unitaire_ht": d_prix_unitaire_ht, "reference_produit": d_reference_produit,
                                 })
                                 st.download_button(
                                     "📥 Télécharger le bon de commande (PDF)", data=pdf_bc,
@@ -1909,14 +1946,16 @@ def afficher_module_achats(nom_departement, type_profil):
             cursor.execute(
                 """SELECT id, departement, titre, cahier_charges, fournisseur_retenu, montant, devise, statut, bon_commande_date,
                           modalites_paiement_json, statut_paiement, statut_reception, receptions_json, suivi_litige,
-                          nom_demandeur, montant_ht, taux_tva, fournisseur_id, avis_achats, avis_finance, date
+                          nom_demandeur, montant_ht, taux_tva, fournisseur_id, avis_achats, avis_finance, date,
+                          quantite, unite, prix_unitaire_ht, reference_produit
                    FROM demandes WHERE archive = 0 AND etape_actuelle = 'Exécution' ORDER BY id DESC"""
             )
         else:
             cursor.execute(
                 """SELECT id, departement, titre, cahier_charges, fournisseur_retenu, montant, devise, statut, bon_commande_date,
                           modalites_paiement_json, statut_paiement, statut_reception, receptions_json, suivi_litige,
-                          nom_demandeur, montant_ht, taux_tva, fournisseur_id, avis_achats, avis_finance, date
+                          nom_demandeur, montant_ht, taux_tva, fournisseur_id, avis_achats, avis_finance, date,
+                          quantite, unite, prix_unitaire_ht, reference_produit
                    FROM demandes WHERE archive = 0 AND etape_actuelle = 'Exécution' AND departement = ? ORDER BY id DESC""",
                 (nom_departement,)
             )
@@ -1929,7 +1968,8 @@ def afficher_module_achats(nom_departement, type_profil):
             for de in demandes_execution:
                 (de_id, de_dept, de_titre, de_besoins, de_fourn, de_montant, de_devise, de_statut, de_bc_date,
                  de_modalites, de_statut_paiement, de_statut_reception, de_receptions_json, de_suivi_litige,
-                 de_nom_demandeur, de_montant_ht, de_taux_tva, de_fournisseur_id, de_avis_achats, de_avis_finance, de_date_creation) = de
+                 de_nom_demandeur, de_montant_ht, de_taux_tva, de_fournisseur_id, de_avis_achats, de_avis_finance, de_date_creation,
+                 de_quantite, de_unite, de_prix_unitaire_ht, de_reference_produit) = de
                 tranches = parser_tranches(de_modalites)
                 nb_payees = sum(1 for t in tranches if t.get("statut") == "payee")
                 nb_total = len(tranches) if tranches else 1
@@ -1956,6 +1996,7 @@ def afficher_module_achats(nom_departement, type_profil):
                             "devise": de_devise, "date_validation": de_bc_date, "date_creation": de_date_creation,
                             "nom_demandeur": de_nom_demandeur, "fournisseur_infos": fourn_infos, "tranches": tranches,
                             "avis_achats": de_avis_achats, "avis_finance": de_avis_finance,
+                            "quantite": de_quantite, "unite": de_unite, "prix_unitaire_ht": de_prix_unitaire_ht, "reference_produit": de_reference_produit,
                         })
                         st.download_button("📥 Télécharger le bon de commande (PDF)", data=pdf_bc_suivi,
                                             file_name=f"Bon_Commande_{de_id}.pdf", mime="application/pdf", key=f"dl_bc_suivi_{de_id}")
@@ -2230,7 +2271,8 @@ def afficher_dialogue_detail_demande(id_demande):
         """SELECT departement, titre, cahier_charges, montant, fournisseur, fournisseur_retenu,
                   statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date,
                   bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise,
-                  nom_demandeur, montant_ht, taux_tva, fournisseur_id, statut_reception, receptions_json, suivi_litige
+                  nom_demandeur, montant_ht, taux_tva, fournisseur_id, statut_reception, receptions_json, suivi_litige,
+                  quantite, unite, prix_unitaire_ht, reference_produit
            FROM demandes WHERE id = ?""",
         (id_demande,)
     )
@@ -2244,7 +2286,8 @@ def afficher_dialogue_detail_demande(id_demande):
     (dept, titre, besoins, montant, fournisseur_pressenti, fournisseur_retenu,
      statut, etape, avis_achats, avis_finance, motif, date_demande,
      bc_genere, bc_date, modalites_json, statut_paiement, devise,
-     nom_demandeur, montant_ht, taux_tva, fournisseur_id, statut_reception, receptions_json, suivi_litige) = d
+     nom_demandeur, montant_ht, taux_tva, fournisseur_id, statut_reception, receptions_json, suivi_litige,
+     quantite, unite, prix_unitaire_ht, reference_produit) = d
 
     st.markdown(f"### #{id_demande} — {titre}")
     st.markdown(f"**Département demandeur :** {dept}" + (f" — Demandeur : {nom_demandeur}" if nom_demandeur else ""))
@@ -2279,6 +2322,7 @@ def afficher_dialogue_detail_demande(id_demande):
             "taux_tva": taux_tva, "devise": devise, "date_validation": bc_date, "date_creation": date_demande,
             "nom_demandeur": nom_demandeur, "fournisseur_infos": fourn_infos_dialog, "tranches": parser_tranches(modalites_json),
             "avis_achats": avis_achats, "avis_finance": avis_finance,
+            "quantite": quantite, "unite": unite, "prix_unitaire_ht": prix_unitaire_ht, "reference_produit": reference_produit,
         })
         st.download_button("📥 Télécharger le bon de commande (PDF)", data=pdf_bc,
                             file_name=f"Bon_Commande_{id_demande}.pdf", mime="application/pdf", key=f"dl_bc_dialog_{id_demande}")
