@@ -817,6 +817,43 @@ def init_db():
         action TEXT,
         details TEXT
     )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS demandes_rh (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        departement_concerne TEXT,
+        nom_demandeur TEXT,
+        type_besoin TEXT,
+        intitule TEXT,
+        nombre_personnes INTEGER,
+        duree TEXT,
+        motif TEXT,
+        cout_estime REAL,
+        statut TEXT,
+        etape_actuelle TEXT,
+        avis_finance TEXT,
+        avis_direction TEXT,
+        motif_refus TEXT,
+        date TEXT,
+        fichier_joint TEXT,
+        archive INTEGER DEFAULT 0
+    )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS conventions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        partenaire TEXT,
+        type_convention TEXT,
+        objet TEXT,
+        date_signature TEXT,
+        date_echeance TEXT,
+        implication_financiere TEXT,
+        montant REAL,
+        statut TEXT,
+        fichier_projet TEXT,
+        fichier_signe TEXT,
+        avis_juridique TEXT,
+        commentaire_juridique TEXT,
+        notes_suivi TEXT,
+        date_creation TEXT,
+        archive INTEGER DEFAULT 0
+    )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS fournisseurs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nom TEXT,
@@ -988,6 +1025,9 @@ UTILISATEURS = {
 DEPT_ACHATS = UTILISATEURS["DEP12"]["dept"]
 DEPT_FINANCE = UTILISATEURS["DEP13"]["dept"]
 DEPT_DIRECTION = UTILISATEURS["fondateur"]["dept"]
+DEPT_RH = UTILISATEURS["DEP8"]["dept"]
+DEPT_RD = UTILISATEURS["DEP6"]["dept"]
+DEPT_JURIDIQUE = UTILISATEURS["DEP14"]["dept"]
 
 # ==========================================
 # GESTION DE LA SESSION
@@ -1132,6 +1172,10 @@ if profil["type"] in ["achats", "finance", "fondateur"] or nom_dept == "Juridiqu
     onglets_possibles.append("🗂️ Base Fournisseurs")
 if profil["type"] in ["finance", "fondateur"] or nom_dept == "Juridique & Conformité":
     onglets_possibles.append("💳 Historique des Virements")
+if profil["type"] in ["finance", "fondateur"] or nom_dept == DEPT_RH:
+    onglets_possibles.append("👥 Demandes RH")
+if profil["type"] in ["finance", "fondateur"] or nom_dept in (DEPT_RD, DEPT_JURIDIQUE):
+    onglets_possibles.append("🎓 Registre des Conventions")
 if profil["type"] in ["achats", "finance", "fondateur"]:
     onglets_possibles.append("📈 Statistiques")
 if profil["type"] == "fondateur":
@@ -1374,6 +1418,390 @@ def afficher_module_fournisseurs(nom_departement, type_profil):
                 st.write(f"**{lib_fiscal} :** {f_nif or '—'} — **{lib_rc} :** {f_rccm or '—'}")
                 st.write(f"**Contact commercial :** {f_contact or '—'}")
                 st.write(f"**Conditions de paiement usuelles :** {f_conditions or '—'}")
+
+
+def generer_pdf_decision_rh(demande: dict) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.3 * cm, bottomMargin=1.3 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
+    styles = getSampleStyleSheet()
+    couleur_verte = colors.HexColor("#7c9473")
+    couleur_fond_gris = colors.HexColor("#f2f1ed")
+    style_n = styles["Normal"]
+    style_titre = ParagraphStyle("titre_rh", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#2b3542"))
+
+    numero = f"DRH-{datetime.now().year}-{int(demande['id']):05d}"
+    elements = []
+
+    if os.path.exists(CHEMIN_LOGO):
+        logo_cell = Image(CHEMIN_LOGO, width=4 * cm, height=4 * cm, kind="proportional")
+    else:
+        logo_cell = Paragraph("<b>NATIKA GROUP</b>", styles["Heading2"])
+    style_meta = ParagraphStyle("meta_rh", parent=style_n, fontSize=8.5)
+    meta = Paragraph(f"<b>{numero}</b> &nbsp;·&nbsp; {demande.get('date', '—')}", style_meta)
+    bloc_titre = [Paragraph("DÉCISION RH", style_titre), Spacer(1, 0.15 * cm), meta]
+    entete = Table([[logo_cell, bloc_titre]], colWidths=[4.5 * cm, 12.2 * cm])
+    entete.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    elements.append(entete)
+    elements.append(Spacer(1, 0.3 * cm))
+    elements.append(HRFlowable(width="100%", thickness=1.5, color=couleur_verte, spaceAfter=0.5 * cm))
+
+    data = [
+        ["Département concerné", demande.get("departement_concerne", "—")],
+        ["Demandeur", demande.get("nom_demandeur", "—")],
+        ["Type de besoin", demande.get("type_besoin", "—")],
+        ["Intitulé", demande.get("intitule", "—")],
+        ["Nombre de personnes", str(demande.get("nombre_personnes", "—"))],
+        ["Durée", demande.get("duree", "—")],
+        ["Coût estimé", f"{float(demande.get('cout_estime') or 0):,.2f} EUR"],
+        ["Statut final", demande.get("statut", "—")],
+    ]
+    t = Table(data, colWidths=[6 * cm, 10.7 * cm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), couleur_verte),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(t)
+    elements.append(Spacer(1, 0.6 * cm))
+
+    elements.append(Paragraph("<b>Motif / justification</b>", ParagraphStyle("mj", parent=style_n, fontName="Helvetica-Bold")))
+    elements.append(Spacer(1, 0.2 * cm))
+    motif_tbl = Table([[Paragraph(demande.get("motif") or "—", style_n)]], colWidths=[16.7 * cm])
+    motif_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), couleur_fond_gris),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(motif_tbl)
+    elements.append(Spacer(1, 0.6 * cm))
+
+    elements.append(Paragraph(f"<b>Avis Finance :</b> {demande.get('avis_finance') or '—'}", style_n))
+    elements.append(Paragraph(f"<b>Décision Direction :</b> {demande.get('avis_direction') or '—'}", style_n))
+    if demande.get("motif_refus"):
+        elements.append(Paragraph(f"<b>Observation :</b> {demande.get('motif_refus')}", style_n))
+
+    doc.build(elements)
+    return buffer.getvalue()
+
+
+def afficher_module_rh(nom_departement, type_profil):
+    st.subheader("👥 Demandes de Ressources Humaines")
+    st.caption("Circuit dédié : Ressources Humaines → Finance → Direction Générale / DGA. Ce circuit ne passe pas par les Achats.")
+
+    est_rh = (nom_departement == DEPT_RH)
+    onglets = ["📝 Nouvelle demande RH"] if est_rh else []
+    onglets.append("📊 Suivi des demandes RH")
+    tabs_rh = st.tabs(onglets)
+
+    decalage = 0
+    if est_rh:
+        decalage = 1
+        with tabs_rh[0]:
+            st.markdown("### ➕ Soumettre une demande de ressources humaines")
+            with st.form("form_demande_rh", clear_on_submit=True):
+                intitule = st.text_input("Intitulé de la demande")
+                nom_demandeur = st.text_input("Nom du demandeur (personne à l'origine de la demande)")
+                dept_concerne = st.selectbox(
+                    "Département concerné par le besoin",
+                    sorted({u["dept"] for u in UTILISATEURS.values() if u["type"] == "standard"})
+                )
+                type_besoin = st.selectbox("Type de besoin", ["Recrutement", "Formation", "Main-d'œuvre saisonnière", "Prestation RH externe", "Autre"])
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    nombre_personnes = st.number_input("Nombre de personnes concernées", min_value=0, step=1, value=1)
+                with col_r2:
+                    duree = st.text_input("Durée (ex: 6 semaines, CDD 6 mois, permanent)")
+                motif = st.text_area("Motif / justification du besoin")
+                cout_estime = st.number_input("Coût estimé (€)", min_value=0.0, step=50.0)
+                fichier_joint = st.file_uploader("Pièce jointe (fiche de poste, programme de formation...)", type=["pdf", "png", "jpg", "jpeg"])
+                soumettre = st.form_submit_button("Soumettre la demande RH")
+                if soumettre:
+                    if not intitule.strip() or not motif.strip():
+                        st.warning("Veuillez renseigner l'intitulé et le motif de la demande.")
+                    else:
+                        nom_fich = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_joint) if fichier_joint else ""
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            """INSERT INTO demandes_rh (departement_concerne, nom_demandeur, type_besoin, intitule, nombre_personnes,
+                               duree, motif, cout_estime, statut, etape_actuelle, avis_finance, avis_direction, motif_refus, date, fichier_joint, archive)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+                            (dept_concerne, nom_demandeur, type_besoin, intitule, nombre_personnes, duree, motif, cout_estime,
+                             "En attente Finance", "Finance", "En attente", "En attente", "", datetime.now().strftime("%Y-%m-%d %H:%M"), nom_fich)
+                        )
+                        conn.commit()
+                        conn.close()
+                        notifier_succes("Demande RH transmise à la Finance avec succès !", icon="✅")
+                        st.rerun()
+
+    with tabs_rh[decalage]:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT id, departement_concerne, nom_demandeur, type_besoin, intitule, nombre_personnes, duree, motif,
+                      cout_estime, statut, etape_actuelle, avis_finance, avis_direction, motif_refus, date, fichier_joint
+               FROM demandes_rh WHERE archive = 0 ORDER BY id DESC"""
+        )
+        demandes_rh = cursor.fetchall()
+        conn.close()
+
+        if not demandes_rh:
+            st.info("Aucune demande RH enregistrée pour le moment.")
+        else:
+            for dr in demandes_rh:
+                (dr_id, dr_dept, dr_demandeur, dr_type, dr_intitule, dr_nb, dr_duree, dr_motif,
+                 dr_cout, dr_statut, dr_etape, dr_avis_fin, dr_avis_dir, dr_motif_refus, dr_date, dr_fichier) = dr
+
+                with st.expander(f"👥 [{dr_dept}] {dr_intitule} — {dr_statut}"):
+                    st.markdown(f"**Type de besoin :** {dr_type} | **Personnes :** {dr_nb} | **Durée :** {dr_duree or '—'}")
+                    st.markdown(f"**Demandeur :** {dr_demandeur or '—'} | **Date :** {dr_date}")
+                    st.markdown(f"**Coût estimé :** {float(dr_cout or 0):,.2f} €")
+                    st.markdown(f"**Statut :** {pill_statut(dr_statut)} — Étape : {dr_etape}", unsafe_allow_html=True)
+                    st.markdown("**Motif / justification :**")
+                    st.write(dr_motif or "—")
+                    if dr_motif_refus:
+                        st.warning(f"Observation : {dr_motif_refus}")
+                    proposer_telechargement(DOSSIER_UPLOADS, dr_fichier, "📎 Télécharger la pièce jointe", f"dl_rh_{dr_id}")
+
+                    # --- Décision Finance ---
+                    if type_profil == "finance" and dr_etape == "Finance":
+                        st.markdown("---")
+                        st.markdown("##### 💰 Décision Finance")
+                        with st.form(f"form_rh_finance_{dr_id}"):
+                            action_fin = st.selectbox("Décision", ["Valider", "Demander une modification", "Refuser"], key=f"rh_fin_act_{dr_id}")
+                            commentaire_fin = st.text_area("Commentaire", key=f"rh_fin_com_{dr_id}")
+                            if st.form_submit_button("Appliquer la décision"):
+                                if action_fin == "Valider":
+                                    n_statut, n_etape, n_avis = "En attente Direction", "Direction Générale", "Validé"
+                                    n_motif = ""
+                                elif action_fin == "Demander une modification":
+                                    n_statut, n_etape, n_avis = "Modif demandée", "Ressources Humaines", "Modification demandée"
+                                    n_motif = f"[Finance] {commentaire_fin}"
+                                else:
+                                    n_statut, n_etape, n_avis = "Refusé", "Clôturé", "Refusé"
+                                    n_motif = f"[Finance] {commentaire_fin}"
+                                conn_f = get_db_connection()
+                                cur_f = conn_f.cursor()
+                                cur_f.execute(
+                                    "UPDATE demandes_rh SET statut = ?, etape_actuelle = ?, avis_finance = ?, motif_refus = ? WHERE id = ?",
+                                    (n_statut, n_etape, n_avis, n_motif, dr_id)
+                                )
+                                conn_f.commit()
+                                conn_f.close()
+                                notifier_succes("Décision Finance enregistrée !", icon="✅")
+                                st.rerun()
+
+                    # --- Décision Direction / DGA ---
+                    if type_profil == "fondateur" and dr_etape == "Direction Générale":
+                        st.markdown("---")
+                        st.markdown("##### 🏛️ Décision Direction Générale / DGA")
+                        with st.form(f"form_rh_direction_{dr_id}"):
+                            action_dir = st.selectbox("Décision finale", ["Valider et autoriser", "Demander une modification", "Refuser"], key=f"rh_dir_act_{dr_id}")
+                            commentaire_dir = st.text_area("Commentaire", key=f"rh_dir_com_{dr_id}")
+                            if st.form_submit_button("Appliquer la décision finale"):
+                                if action_dir == "Valider et autoriser":
+                                    n_statut, n_etape, n_avis = "Validé & Autorisé", "Exécution RH", "Validé"
+                                    n_motif = ""
+                                elif action_dir == "Demander une modification":
+                                    n_statut, n_etape, n_avis = "Modif demandée", "Ressources Humaines", "Modification demandée"
+                                    n_motif = f"[Direction] {commentaire_dir}"
+                                else:
+                                    n_statut, n_etape, n_avis = "Refusé", "Clôturé", "Refusé"
+                                    n_motif = f"[Direction] {commentaire_dir}"
+                                conn_d = get_db_connection()
+                                cur_d = conn_d.cursor()
+                                cur_d.execute(
+                                    "UPDATE demandes_rh SET statut = ?, etape_actuelle = ?, avis_direction = ?, motif_refus = ? WHERE id = ?",
+                                    (n_statut, n_etape, n_avis, n_motif, dr_id)
+                                )
+                                conn_d.commit()
+                                conn_d.close()
+                                notifier_succes("Décision finale enregistrée !", icon="✅")
+                                st.rerun()
+
+                    # --- Correction par RH après demande de modification ---
+                    if est_rh and dr_statut == "Modif demandée":
+                        st.markdown("---")
+                        st.markdown("##### ✏️ Corriger et resoumettre")
+                        with st.form(f"form_rh_modif_{dr_id}"):
+                            n_intitule = st.text_input("Intitulé", value=dr_intitule, key=f"rh_mod_int_{dr_id}")
+                            n_motif_txt = st.text_area("Motif / justification", value=dr_motif, key=f"rh_mod_mot_{dr_id}")
+                            n_cout = st.number_input("Coût estimé (€)", min_value=0.0, value=float(dr_cout or 0), step=50.0, key=f"rh_mod_cout_{dr_id}")
+                            if st.form_submit_button("Resoumettre à la Finance"):
+                                conn_m = get_db_connection()
+                                cur_m = conn_m.cursor()
+                                cur_m.execute(
+                                    "UPDATE demandes_rh SET intitule = ?, motif = ?, cout_estime = ?, statut = ?, etape_actuelle = ?, motif_refus = '' WHERE id = ?",
+                                    (n_intitule, n_motif_txt, n_cout, "En attente Finance", "Finance", dr_id)
+                                )
+                                conn_m.commit()
+                                conn_m.close()
+                                notifier_succes("Demande RH corrigée et resoumise !", icon="✅")
+                                st.rerun()
+
+                    # --- Document de décision RH ---
+                    if dr_statut in ("Validé & Autorisé", "Refusé"):
+                        pdf_rh = generer_pdf_decision_rh({
+                            "id": dr_id, "departement_concerne": dr_dept, "nom_demandeur": dr_demandeur,
+                            "type_besoin": dr_type, "intitule": dr_intitule, "nombre_personnes": dr_nb,
+                            "duree": dr_duree, "motif": dr_motif, "cout_estime": dr_cout, "statut": dr_statut,
+                            "avis_finance": dr_avis_fin, "avis_direction": dr_avis_dir, "motif_refus": dr_motif_refus,
+                            "date": dr_date,
+                        })
+                        st.download_button("📥 Télécharger la décision RH (PDF)", data=pdf_rh,
+                                            file_name=f"Decision_RH_{dr_id}.pdf", mime="application/pdf", key=f"dl_drh_{dr_id}")
+
+
+def afficher_module_conventions(nom_departement, type_profil):
+    st.subheader("🎓 Registre des Conventions — Recherche & Développement")
+    st.caption("Registre de suivi des conventions du Centre de Recherche. Ce n'est pas un circuit de validation : R&D pilote ses dossiers, le Juridique dépose son avis.")
+
+    est_rd = (nom_departement == DEPT_RD)
+    est_juridique = (nom_departement == DEPT_JURIDIQUE)
+
+    if est_rd:
+        with st.expander("➕ Enregistrer une nouvelle convention"):
+            with st.form("form_nouvelle_convention", clear_on_submit=True):
+                partenaire = st.text_input("Partenaire (université, institut, ministère, bailleur...)")
+                type_conv = st.selectbox("Type de convention", ["Recherche", "Formation", "Institutionnelle", "Internationale"])
+                objet = st.text_area("Objet de la convention")
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    date_signature = st.date_input("Date de signature (ou prévisionnelle)", value=date.today())
+                with col_c2:
+                    date_echeance = st.date_input("Date d'échéance", value=date.today())
+                implication = st.selectbox("Implication financière", ["Aucune", "Financement reçu (subvention)", "Coût pour Natika"])
+                montant = st.number_input("Montant concerné (€, 0 si aucune implication)", min_value=0.0, step=100.0)
+                statut_conv = st.selectbox("Statut", ["En négociation", "En relecture juridique", "Signée", "Expirée", "Résiliée"])
+                fichier_projet = st.file_uploader("Projet de convention (PDF)", type=["pdf", "png", "jpg", "jpeg"])
+                notes = st.text_area("Notes de suivi (optionnel)")
+                if st.form_submit_button("Enregistrer la convention"):
+                    if not partenaire.strip() or not objet.strip():
+                        st.warning("Veuillez renseigner le partenaire et l'objet de la convention.")
+                    else:
+                        nom_fich = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_projet) if fichier_projet else ""
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            """INSERT INTO conventions (partenaire, type_convention, objet, date_signature, date_echeance,
+                               implication_financiere, montant, statut, fichier_projet, fichier_signe, avis_juridique,
+                               commentaire_juridique, notes_suivi, date_creation, archive)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'Non sollicité', '', ?, ?, 0)""",
+                            (partenaire, type_conv, objet, date_signature.strftime("%Y-%m-%d"), date_echeance.strftime("%Y-%m-%d"),
+                             implication, montant, statut_conv, nom_fich, notes, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                        )
+                        conn.commit()
+                        conn.close()
+                        notifier_succes("Convention enregistrée avec succès !", icon="✅")
+                        st.rerun()
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT id, partenaire, type_convention, objet, date_signature, date_echeance, implication_financiere,
+                  montant, statut, fichier_projet, fichier_signe, avis_juridique, commentaire_juridique, notes_suivi
+           FROM conventions WHERE archive = 0 ORDER BY date_echeance ASC"""
+    )
+    conventions = cursor.fetchall()
+    conn.close()
+
+    if not conventions:
+        st.info("Aucune convention enregistrée pour le moment.")
+        return
+
+    # --- Alertes d'échéance (calculées, sans table de notification) ---
+    aujourd_hui = date.today()
+    proches = []
+    for c in conventions:
+        try:
+            ech = datetime.strptime(c[5], "%Y-%m-%d").date()
+            jours = (ech - aujourd_hui).days
+            if 0 <= jours <= 90 and c[8] == "Signée":
+                proches.append((c[1], jours))
+        except (ValueError, TypeError):
+            pass
+    if proches:
+        st.warning("⏳ Conventions arrivant à échéance dans les 90 jours : " +
+                   " · ".join([f"{p} ({j} j)" for p, j in proches]))
+
+    st.markdown("---")
+    for c in conventions:
+        (c_id, c_part, c_type, c_objet, c_sign, c_ech, c_impl, c_montant, c_statut,
+         c_fich_proj, c_fich_signe, c_avis_jur, c_com_jur, c_notes) = c
+
+        try:
+            jours_restants = (datetime.strptime(c_ech, "%Y-%m-%d").date() - aujourd_hui).days
+        except (ValueError, TypeError):
+            jours_restants = None
+        alerte = " ⏳" if (jours_restants is not None and 0 <= jours_restants <= 90 and c_statut == "Signée") else ""
+        expire = " ⚠️ EXPIRÉE" if (jours_restants is not None and jours_restants < 0 and c_statut == "Signée") else ""
+
+        with st.expander(f"🎓 {c_part} — {c_type} — {c_statut}{alerte}{expire}"):
+            st.markdown(f"**Objet :** {c_objet}")
+            st.markdown(f"**Signature :** {c_sign} | **Échéance :** {c_ech}"
+                        + (f" ({jours_restants} jours restants)" if jours_restants is not None and jours_restants >= 0 else ""))
+            st.markdown(f"**Implication financière :** {c_impl}"
+                        + (f" — {float(c_montant or 0):,.2f} €" if c_impl != "Aucune" else ""))
+            st.markdown(f"**Avis juridique :** {c_avis_jur}")
+            if c_com_jur:
+                st.info(f"📝 Commentaire Juridique : {c_com_jur}")
+            if c_notes:
+                st.caption(f"Notes de suivi : {c_notes}")
+            proposer_telechargement(DOSSIER_UPLOADS, c_fich_proj, "📎 Projet de convention", f"dl_conv_proj_{c_id}")
+            proposer_telechargement(DOSSIER_UPLOADS, c_fich_signe, "📎 Convention signée", f"dl_conv_signe_{c_id}")
+
+            # --- R&D : mise à jour du dossier ---
+            if est_rd:
+                st.markdown("---")
+                st.markdown("##### ✏️ Mettre à jour la convention")
+                with st.form(f"form_maj_conv_{c_id}"):
+                    n_statut = st.selectbox("Statut", ["En négociation", "En relecture juridique", "Signée", "Expirée", "Résiliée"],
+                                             index=["En négociation", "En relecture juridique", "Signée", "Expirée", "Résiliée"].index(c_statut)
+                                             if c_statut in ["En négociation", "En relecture juridique", "Signée", "Expirée", "Résiliée"] else 0,
+                                             key=f"conv_st_{c_id}")
+                    n_notes = st.text_area("Notes de suivi", value=c_notes or "", key=f"conv_no_{c_id}")
+                    n_ech = st.text_input("Date d'échéance (AAAA-MM-JJ)", value=c_ech or "", key=f"conv_ech_{c_id}")
+                    n_fich_signe = st.file_uploader("Déposer la convention signée", type=["pdf", "png", "jpg", "jpeg"], key=f"conv_fs_{c_id}")
+                    if st.form_submit_button("Enregistrer les modifications"):
+                        fich_s = enregistrer_fichier_securise(DOSSIER_UPLOADS, n_fich_signe) if n_fich_signe else c_fich_signe
+                        conn_u = get_db_connection()
+                        cur_u = conn_u.cursor()
+                        cur_u.execute(
+                            "UPDATE conventions SET statut = ?, notes_suivi = ?, date_echeance = ?, fichier_signe = ? WHERE id = ?",
+                            (n_statut, n_notes, n_ech, fich_s, c_id)
+                        )
+                        conn_u.commit()
+                        conn_u.close()
+                        notifier_succes("Convention mise à jour !", icon="✅")
+                        st.rerun()
+
+            # --- Juridique : dépôt d'avis ---
+            if est_juridique:
+                st.markdown("---")
+                st.markdown("##### ⚖️ Avis du Juridique & Conformité")
+                with st.form(f"form_avis_jur_{c_id}"):
+                    n_avis = st.selectbox("Avis", ["Non sollicité", "En cours d'examen", "Favorable", "Favorable avec réserves", "Défavorable"],
+                                           key=f"jur_av_{c_id}")
+                    n_com = st.text_area("Commentaire / réserves", value=c_com_jur or "", key=f"jur_com_{c_id}")
+                    if st.form_submit_button("Déposer l'avis"):
+                        conn_j = get_db_connection()
+                        cur_j = conn_j.cursor()
+                        cur_j.execute("UPDATE conventions SET avis_juridique = ?, commentaire_juridique = ? WHERE id = ?",
+                                      (n_avis, n_com, c_id))
+                        conn_j.commit()
+                        conn_j.close()
+                        notifier_succes("Avis juridique enregistré !", icon="✅")
+                        st.rerun()
+
+    # --- Export ---
+    df_conv = pd.DataFrame(conventions, columns=[
+        "ID", "Partenaire", "Type", "Objet", "Signature", "Échéance", "Implication",
+        "Montant", "Statut", "f1", "f2", "Avis juridique", "Commentaire", "Notes"
+    ]).drop(columns=["f1", "f2"])
+    afficher_boutons_export(df_conv, "Registre_Conventions", "Registre des Conventions")
 
 
 def afficher_module_historique_virements():
@@ -2523,6 +2951,10 @@ elif st.session_state.tab_actif == "🗂️ Base Fournisseurs":
     afficher_module_fournisseurs(nom_dept, profil["type"])
 elif st.session_state.tab_actif == "💳 Historique des Virements":
     afficher_module_historique_virements()
+elif st.session_state.tab_actif == "👥 Demandes RH":
+    afficher_module_rh(nom_dept, profil["type"])
+elif st.session_state.tab_actif == "🎓 Registre des Conventions":
+    afficher_module_conventions(nom_dept, profil["type"])
 elif st.session_state.tab_actif == "🔍 Recherche Globale":
     afficher_module_recherche_globale(nom_dept, profil["type"])
 elif st.session_state.tab_actif == "📈 Statistiques":
