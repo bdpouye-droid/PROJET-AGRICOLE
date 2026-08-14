@@ -12,21 +12,17 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, HRFlowable
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-
 # ==========================================
 # CONFIGURATION DE LA PAGE
 # ==========================================
-
 st.set_page_config(
     page_title="Plateforme de Pilotage - Bureau d'Études",
     page_icon="🏢",
     layout="wide"
 )
-
 # ==========================================
 # DOSSIERS DE STOCKAGE & CACHE OPTIMISÉ
 # ==========================================
-
 DOSSIER_UPLOADS = "uploads_devis"
 DOSSIER_ETUDES = "uploads_etudes"
 DOSSIER_CDC = "uploads_cdc"
@@ -34,11 +30,9 @@ os.makedirs(DOSSIER_UPLOADS, exist_ok=True)
 os.makedirs(DOSSIER_ETUDES, exist_ok=True)
 os.makedirs(DOSSIER_CDC, exist_ok=True)
 CHEMIN_LOGO = "logo.png"
-
 # ==========================================
 # STYLE CSS PERSONNALISÉ & DESIGN MODERNE
 # ==========================================
-
 st.markdown("""
   <style>
     :root {
@@ -109,17 +103,13 @@ st.markdown("""
     [data-testid="stTabs"] [data-baseweb="tab-panel"] * { color: inherit; }
   </style>
 """, unsafe_allow_html=True)
-
 # ==========================================
 # NOTIFICATION CENTRÉE ANIMÉE
 # ==========================================
-
 def notifier_succes(message, icon="✅"):
     """À appeler juste avant st.rerun() pour afficher une notification animée
     au centre de l'écran une fois la page rechargée."""
     st.session_state["_notif_centre"] = {"message": message, "icon": icon}
-
-
 def afficher_notification_centre():
     """Affiche (une seule fois) la notification en attente, s'il y en a une."""
     notif = st.session_state.pop("_notif_centre", None)
@@ -132,18 +122,14 @@ def afficher_notification_centre():
           </div>
         </div>
         """, unsafe_allow_html=True)
-
-
 # ==========================================
 # UTILITAIRES : EXPORT EXCEL / PDF & CACHE
 # ==========================================
-
 def _lignes_texte(df: pd.DataFrame):
     lignes = []
     for enregistrement in df.to_dict(orient="records"):
         lignes.append(["" if v is None else str(v) for v in enregistrement.values()])
     return lignes
-
 def exporter_excel_bytes(df: pd.DataFrame, nom_feuille="Données"):
     buffer = io.BytesIO()
     feuille = nom_feuille[:31] or "Données"
@@ -162,7 +148,6 @@ def exporter_excel_bytes(df: pd.DataFrame, nom_feuille="Données"):
         except Exception:
             pass
     return buffer.getvalue()
-
 def exporter_pdf_bytes(df: pd.DataFrame, titre="Export", colonnes_max=8):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), topMargin=1.2 * cm, bottomMargin=1.2 * cm)
@@ -186,11 +171,9 @@ def exporter_pdf_bytes(df: pd.DataFrame, titre="Export", colonnes_max=8):
     elements.append(t)
     doc.build(elements)
     return buffer.getvalue()
-
 _UNITES_FR = ["zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix",
               "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"]
 _DIZAINES_FR = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante-dix", "quatre-vingt", "quatre-vingt-dix"]
-
 def _trois_chiffres_en_lettres_fr(n: int) -> str:
     mots = []
     centaines, reste = divmod(n, 100)
@@ -210,7 +193,6 @@ def _trois_chiffres_en_lettres_fr(n: int) -> str:
             else:
                 mots.append(_DIZAINES_FR[dizaine] + "-" + _UNITES_FR[unite])
     return " ".join(mots)
-
 def nombre_en_lettres_fr(n: int) -> str:
     if n == 0:
         return "zéro"
@@ -225,7 +207,6 @@ def nombre_en_lettres_fr(n: int) -> str:
         temp //= 1000
         i += 1
     return " ".join(parties)
-
 def montant_en_lettres(montant: float, devise: str = "EUR") -> str:
     entier = int(montant)
     centimes = round((montant - entier) * 100)
@@ -234,17 +215,15 @@ def montant_en_lettres(montant: float, devise: str = "EUR") -> str:
     if centimes > 0:
         texte += f" et {nombre_en_lettres_fr(centimes)} centime{'s' if centimes > 1 else ''}"
     return texte[0].upper() + texte[1:]
-
-def generer_pdf_bon_commande(demande: dict) -> bytes:
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.3 * cm, bottomMargin=1.3 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
-    styles = getSampleStyleSheet()
+# ==========================================
+# BLOC "DÉSIGNATION" COMMUN AU BON DE COMMANDE ET AU BON DE RÉCEPTION
+# ==========================================
+def _construire_bloc_objet(demande: dict, styles, libelle_total: str = "TOTAL TTC À PAYER") -> list:
+    """Bloc 'Désignation' partagé par le Bon de Commande et le Bon de Réception :
+    mêmes colonnes, mêmes données, même mise en forme."""
+    style_n = styles["Normal"]
     couleur_verte = colors.HexColor("#7c9473")
     couleur_fonce = colors.HexColor("#2b3542")
-    couleur_fond_gris = colors.HexColor("#f2f1ed")
-    style_n = styles["Normal"]
-    style_b = ParagraphStyle("bloc_bold", parent=style_n, fontName="Helvetica-Bold")
-    style_titre = ParagraphStyle("titre_bc", parent=styles["Title"], fontSize=20, textColor=couleur_fonce)
 
     montant_total = float(demande.get("montant") or 0)
     montant_ht = demande.get("montant_ht")
@@ -253,95 +232,24 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
     quantite = demande.get("quantite")
     unite = demande.get("unite")
     prix_unitaire_ht = demande.get("prix_unitaire_ht")
+    montant_ht_affiche = montant_ht if (montant_ht is not None and montant_ht > 0) else montant_total
 
-    date_creation = demande.get("date_creation") or demande.get("date_validation") or ""
-    annee_creation = date_creation[:4] if date_creation else str(datetime.now().year)
-    annee_validation = (demande.get("date_validation") or "")[:4] or str(datetime.now().year)
-    numero_da = f"DA-{annee_creation}-{int(demande['id']):05d}"
-    numero_bc = f"BC-{annee_validation}-{int(demande['id']):05d}"
-
+    style_cell = ParagraphStyle("cell_objet", parent=style_n, fontSize=8.5)
+    style_entete = ParagraphStyle("entete_objet", parent=style_n, fontSize=8.5,
+                                  textColor=colors.whitesmoke, fontName="Helvetica-Bold")
     elements = []
 
-    # --- En-tête : logo + titre, métadonnées et statut sur une seule ligne ---
-    if os.path.exists(CHEMIN_LOGO):
-        logo_cell = Image(CHEMIN_LOGO, width=4 * cm, height=4 * cm, kind="proportional")
-    else:
-        logo_cell = Paragraph("<b>NATIKA GROUP</b>", styles["Heading2"])
-    badge_statut = Table([["Statut : VALIDÉ"]], colWidths=[2.9 * cm])
-    badge_statut.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#e4efe0")),
-        ("TEXTCOLOR", (0, 0), (-1, -1), couleur_verte),
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    date_courte = (demande.get("date_validation") or "—").split(" ")[0]
-    style_meta = ParagraphStyle("meta_bc", parent=style_n, fontSize=8.5)
-    meta_texte = Paragraph(f"<b>{numero_bc}</b> &nbsp;·&nbsp; {numero_da} &nbsp;·&nbsp; {date_courte}", style_meta)
-    ligne_meta = Table([[meta_texte, badge_statut]], colWidths=[9.3 * cm, 2.9 * cm])
-    ligne_meta.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
-    bloc_titre = [Paragraph("BON DE COMMANDE", style_titre), Spacer(1, 0.15 * cm), ligne_meta]
-    entete = Table([[logo_cell, bloc_titre]], colWidths=[4.5 * cm, 12.2 * cm])
-    entete.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
-    elements.append(entete)
-    elements.append(Spacer(1, 0.3 * cm))
-    elements.append(HRFlowable(width="100%", thickness=1.5, color=couleur_verte, spaceAfter=0.5 * cm))
-
-    # --- Fournisseur / Acheteur (encadrés grisés) ---
-    fourn = demande.get("fournisseur_infos") or {}
-    lignes_fournisseur = [Paragraph("<b>FOURNISSEUR</b>", style_b), Paragraph(demande.get("fournisseur") or "—", style_n)]
-    if fourn:
-        lib_fiscal, lib_rc = libelles_identifiants_pays(fourn.get("pays"))
-        if fourn.get("pays"):
-            lignes_fournisseur.append(Paragraph(f"Pays : {fourn['pays']}", style_n))
-        if fourn.get("adresse"):
-            lignes_fournisseur.append(Paragraph(f"Adresse : {fourn['adresse']}", style_n))
-        if fourn.get("telephone"):
-            lignes_fournisseur.append(Paragraph(f"Tél : {fourn['telephone']}", style_n))
-        if fourn.get("email"):
-            lignes_fournisseur.append(Paragraph(f"Email : {fourn['email']}", style_n))
-        if fourn.get("nif"):
-            lignes_fournisseur.append(Paragraph(f"{lib_fiscal} : {fourn['nif']}", style_n))
-        if fourn.get("rccm"):
-            lignes_fournisseur.append(Paragraph(f"{lib_rc} : {fourn['rccm']}", style_n))
-        if fourn.get("contact_commercial"):
-            lignes_fournisseur.append(Paragraph(f"Contact : {fourn['contact_commercial']}", style_n))
-    else:
-        lignes_fournisseur.append(Paragraph("<font color='#8a4b12'><b>⚠ Fournisseur non enregistré dans la Base Fournisseurs — coordonnées légales absentes.</b></font>", style_n))
-
-    bloc_acheteur = [
-        Paragraph("<b>ACHETEUR</b>", style_b),
-        Paragraph("Natika Group", style_n),
-        Paragraph(f"Département : {demande.get('departement', '—')}", style_n),
-    ]
-    if demande.get("nom_demandeur"):
-        bloc_acheteur.append(Paragraph(f"Demandeur : {demande['nom_demandeur']}", style_n))
-
-    parties = Table([[lignes_fournisseur, bloc_acheteur]], colWidths=[8.35 * cm, 8.35 * cm])
-    parties.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BACKGROUND", (0, 0), (-1, -1), couleur_fond_gris),
-        ("BOX", (0, 0), (0, 0), 0.6, colors.HexColor("#c7c4ba")),
-        ("BOX", (1, 0), (1, 0), 0.6, colors.HexColor("#c7c4ba")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-        ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-    ]))
-    elements.append(parties)
-    elements.append(Spacer(1, 0.6 * cm))
-
-    # --- Objet de la commande ---
-    montant_ht_affiche = montant_ht if (montant_ht is not None and montant_ht > 0) else montant_total
-    style_cell_petit = ParagraphStyle("cell_petit", parent=style_n, fontSize=8.5)
-    style_entete_petit = ParagraphStyle("entete_petit", parent=style_n, fontSize=8.5, textColor=colors.whitesmoke, fontName="Helvetica-Bold")
     if quantite is not None and prix_unitaire_ht is not None:
         objet = Table([
-            [Paragraph("Désignation", style_entete_petit), Paragraph("Réf.", style_entete_petit), Paragraph("Qté", style_entete_petit),
-             Paragraph("Unité", style_entete_petit), Paragraph("P.U. HT", style_entete_petit), Paragraph("Montant HT", style_entete_petit)],
-            [Paragraph(f"<b>{demande.get('titre', '')}</b><br/>{demande.get('besoins') or ''}", style_cell_petit),
-             Paragraph(demande.get("reference_produit") or "—", style_cell_petit), Paragraph(f"{quantite:g}", style_cell_petit),
-             Paragraph(unite or "—", style_cell_petit), Paragraph(f"{prix_unitaire_ht:,.2f}", style_cell_petit),
-             Paragraph(f"{montant_ht_affiche:,.2f} {devise}", style_cell_petit)],
+            [Paragraph("Désignation", style_entete), Paragraph("Réf.", style_entete),
+             Paragraph("Qté", style_entete), Paragraph("Unité", style_entete),
+             Paragraph("P.U. HT", style_entete), Paragraph("Montant HT", style_entete)],
+            [Paragraph(f"<b>{demande.get('titre', '')}</b><br/>{demande.get('besoins') or ''}", style_cell),
+             Paragraph(demande.get("reference_produit") or "—", style_cell),
+             Paragraph(f"{quantite:g}", style_cell),
+             Paragraph(unite or "—", style_cell),
+             Paragraph(f"{prix_unitaire_ht:,.2f}", style_cell),
+             Paragraph(f"{montant_ht_affiche:,.2f} {devise}", style_cell)],
         ], colWidths=[7.0 * cm, 2.0 * cm, 1.3 * cm, 1.9 * cm, 2.2 * cm, 2.3 * cm])
         objet.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), couleur_verte),
@@ -368,12 +276,10 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
     elements.append(objet)
     elements.append(Spacer(1, 0.25 * cm))
 
-    # --- Récapitulatif HT / TVA / TTC (uniquement si un HT réel existe) ---
     if montant_ht is not None and montant_ht > 0 and taux_tva is not None:
-        montant_tva_calc = montant_ht * taux_tva / 100
         recap = Table([
             ["Sous-total HT", f"{montant_ht:,.2f} {devise}"],
-            [f"TVA ({taux_tva:g}%)", f"{montant_tva_calc:,.2f} {devise}"],
+            [f"TVA ({taux_tva:g}%)", f"{montant_ht * taux_tva / 100:,.2f} {devise}"],
         ], colWidths=[13 * cm, 3.7 * cm])
         recap.setStyle(TableStyle([
             ("ALIGN", (1, 0), (1, -1), "RIGHT"),
@@ -381,7 +287,7 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
         ]))
         elements.append(recap)
 
-    total_tbl = Table([["TOTAL TTC À PAYER", f"{montant_total:,.2f} {devise}"]], colWidths=[13 * cm, 3.7 * cm])
+    total_tbl = Table([[libelle_total, f"{montant_total:,.2f} {devise}"]], colWidths=[13 * cm, 3.7 * cm])
     total_tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), couleur_fonce),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.whitesmoke),
@@ -391,10 +297,94 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
         ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
     ]))
     elements.append(total_tbl)
+    return elements
+def generer_pdf_bon_commande(demande: dict) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.3 * cm, bottomMargin=1.3 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
+    styles = getSampleStyleSheet()
+    couleur_verte = colors.HexColor("#7c9473")
+    couleur_fonce = colors.HexColor("#2b3542")
+    couleur_fond_gris = colors.HexColor("#f2f1ed")
+    style_n = styles["Normal"]
+    style_b = ParagraphStyle("bloc_bold", parent=style_n, fontName="Helvetica-Bold")
+    style_titre = ParagraphStyle("titre_bc", parent=styles["Title"], fontSize=20, textColor=couleur_fonce)
+    montant_total = float(demande.get("montant") or 0)
+    devise = demande.get("devise") or "EUR"
+    date_creation = demande.get("date_creation") or demande.get("date_validation") or ""
+    annee_creation = date_creation[:4] if date_creation else str(datetime.now().year)
+    annee_validation = (demande.get("date_validation") or "")[:4] or str(datetime.now().year)
+    numero_da = f"DA-{annee_creation}-{int(demande['id']):05d}"
+    numero_bc = f"BC-{annee_validation}-{int(demande['id']):05d}"
+    elements = []
+    # --- En-tête : logo + titre, métadonnées et statut sur une seule ligne ---
+    if os.path.exists(CHEMIN_LOGO):
+        logo_cell = Image(CHEMIN_LOGO, width=4 * cm, height=4 * cm, kind="proportional")
+    else:
+        logo_cell = Paragraph("<b>NATIKA GROUP</b>", styles["Heading2"])
+    badge_statut = Table([["Statut : VALIDÉ"]], colWidths=[2.9 * cm])
+    badge_statut.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#e4efe0")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), couleur_verte),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    date_courte = (demande.get("date_validation") or "—").split(" ")[0]
+    style_meta = ParagraphStyle("meta_bc", parent=style_n, fontSize=8.5)
+    meta_texte = Paragraph(f"<b>{numero_bc}</b> &nbsp;·&nbsp; {numero_da} &nbsp;·&nbsp; {date_courte}", style_meta)
+    ligne_meta = Table([[meta_texte, badge_statut]], colWidths=[9.3 * cm, 2.9 * cm])
+    ligne_meta.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    bloc_titre = [Paragraph("BON DE COMMANDE", style_titre), Spacer(1, 0.15 * cm), ligne_meta]
+    entete = Table([[logo_cell, bloc_titre]], colWidths=[4.5 * cm, 12.2 * cm])
+    entete.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    elements.append(entete)
+    elements.append(Spacer(1, 0.3 * cm))
+    elements.append(HRFlowable(width="100%", thickness=1.5, color=couleur_verte, spaceAfter=0.5 * cm))
+    # --- Fournisseur / Acheteur (encadrés grisés) ---
+    fourn = demande.get("fournisseur_infos") or {}
+    lignes_fournisseur = [Paragraph("<b>FOURNISSEUR</b>", style_b), Paragraph(demande.get("fournisseur") or "—", style_n)]
+    if fourn:
+        lib_fiscal, lib_rc = libelles_identifiants_pays(fourn.get("pays"))
+        if fourn.get("pays"):
+            lignes_fournisseur.append(Paragraph(f"Pays : {fourn['pays']}", style_n))
+        if fourn.get("adresse"):
+            lignes_fournisseur.append(Paragraph(f"Adresse : {fourn['adresse']}", style_n))
+        if fourn.get("telephone"):
+            lignes_fournisseur.append(Paragraph(f"Tél : {fourn['telephone']}", style_n))
+        if fourn.get("email"):
+            lignes_fournisseur.append(Paragraph(f"Email : {fourn['email']}", style_n))
+        if fourn.get("nif"):
+            lignes_fournisseur.append(Paragraph(f"{lib_fiscal} : {fourn['nif']}", style_n))
+        if fourn.get("rccm"):
+            lignes_fournisseur.append(Paragraph(f"{lib_rc} : {fourn['rccm']}", style_n))
+        if fourn.get("contact_commercial"):
+            lignes_fournisseur.append(Paragraph(f"Contact : {fourn['contact_commercial']}", style_n))
+    else:
+        lignes_fournisseur.append(Paragraph("<font color='#8a4b12'><b>⚠ Fournisseur non enregistré dans la Base Fournisseurs — coordonnées légales absentes.</b></font>", style_n))
+    bloc_acheteur = [
+        Paragraph("<b>ACHETEUR</b>", style_b),
+        Paragraph("Natika Group", style_n),
+        Paragraph(f"Département : {demande.get('departement', '—')}", style_n),
+    ]
+    if demande.get("nom_demandeur"):
+        bloc_acheteur.append(Paragraph(f"Demandeur : {demande['nom_demandeur']}", style_n))
+    parties = Table([[lignes_fournisseur, bloc_acheteur]], colWidths=[8.35 * cm, 8.35 * cm])
+    parties.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BACKGROUND", (0, 0), (-1, -1), couleur_fond_gris),
+        ("BOX", (0, 0), (0, 0), 0.6, colors.HexColor("#c7c4ba")),
+        ("BOX", (1, 0), (1, 0), 0.6, colors.HexColor("#c7c4ba")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    elements.append(parties)
+    elements.append(Spacer(1, 0.6 * cm))
+    # --- Objet de la commande (bloc commun BC / BR) ---
+    elements.extend(_construire_bloc_objet(demande, styles, "TOTAL TTC À PAYER"))
     elements.append(Spacer(1, 0.3 * cm))
     elements.append(Paragraph(f"<i>Arrêté à la somme de : {montant_en_lettres(montant_total, devise)}.</i>", style_n))
     elements.append(Spacer(1, 0.8 * cm))
-
     # --- Échéancier de paiement (simplifié, encadré) ---
     tranches = demande.get("tranches") or []
     if len(tranches) == 1:
@@ -424,21 +414,13 @@ def generer_pdf_bon_commande(demande: dict) -> bytes:
         ]))
         elements.append(tr_tbl)
     elements.append(Spacer(1, 1.4 * cm))
-
     # --- Signature (zone unique) ---
     elements.append(HRFlowable(width="100%", thickness=0.8, color=colors.HexColor("#c7c4ba"), spaceAfter=0.4 * cm))
     elements.append(Paragraph(
         "Date et signature de l'acheteur, précédée de la mention « Bon pour accord »", style_n
     ))
-    elements.append(Spacer(1, 1.6 * cm))
-    elements.append(Paragraph(
-        f"Document {numero_bc} (réf. {numero_da}) généré automatiquement le {datetime.now().strftime('%d/%m/%Y à %H:%M')} "
-        f"suite à la validation finale de la Direction Générale.", styles["Italic"]
-    ))
-
     doc.build(elements)
     return buffer.getvalue()
-
 def generer_pdf_bon_reception(demande: dict) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.3 * cm, bottomMargin=1.3 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
@@ -448,11 +430,13 @@ def generer_pdf_bon_reception(demande: dict) -> bytes:
     style_n = styles["Normal"]
     style_b = ParagraphStyle("bloc_bold_r", parent=style_n, fontName="Helvetica-Bold")
     style_titre = ParagraphStyle("titre_br", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#2b3542"))
-
+    date_creation = demande.get("date_creation") or ""
+    annee_da = date_creation[:4] if date_creation else str(datetime.now().year)
     numero_br = f"BR-{datetime.now().year}-{int(demande['id']):05d}"
-    numero_da = f"DA-{datetime.now().year}-{int(demande['id']):05d}"
+    numero_bc = f"BC-{annee_da}-{int(demande['id']):05d}"
+    numero_da = f"DA-{annee_da}-{int(demande['id']):05d}"
     elements = []
-
+    # --- En-tête ---
     if os.path.exists(CHEMIN_LOGO):
         logo_cell = Image(CHEMIN_LOGO, width=4 * cm, height=4 * cm, kind="proportional")
     else:
@@ -470,7 +454,10 @@ def generer_pdf_bon_reception(demande: dict) -> bytes:
         ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
     style_meta = ParagraphStyle("meta_br", parent=style_n, fontSize=8.5)
-    meta_texte = Paragraph(f"<b>{numero_br}</b> &nbsp;·&nbsp; {numero_da} &nbsp;·&nbsp; {demande.get('date_cloture', '—')}", style_meta)
+    meta_texte = Paragraph(
+        f"<b>{numero_br}</b> &nbsp;·&nbsp; {numero_bc} &nbsp;·&nbsp; {numero_da} &nbsp;·&nbsp; {demande.get('date_cloture', '—')}",
+        style_meta
+    )
     ligne_meta = Table([[meta_texte, badge_statut]], colWidths=[8 * cm, 4.2 * cm])
     ligne_meta.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
     bloc_titre = [Paragraph("BON DE RÉCEPTION", style_titre), Spacer(1, 0.15 * cm), ligne_meta]
@@ -479,22 +466,47 @@ def generer_pdf_bon_reception(demande: dict) -> bytes:
     elements.append(entete)
     elements.append(Spacer(1, 0.3 * cm))
     elements.append(HRFlowable(width="100%", thickness=1.5, color=couleur_verte, spaceAfter=0.5 * cm))
-
-    info_bloc = [
-        Paragraph(f"<b>Département :</b> {demande.get('departement', '—')}", style_n),
-        Paragraph(f"<b>Intitulé :</b> {demande.get('titre', '—')}", style_n),
-        Paragraph(f"<b>Fournisseur :</b> {demande.get('fournisseur', '—')}", style_n),
+    # --- Fournisseur / Réceptionnaire (mêmes encadrés que le bon de commande) ---
+    fourn = demande.get("fournisseur_infos") or {}
+    lignes_fournisseur = [Paragraph("<b>FOURNISSEUR</b>", style_b), Paragraph(demande.get("fournisseur") or "—", style_n)]
+    if fourn:
+        lib_fiscal, lib_rc = libelles_identifiants_pays(fourn.get("pays"))
+        if fourn.get("pays"):
+            lignes_fournisseur.append(Paragraph(f"Pays : {fourn['pays']}", style_n))
+        if fourn.get("adresse"):
+            lignes_fournisseur.append(Paragraph(f"Adresse : {fourn['adresse']}", style_n))
+        if fourn.get("telephone"):
+            lignes_fournisseur.append(Paragraph(f"Tél : {fourn['telephone']}", style_n))
+        if fourn.get("email"):
+            lignes_fournisseur.append(Paragraph(f"Email : {fourn['email']}", style_n))
+        if fourn.get("nif"):
+            lignes_fournisseur.append(Paragraph(f"{lib_fiscal} : {fourn['nif']}", style_n))
+        if fourn.get("rccm"):
+            lignes_fournisseur.append(Paragraph(f"{lib_rc} : {fourn['rccm']}", style_n))
+        if fourn.get("contact_commercial"):
+            lignes_fournisseur.append(Paragraph(f"Contact : {fourn['contact_commercial']}", style_n))
+    bloc_receptionnaire = [
+        Paragraph("<b>RÉCEPTIONNAIRE</b>", style_b),
+        Paragraph("Natika Group", style_n),
+        Paragraph(f"Département : {demande.get('departement', '—')}", style_n),
     ]
-    info_tbl = Table([[info_bloc]], colWidths=[16.7 * cm])
-    info_tbl.setStyle(TableStyle([
+    if demande.get("nom_demandeur"):
+        bloc_receptionnaire.append(Paragraph(f"Demandeur : {demande['nom_demandeur']}", style_n))
+    parties = Table([[lignes_fournisseur, bloc_receptionnaire]], colWidths=[8.35 * cm, 8.35 * cm])
+    parties.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("BACKGROUND", (0, 0), (-1, -1), couleur_fond_gris),
-        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#c7c4ba")),
+        ("BOX", (0, 0), (0, 0), 0.6, colors.HexColor("#c7c4ba")),
+        ("BOX", (1, 0), (1, 0), 0.6, colors.HexColor("#c7c4ba")),
         ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
         ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
     ]))
-    elements.append(info_tbl)
+    elements.append(parties)
     elements.append(Spacer(1, 0.6 * cm))
-
+    # --- Désignation : bloc identique au bon de commande ---
+    elements.extend(_construire_bloc_objet(demande, styles, "TOTAL TTC DE LA COMMANDE"))
+    elements.append(Spacer(1, 0.7 * cm))
+    # --- Historique des réceptions déclarées ---
     elements.append(Paragraph("<b>Historique des réceptions déclarées</b>", style_b))
     elements.append(Spacer(1, 0.2 * cm))
     receptions = demande.get("receptions") or []
@@ -514,22 +526,22 @@ def generer_pdf_bon_reception(demande: dict) -> bytes:
     else:
         elements.append(Paragraph("—", style_n))
     elements.append(Spacer(1, 0.6 * cm))
-
     if demande.get("suivi_litige"):
         elements.append(Paragraph(f"<b>Suivi / commentaire Achats :</b> {demande.get('suivi_litige')}", style_n))
         elements.append(Spacer(1, 0.6 * cm))
-
+    # --- Résumé des paiements + traçabilité des quittances signées ---
     tranches = demande.get("tranches") or []
     tranches_payees = [t for t in tranches if t.get("statut") == "payee"]
     if tranches_payees:
         elements.append(Paragraph("<b>Résumé des paiements</b>", style_b))
         elements.append(Spacer(1, 0.2 * cm))
-        data_p = [["Tranche", "Référence", "Date", "Montant versé"]]
+        data_p = [["Tranche", "Référence", "Date", "Montant versé", "Quittance signée"]]
         for i, t in enumerate(tranches):
             if t.get("statut") == "payee":
                 data_p.append([f"Tranche {i + 1}", t.get("reference", "—"), t.get("date_execution", "—"),
-                                f"{float(t.get('montant_verse', 0) or 0):,.2f} {demande.get('devise', 'EUR')}"])
-        p_tbl = Table(data_p, colWidths=[2.5 * cm, 4.5 * cm, 3 * cm, 6.7 * cm])
+                                f"{float(t.get('montant_verse', 0) or 0):,.2f} {demande.get('devise', 'EUR')}",
+                                "Oui" if t.get("quittance_signee") else "Non"])
+        p_tbl = Table(data_p, colWidths=[2.3 * cm, 3.8 * cm, 2.6 * cm, 4.5 * cm, 3.5 * cm])
         p_tbl.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#5b8def")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
@@ -540,13 +552,10 @@ def generer_pdf_bon_reception(demande: dict) -> bytes:
         elements.append(p_tbl)
     elements.append(Spacer(1, 1.2 * cm))
     elements.append(Paragraph(
-        f"Document généré automatiquement le {datetime.now().strftime('%d/%m/%Y à %H:%M')} — clôturé par les Achats, "
-        f"trace interne de réception, n'engage pas le fournisseur.", styles["Italic"]
+        "Trace interne de réception — n'engage pas le fournisseur.", styles["Italic"]
     ))
-
     doc.build(elements)
     return buffer.getvalue()
-
 def generer_pdf_quittance_paiement(info: dict) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
@@ -555,10 +564,8 @@ def generer_pdf_quittance_paiement(info: dict) -> bytes:
     style_b = ParagraphStyle("bloc_bold_q", parent=style_n, fontName="Helvetica-Bold")
     style_titre = ParagraphStyle("titre_q", parent=styles["Title"], fontSize=18, textColor=colors.HexColor("#2b3542"))
     couleur_verte = colors.HexColor("#7c9473")
-
     numero_q = f"QP-{datetime.now().year}-{int(info['id']):05d}-{info.get('tranche_num', 1)}"
     elements = []
-
     if os.path.exists(CHEMIN_LOGO):
         logo_cell = Image(CHEMIN_LOGO, width=3.2 * cm, height=3.2 * cm, kind="proportional")
     else:
@@ -573,14 +580,12 @@ def generer_pdf_quittance_paiement(info: dict) -> bytes:
     elements.append(entete)
     elements.append(Spacer(1, 0.3 * cm))
     elements.append(HRFlowable(width="100%", thickness=1.5, color=couleur_verte, spaceAfter=0.6 * cm))
-
     elements.append(Paragraph(
         "Ce document est à faire signer par le fournisseur pour attester la réception du paiement "
         "correspondant à la tranche décrite ci-dessous, puis à réimporter signé dans le dossier de la demande.",
         style_n
     ))
     elements.append(Spacer(1, 0.6 * cm))
-
     data = [
         ["Fournisseur", info.get("fournisseur", "—")],
         ["Référence demande", f"n°{info['id']} — {info.get('titre', '')}"],
@@ -601,7 +606,6 @@ def generer_pdf_quittance_paiement(info: dict) -> bytes:
     ]))
     elements.append(t)
     elements.append(Spacer(1, 1.6 * cm))
-
     elements.append(HRFlowable(width="100%", thickness=0.8, color=colors.HexColor("#c7c4ba"), spaceAfter=0.4 * cm))
     elements.append(Paragraph(
         "Nom, cachet et signature du fournisseur, précédés de la mention « Reçu pour solde de tout compte sur cette tranche »",
@@ -612,10 +616,8 @@ def generer_pdf_quittance_paiement(info: dict) -> bytes:
         f"Document {numero_q} généré automatiquement par Natika Group le {datetime.now().strftime('%d/%m/%Y à %H:%M')}.",
         styles["Italic"]
     ))
-
     doc.build(elements)
     return buffer.getvalue()
-
 def afficher_boutons_export(df: pd.DataFrame, nom_base: str, titre_pdf: str = None, key_prefix: str = ""):
     if df is None or df.empty:
         return
@@ -644,7 +646,6 @@ def afficher_boutons_export(df: pd.DataFrame, nom_base: str, titre_pdf: str = No
             key=f"pdf_{key_prefix}",
             use_container_width=True
         )
-
 def pill_statut(statut: str) -> str:
     s = str(statut).lower()
     if "validé" in s or "financé" in s or "approuvé" in s or "signé" in s:
@@ -656,7 +657,6 @@ def pill_statut(statut: str) -> str:
     else:
         classe = "pill-attente"
     return f'<span class="{classe}">{statut}</span>'
-
 def date_du_jour_fr() -> str:
     """Formate la date du jour en français, sans dépendre de la locale du serveur."""
     jours = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
@@ -664,7 +664,6 @@ def date_du_jour_fr() -> str:
             "août", "septembre", "octobre", "novembre", "décembre"]
     maintenant = datetime.now()
     return f"{jours[maintenant.weekday()]} {maintenant.day} {mois[maintenant.month - 1]} {maintenant.year}"
-
 def est_recent(date_str, heures=48):
     """Renvoie True si la date (format '%Y-%m-%d %H:%M') a moins de `heures` heures."""
     try:
@@ -672,7 +671,6 @@ def est_recent(date_str, heures=48):
         return (datetime.now() - d).total_seconds() < heures * 3600
     except (ValueError, TypeError):
         return False
-
 def compter_nouveaux_elements(nom_dept, type_profil):
     """Compte, à partir des données déjà existantes (pas de table séparée),
     les éléments récents ou nécessitant une action pour le profil connecté."""
@@ -680,39 +678,32 @@ def compter_nouveaux_elements(nom_dept, type_profil):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-
         cursor.execute("SELECT destinataires_partage, date FROM etudes_metier WHERE archive = 0")
         for dests_json, d in cursor.fetchall():
             dests = json.loads(dests_json) if dests_json else []
             if (nom_dept in dests or type_profil == "fondateur") and est_recent(d):
                 total += 1
-
         cursor.execute("SELECT date FROM cahiers_charges WHERE archive = 0")
         for (d,) in cursor.fetchall():
             if est_recent(d):
                 total += 1
-
         if type_profil in ["achats", "finance", "fondateur"]:
             cursor.execute("SELECT COUNT(*) FROM demandes WHERE etape_actuelle = ? AND statut LIKE 'En attente%' AND archive = 0", (nom_dept,))
             total += cursor.fetchone()[0]
         else:
             cursor.execute("SELECT COUNT(*) FROM demandes WHERE departement = ? AND statut = 'Modif demandée' AND archive = 0", (nom_dept,))
             total += cursor.fetchone()[0]
-
         conn.close()
     except sqlite3.OperationalError:
         pass
     return total
-
 def parser_tranches(modalites_json) -> list:
     try:
         return json.loads(modalites_json) if modalites_json else []
     except (json.JSONDecodeError, TypeError):
         return []
-
 def parser_receptions(receptions_json) -> list:
     return parser_tranches(receptions_json)
-
 PAYS_LIBELLES_IDENTIFIANTS = {
     "Sénégal": ("NIF (Identifiant fiscal)", "RCCM (Registre du Commerce)"),
     "France": ("SIRET (Identifiant fiscal)", "SIREN (Registre du Commerce)"),
@@ -721,37 +712,30 @@ PAYS_LIBELLES_IDENTIFIANTS = {
     "Maroc": ("Identifiant Fiscal (IF)", "Registre du Commerce (RC)"),
 }
 PAYS_DISPONIBLES = list(PAYS_LIBELLES_IDENTIFIANTS.keys()) + ["Autre"]
-
 def libelles_identifiants_pays(pays: str):
     return PAYS_LIBELLES_IDENTIFIANTS.get(pays, ("Identifiant fiscal", "Identifiant registre de commerce"))
-
 DECLENCHEUR_LIBELLE_COURT = {
     "Acompte à la signature (validation Direction)": "acompte à la commande",
     "À l'envoi du bon de commande": "à la commande",
     "À la réception": "à la réception",
     "Date fixe / Autre": "selon accord",
 }
-
 def libelle_court_declencheur(declencheur: str) -> str:
     return DECLENCHEUR_LIBELLE_COURT.get(declencheur, declencheur)
-
 def formater_modalites_paiement(modalites_json: str) -> str:
     tranches = parser_tranches(modalites_json)
     if not tranches:
         return "—"
     return " · ".join([f"{t.get('pourcentage', 0)}% {libelle_court_declencheur(t.get('declencheur', ''))}" for t in tranches])
-
 def fournisseur_affiche(fournisseur_propose: str, fournisseur_retenu: str) -> str:
     if fournisseur_retenu:
         return f"{fournisseur_retenu} ✅ (retenu par les Achats)"
     elif fournisseur_propose:
         return f"{fournisseur_propose} (pressenti par l'émetteur, non confirmé)"
     return "Non renseigné"
-
 # ==========================================
 # INITIALISATION BASE DE DONNÉES
 # ==========================================
-
 def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False, timeout=15)
     cursor = conn.cursor()
@@ -868,7 +852,6 @@ def init_db():
     )''')
     conn.commit()
     conn.close()
-
 def migrer_schema():
     conn = sqlite3.connect("database.db", check_same_thread=False, timeout=15)
     cursor = conn.cursor()
@@ -920,13 +903,11 @@ def migrer_schema():
             except sqlite3.OperationalError:
                 time.sleep(0.3)
     conn.close()
-
 try:
     init_db()
     migrer_schema()
 except sqlite3.OperationalError as e:
     st.warning(f"⚠️ Initialisation de la base de données incomplète (l'application continue quand même) : {e}")
-
 def get_db_connection():
     conn = sqlite3.connect("database.db", check_same_thread=False, timeout=15)
     try:
@@ -934,7 +915,6 @@ def get_db_connection():
     except sqlite3.OperationalError:
         pass
     return conn
-
 @st.cache_data(ttl=60)
 def get_valeur_globale_cached(key):
     conn = get_db_connection()
@@ -943,10 +923,8 @@ def get_valeur_globale_cached(key):
     val = cursor.fetchone()
     conn.close()
     return float(val[0]) if val else 0.0
-
 def get_valeur_globale(key):
     return get_valeur_globale_cached(key)
-
 def set_valeur_globale(key, val):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -954,7 +932,6 @@ def set_valeur_globale(key, val):
     conn.commit()
     conn.close()
     st.cache_data.clear()
-
 def ajouter_log(action, acteur, details):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -964,7 +941,6 @@ def ajouter_log(action, acteur, details):
     )
     conn.commit()
     conn.close()
-
 def archiver_dans_corbeille(departement_auteur, type_element, resume, details_dict):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -974,7 +950,6 @@ def archiver_dans_corbeille(departement_auteur, type_element, resume, details_di
     )
     conn.commit()
     conn.close()
-
 def enregistrer_fichier_securise(dossier, fichier):
     if fichier is not None:
         ext = os.path.splitext(fichier.name)[1]
@@ -984,7 +959,6 @@ def enregistrer_fichier_securise(dossier, fichier):
             f.write(fichier.getbuffer())
         return nom_unique
     return ""
-
 def proposer_telechargement(dossier, nom_fichier, libelle, key):
     if not nom_fichier:
         return
@@ -997,11 +971,9 @@ def proposer_telechargement(dossier, nom_fichier, libelle, key):
             st.caption("📎 Pièce jointe indisponible (fichier introuvable).")
     except Exception:
         st.caption("📎 Impossible d'accéder à cette pièce jointe pour le moment.")
-
 # ==========================================
 # ROLES ET UTILISATEURS
 # ==========================================
-
 UTILISATEURS = {
     "DEP1": {"nom": "Agriculture", "mdp": "DEP123", "type": "standard", "dept": "Agriculture"},
     "DEP2": {"nom": "Élevage & Halieutique", "mdp": "DEP123", "type": "standard", "dept": "Élevage & Halieutique"},
@@ -1020,7 +992,6 @@ UTILISATEURS = {
     "fondateur": {"nom": "Direction Générale - Pilotage Stratégique", "mdp": "mboro2026", "type": "fondateur", "dept": "Direction Générale"},
     "DGA": {"nom": "Direction Générale Adjointe - Coordination Opérationnelle", "mdp": "DGA123", "type": "fondateur", "dept": "Direction Générale Adjointe"}
 }
-
 # Constantes réutilisées pour cibler les notifications par département
 DEPT_ACHATS = UTILISATEURS["DEP12"]["dept"]
 DEPT_FINANCE = UTILISATEURS["DEP13"]["dept"]
@@ -1028,22 +999,17 @@ DEPT_DIRECTION = UTILISATEURS["fondateur"]["dept"]
 DEPT_RH = UTILISATEURS["DEP8"]["dept"]
 DEPT_RD = UTILISATEURS["DEP6"]["dept"]
 DEPT_JURIDIQUE = UTILISATEURS["DEP14"]["dept"]
-
 # ==========================================
 # GESTION DE LA SESSION
 # ==========================================
-
 if 'user_connecte' not in st.session_state:
     st.session_state.user_connecte = None
 if 'tab_actif' not in st.session_state:
     st.session_state.tab_actif = "1. Études & Ingénierie"
-
 afficher_notification_centre()
-
 # ==========================================
 # AUTHENTIFICATION & BARRE LATÉRALE
 # ==========================================
-
 if st.session_state.user_connecte is None:
     # Écran de connexion : sidebar masquée, carte centrée sur fond dégradé
     st.markdown("""
@@ -1091,7 +1057,6 @@ if st.session_state.user_connecte is None:
       }
     </style>
     """, unsafe_allow_html=True)
-
     st.markdown("<div style='height: 9vh;'></div>", unsafe_allow_html=True)
     col_g, col_c, col_d = st.columns([1, 1.2, 1])
     with col_c:
@@ -1115,18 +1080,15 @@ if st.session_state.user_connecte is None:
                 else:
                     st.error("Identifiant ou mot de passe incorrect.")
     st.stop()
-
 # Écran connecté : logo + infos dans la sidebar normale
 if os.path.exists(CHEMIN_LOGO):
     st.sidebar.image(CHEMIN_LOGO, use_container_width=True)
 else:
     st.sidebar.markdown("## 🏢 Bureau d'Études")
 st.sidebar.markdown("---")
-
 user_key = st.session_state.user_connecte
 profil = UTILISATEURS[user_key]
 nom_dept = profil["dept"]
-
 st.sidebar.success(f"Connecté : {profil['nom']}")
 st.sidebar.markdown(
     f"<div style='display:inline-flex; align-items:center; gap:6px; background-color:rgba(124,148,115,0.18); "
@@ -1135,7 +1097,6 @@ st.sidebar.markdown(
     unsafe_allow_html=True
 )
 st.sidebar.markdown("---")
-
 if st.sidebar.button("Se déconnecter"):
     duree = ""
     if "heure_connexion" in st.session_state:
@@ -1146,9 +1107,7 @@ if st.sidebar.button("Se déconnecter"):
     st.session_state.user_connecte = None
     notifier_succes("Déconnexion effectuée.", icon="ℹ️")
     st.rerun()
-
 st.title(f"Tableau de Bord - {profil['nom']}")
-
 if profil["type"] in ["finance", "fondateur"]:
     b_total = get_valeur_globale("budget_global")
     b_engage = get_valeur_globale("budget_engage")
@@ -1160,11 +1119,9 @@ if profil["type"] in ["finance", "fondateur"]:
     c_b3.metric("Solde Disponible", f"{b_solde:,.2f} €", help="Budget Global − Budget Engagé.")
     st.caption(f"💳 Budget décaissé (virements confirmés) : {b_decaisse:,.2f} €")
     st.markdown("---")
-
 # ==========================================
 # NAVIGATION ONGLETS PRINCIPAUX
 # ==========================================
-
 onglets_possibles = ["1. Études & Ingénierie", "2. Cahiers des Charges", "3. Besoins & Achats", "📖 Journal de Bord", "🔍 Recherche Globale"]
 if profil["type"] in ["achats", "finance", "fondateur"] or nom_dept == "Juridique & Conformité":
     onglets_possibles.append("📊 Pôle de Contrôle (Suivi Global)")
@@ -1181,7 +1138,6 @@ if profil["type"] in ["achats", "finance", "fondateur"]:
 if profil["type"] == "fondateur":
     onglets_possibles.append("🕵️ Audit & Traçabilité")
     onglets_possibles.append("🗑️ Corbeille & Historique Suppressions")
-
 cols_tabs = st.columns(len(onglets_possibles))
 for idx, tab_nom in enumerate(onglets_possibles):
     is_active = (st.session_state.tab_actif == tab_nom)
@@ -1189,18 +1145,14 @@ for idx, tab_nom in enumerate(onglets_possibles):
     if cols_tabs[idx].button(tab_nom, key=f"main_nav_tab_{idx}", use_container_width=True, type=btn_type):
         st.session_state.tab_actif = tab_nom
         st.rerun()
-
 st.markdown("---")
-
 # ==========================================
 # 1. MODULE INGÉNIERIE & ÉTUDES MÉTIER
 # ==========================================
-
 def afficher_module_etudes(nom_departement, type_profil):
     st.subheader(f"⚙️ Centre d'Ingénierie & Traçabilité des Études — {nom_departement}")
     tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
     t1, t2, t3, t4 = st.tabs(["1. Nouvelle Étude & Partage", "2. Études Reçues", "3. 📜 Historique & Gestion", "4. 🗄️ Archives des Études"])
-
     with t1:
         with st.form("form_nouvelle_etude", clear_on_submit=True):
             titre = st.text_input("Titre de l'étude / Note technique")
@@ -1208,7 +1160,6 @@ def afficher_module_etudes(nom_departement, type_profil):
             destinataires = st.multiselect("Partager cette étude avec d'autres départements", tous_depts)
             fichier = st.file_uploader("Pièce jointe (PDF, Excel, DWG, etc.)", type=["pdf", "xlsx", "docx", "dwg"])
             submitted = st.form_submit_button("Diffuser l'étude")
-
             if submitted:
                 if not titre:
                     st.error("Le titre est obligatoire.")
@@ -1225,7 +1176,6 @@ def afficher_module_etudes(nom_departement, type_profil):
                     conn.close()
                     notifier_succes("Étude enregistrée et partagée avec succès !", icon="✅")
                     st.rerun()
-
     with t2:
         st.markdown("### Études partagées avec votre département")
         conn = get_db_connection()
@@ -1233,13 +1183,11 @@ def afficher_module_etudes(nom_departement, type_profil):
         cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, destinataires_partage, date FROM etudes_metier WHERE archive = 0")
         rows = cursor.fetchall()
         conn.close()
-
         recues = []
         for r in rows:
             dests = json.loads(r[5] if r[5] else "[]")
             if nom_departement in dests or type_profil == "fondateur":
                 recues.append(r)
-
         if not recues:
             st.info("Aucune étude reçue pour le moment.")
         else:
@@ -1248,7 +1196,6 @@ def afficher_module_etudes(nom_departement, type_profil):
                 with st.expander(f"{prefixe}📁 [{r[1]}] {r[2]} (Émise le {r[6]})"):
                     st.write(f"**Description & Paramètres :** {r[3]}")
                     proposer_telechargement(DOSSIER_ETUDES, r[4], "📥 Télécharger le document", f"dl_etude_recue_{r[0]}")
-
     with t3:
         st.markdown("### Vos études émises")
         conn = get_db_connection()
@@ -1275,7 +1222,6 @@ def afficher_module_etudes(nom_departement, type_profil):
                         archiver_dans_corbeille(nom_departement, "Étude Métier", f"Étude : {etitrans}", {"id": eid, "titre": etitrans})
                         notifier_succes("Étude archivée avec succès.", icon="✅")
                         st.rerun()
-
     with t4:
         st.markdown("### 🗄️ Archives des Études")
         conn = get_db_connection()
@@ -1286,7 +1232,6 @@ def afficher_module_etudes(nom_departement, type_profil):
             cursor.execute("SELECT id, departement, titre, donnees_json, fichier_etude, date FROM etudes_metier WHERE departement = ? AND archive = 1 ORDER BY id DESC", (nom_departement,))
         archives_etudes = cursor.fetchall()
         conn.close()
-
         if not archives_etudes:
             st.info("Aucune étude archivée.")
         else:
@@ -1295,16 +1240,12 @@ def afficher_module_etudes(nom_departement, type_profil):
                 with st.expander(f"🗄️ [{ae_dept}] {ae_titre} (Archivée - Émise le {ae_date})"):
                     st.write(f"**Description :** {ae_desc}")
                     proposer_telechargement(DOSSIER_ETUDES, ae_fich, "📥 Télécharger l'étude archivée", f"dl_etude_arch_{ae_id}")
-
-
 # ==========================================
 # 2. MODULE CAHIERS DES CHARGES
 # ==========================================
-
 def afficher_module_cdc(nom_departement, type_profil):
     st.subheader("📋 Cahiers des Charges & Documents Partagés")
     tous_depts = [u["dept"] for u in UTILISATEURS.values() if u["dept"] != nom_departement]
-
     with st.form("form_cdc", clear_on_submit=True):
         titre = st.text_input("Titre du Cahier des Charges")
         contenu = st.text_area("Contenu détaillé / Spécifications techniques")
@@ -1328,7 +1269,6 @@ def afficher_module_cdc(nom_departement, type_profil):
                 conn.close()
                 notifier_succes("Cahier des charges publié avec succès.", icon="✅")
                 st.rerun()
-
     st.markdown("---")
     st.markdown("### 📂 Cahiers des Charges disponibles")
     conn = get_db_connection()
@@ -1336,19 +1276,15 @@ def afficher_module_cdc(nom_departement, type_profil):
     cursor.execute("SELECT id, departement, titre, contenu, date, destinataires_avis, fichier_cdc FROM cahiers_charges WHERE archive = 0")
     rows = cursor.fetchall()
     conn.close()
-
     for r in rows:
         cid, cdept, ctitre, ccont, cdate, cdests, cfich = r
         prefixe = "🆕 " if est_recent(cdate) else ""
         with st.expander(f"{prefixe}📋 {ctitre} ({cdept} - {cdate})"):
             st.write(ccont)
             proposer_telechargement(DOSSIER_CDC, cfich, "📥 Télécharger la pièce jointe du CDC", f"dl_cdc_{cid}")
-
-
 # ==========================================
 # MODULE BASE FOURNISSEURS
 # ==========================================
-
 def obtenir_fournisseurs():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1356,7 +1292,6 @@ def obtenir_fournisseurs():
     rows = cursor.fetchall()
     conn.close()
     return rows
-
 def obtenir_fournisseur_par_id(fournisseur_id):
     if not fournisseur_id:
         return None
@@ -1368,13 +1303,10 @@ def obtenir_fournisseur_par_id(fournisseur_id):
     if not row:
         return None
     return {"nom": row[0], "adresse": row[1], "telephone": row[2], "email": row[3], "nif": row[4], "rccm": row[5], "contact_commercial": row[6], "conditions_paiement": row[7], "pays": row[8]}
-
 def afficher_module_fournisseurs(nom_departement, type_profil):
     st.subheader("🗂️ Base Fournisseurs")
     st.caption("Informations légales et commerciales des fournisseurs, réutilisées automatiquement sur les bons de commande.")
-
     fournisseurs = obtenir_fournisseurs()
-
     if type_profil == "achats":
         with st.expander("➕ Ajouter un nouveau fournisseur"):
             pays_choisi = st.selectbox("Pays", PAYS_DISPONIBLES, key="pays_nouveau_fournisseur")
@@ -1404,7 +1336,6 @@ def afficher_module_fournisseurs(nom_departement, type_profil):
                         conn.close()
                         notifier_succes("Fournisseur enregistré avec succès !", icon="✅")
                         st.rerun()
-
     st.markdown("---")
     if not fournisseurs:
         st.info("Aucun fournisseur enregistré pour le moment.")
@@ -1418,8 +1349,6 @@ def afficher_module_fournisseurs(nom_departement, type_profil):
                 st.write(f"**{lib_fiscal} :** {f_nif or '—'} — **{lib_rc} :** {f_rccm or '—'}")
                 st.write(f"**Contact commercial :** {f_contact or '—'}")
                 st.write(f"**Conditions de paiement usuelles :** {f_conditions or '—'}")
-
-
 def generer_pdf_decision_rh(demande: dict) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.3 * cm, bottomMargin=1.3 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
@@ -1428,10 +1357,8 @@ def generer_pdf_decision_rh(demande: dict) -> bytes:
     couleur_fond_gris = colors.HexColor("#f2f1ed")
     style_n = styles["Normal"]
     style_titre = ParagraphStyle("titre_rh", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#2b3542"))
-
     numero = f"DRH-{datetime.now().year}-{int(demande['id']):05d}"
     elements = []
-
     if os.path.exists(CHEMIN_LOGO):
         logo_cell = Image(CHEMIN_LOGO, width=4 * cm, height=4 * cm, kind="proportional")
     else:
@@ -1444,7 +1371,6 @@ def generer_pdf_decision_rh(demande: dict) -> bytes:
     elements.append(entete)
     elements.append(Spacer(1, 0.3 * cm))
     elements.append(HRFlowable(width="100%", thickness=1.5, color=couleur_verte, spaceAfter=0.5 * cm))
-
     data = [
         ["Département concerné", demande.get("departement_concerne", "—")],
         ["Demandeur", demande.get("nom_demandeur", "—")],
@@ -1466,7 +1392,6 @@ def generer_pdf_decision_rh(demande: dict) -> bytes:
     ]))
     elements.append(t)
     elements.append(Spacer(1, 0.6 * cm))
-
     elements.append(Paragraph("<b>Motif / justification</b>", ParagraphStyle("mj", parent=style_n, fontName="Helvetica-Bold")))
     elements.append(Spacer(1, 0.2 * cm))
     motif_tbl = Table([[Paragraph(demande.get("motif") or "—", style_n)]], colWidths=[16.7 * cm])
@@ -1477,25 +1402,19 @@ def generer_pdf_decision_rh(demande: dict) -> bytes:
     ]))
     elements.append(motif_tbl)
     elements.append(Spacer(1, 0.6 * cm))
-
     elements.append(Paragraph(f"<b>Avis Finance :</b> {demande.get('avis_finance') or '—'}", style_n))
     elements.append(Paragraph(f"<b>Décision Direction :</b> {demande.get('avis_direction') or '—'}", style_n))
     if demande.get("motif_refus"):
         elements.append(Paragraph(f"<b>Observation :</b> {demande.get('motif_refus')}", style_n))
-
     doc.build(elements)
     return buffer.getvalue()
-
-
 def afficher_module_rh(nom_departement, type_profil):
     st.subheader("👥 Demandes de Ressources Humaines")
     st.caption("Circuit dédié : Ressources Humaines → Finance → Direction Générale / DGA. Ce circuit ne passe pas par les Achats.")
-
     est_rh = (nom_departement == DEPT_RH)
     onglets = ["📝 Nouvelle demande RH"] if est_rh else []
     onglets.append("📊 Suivi des demandes RH")
     tabs_rh = st.tabs(onglets)
-
     decalage = 0
     if est_rh:
         decalage = 1
@@ -1536,7 +1455,6 @@ def afficher_module_rh(nom_departement, type_profil):
                         conn.close()
                         notifier_succes("Demande RH transmise à la Finance avec succès !", icon="✅")
                         st.rerun()
-
     with tabs_rh[decalage]:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1547,14 +1465,12 @@ def afficher_module_rh(nom_departement, type_profil):
         )
         demandes_rh = cursor.fetchall()
         conn.close()
-
         if not demandes_rh:
             st.info("Aucune demande RH enregistrée pour le moment.")
         else:
             for dr in demandes_rh:
                 (dr_id, dr_dept, dr_demandeur, dr_type, dr_intitule, dr_nb, dr_duree, dr_motif,
                  dr_cout, dr_statut, dr_etape, dr_avis_fin, dr_avis_dir, dr_motif_refus, dr_date, dr_fichier) = dr
-
                 with st.expander(f"👥 [{dr_dept}] {dr_intitule} — {dr_statut}"):
                     st.markdown(f"**Type de besoin :** {dr_type} | **Personnes :** {dr_nb} | **Durée :** {dr_duree or '—'}")
                     st.markdown(f"**Demandeur :** {dr_demandeur or '—'} | **Date :** {dr_date}")
@@ -1565,7 +1481,6 @@ def afficher_module_rh(nom_departement, type_profil):
                     if dr_motif_refus:
                         st.warning(f"Observation : {dr_motif_refus}")
                     proposer_telechargement(DOSSIER_UPLOADS, dr_fichier, "📎 Télécharger la pièce jointe", f"dl_rh_{dr_id}")
-
                     # --- Décision Finance ---
                     if type_profil == "finance" and dr_etape == "Finance":
                         st.markdown("---")
@@ -1593,7 +1508,6 @@ def afficher_module_rh(nom_departement, type_profil):
                                 conn_f.close()
                                 notifier_succes("Décision Finance enregistrée !", icon="✅")
                                 st.rerun()
-
                     # --- Décision Direction / DGA ---
                     if type_profil == "fondateur" and dr_etape == "Direction Générale":
                         st.markdown("---")
@@ -1621,7 +1535,6 @@ def afficher_module_rh(nom_departement, type_profil):
                                 conn_d.close()
                                 notifier_succes("Décision finale enregistrée !", icon="✅")
                                 st.rerun()
-
                     # --- Correction par RH après demande de modification ---
                     if est_rh and dr_statut == "Modif demandée":
                         st.markdown("---")
@@ -1641,7 +1554,6 @@ def afficher_module_rh(nom_departement, type_profil):
                                 conn_m.close()
                                 notifier_succes("Demande RH corrigée et resoumise !", icon="✅")
                                 st.rerun()
-
                     # --- Document de décision RH ---
                     if dr_statut in ("Validé & Autorisé", "Refusé"):
                         pdf_rh = generer_pdf_decision_rh({
@@ -1653,15 +1565,11 @@ def afficher_module_rh(nom_departement, type_profil):
                         })
                         st.download_button("📥 Télécharger la décision RH (PDF)", data=pdf_rh,
                                             file_name=f"Decision_RH_{dr_id}.pdf", mime="application/pdf", key=f"dl_drh_{dr_id}")
-
-
 def afficher_module_conventions(nom_departement, type_profil):
     st.subheader("🎓 Registre des Conventions — Recherche & Développement")
     st.caption("Registre de suivi des conventions du Centre de Recherche. Ce n'est pas un circuit de validation : R&D pilote ses dossiers, le Juridique dépose son avis.")
-
     est_rd = (nom_departement == DEPT_RD)
     est_juridique = (nom_departement == DEPT_JURIDIQUE)
-
     if est_rd:
         with st.expander("➕ Enregistrer une nouvelle convention"):
             with st.form("form_nouvelle_convention", clear_on_submit=True):
@@ -1697,7 +1605,6 @@ def afficher_module_conventions(nom_departement, type_profil):
                         conn.close()
                         notifier_succes("Convention enregistrée avec succès !", icon="✅")
                         st.rerun()
-
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -1707,11 +1614,9 @@ def afficher_module_conventions(nom_departement, type_profil):
     )
     conventions = cursor.fetchall()
     conn.close()
-
     if not conventions:
         st.info("Aucune convention enregistrée pour le moment.")
         return
-
     # --- Alertes d'échéance (calculées, sans table de notification) ---
     aujourd_hui = date.today()
     proches = []
@@ -1726,19 +1631,16 @@ def afficher_module_conventions(nom_departement, type_profil):
     if proches:
         st.warning("⏳ Conventions arrivant à échéance dans les 90 jours : " +
                    " · ".join([f"{p} ({j} j)" for p, j in proches]))
-
     st.markdown("---")
     for c in conventions:
         (c_id, c_part, c_type, c_objet, c_sign, c_ech, c_impl, c_montant, c_statut,
          c_fich_proj, c_fich_signe, c_avis_jur, c_com_jur, c_notes) = c
-
         try:
             jours_restants = (datetime.strptime(c_ech, "%Y-%m-%d").date() - aujourd_hui).days
         except (ValueError, TypeError):
             jours_restants = None
         alerte = " ⏳" if (jours_restants is not None and 0 <= jours_restants <= 90 and c_statut == "Signée") else ""
         expire = " ⚠️ EXPIRÉE" if (jours_restants is not None and jours_restants < 0 and c_statut == "Signée") else ""
-
         with st.expander(f"🎓 {c_part} — {c_type} — {c_statut}{alerte}{expire}"):
             st.markdown(f"**Objet :** {c_objet}")
             st.markdown(f"**Signature :** {c_sign} | **Échéance :** {c_ech}"
@@ -1752,7 +1654,6 @@ def afficher_module_conventions(nom_departement, type_profil):
                 st.caption(f"Notes de suivi : {c_notes}")
             proposer_telechargement(DOSSIER_UPLOADS, c_fich_proj, "📎 Projet de convention", f"dl_conv_proj_{c_id}")
             proposer_telechargement(DOSSIER_UPLOADS, c_fich_signe, "📎 Convention signée", f"dl_conv_signe_{c_id}")
-
             # --- R&D : mise à jour du dossier ---
             if est_rd:
                 st.markdown("---")
@@ -1777,7 +1678,6 @@ def afficher_module_conventions(nom_departement, type_profil):
                         conn_u.close()
                         notifier_succes("Convention mise à jour !", icon="✅")
                         st.rerun()
-
             # --- Juridique : dépôt d'avis ---
             if est_juridique:
                 st.markdown("---")
@@ -1795,19 +1695,15 @@ def afficher_module_conventions(nom_departement, type_profil):
                         conn_j.close()
                         notifier_succes("Avis juridique enregistré !", icon="✅")
                         st.rerun()
-
     # --- Export ---
     df_conv = pd.DataFrame(conventions, columns=[
         "ID", "Partenaire", "Type", "Objet", "Signature", "Échéance", "Implication",
         "Montant", "Statut", "f1", "f2", "Avis juridique", "Commentaire", "Notes"
     ]).drop(columns=["f1", "f2"])
     afficher_boutons_export(df_conv, "Registre_Conventions", "Registre des Conventions")
-
-
 def afficher_module_historique_virements():
     st.subheader("💳 Historique des Virements")
     st.caption("Registre chronologique de tous les virements confirmés, tous départements confondus.")
-
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -1816,7 +1712,6 @@ def afficher_module_historique_virements():
     )
     rows = cursor.fetchall()
     conn.close()
-
     lignes_virements = []
     for did, dept, titre, f_retenu, f_pressenti, modalites_json, devise in rows:
         for i, t in enumerate(parser_tranches(modalites_json)):
@@ -1830,24 +1725,20 @@ def afficher_module_historique_virements():
                     "Tranche": f"{i + 1} ({t.get('pourcentage')}% — {t.get('declencheur')})",
                     "Montant versé": float(t.get("montant_verse", 0) or 0),
                     "Devise": devise or "EUR",
+                    "Quittance signée": "Oui" if t.get("quittance_signee") else "Non",
                     "Note": t.get("note", ""),
                 })
-
     if not lignes_virements:
         st.info("Aucun virement confirmé pour le moment.")
         return
-
     df_vir = pd.DataFrame(lignes_virements).sort_values("Date", ascending=False)
     total_vir = df_vir["Montant versé"].sum()
     st.metric("Total des virements enregistrés", f"{total_vir:,.2f} {df_vir['Devise'].iloc[0] if len(df_vir) else 'EUR'}")
     st.dataframe(df_vir, use_container_width=True, hide_index=True)
     afficher_boutons_export(df_vir, "Historique_Virements", "Historique des Virements")
-
-
 # ==========================================
 # 3. MODULE BESOINS & ACHATS (WORKFLOW ADAPTÉ 3 DÉPARTEMENTS PILOTES)
 # ==========================================
-
 def afficher_module_achats(nom_departement, type_profil):
     st.subheader("🛒 Espace Demandes d'Achat")
     
@@ -1883,7 +1774,6 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.close()
                         notifier_succes("Demande transmise aux Achats avec succès !")
                         st.rerun()
-
         elif type_profil == "achats":
             with st.form("form_nouvelle_demande_achats", clear_on_submit=True):
                 nom_demandeur_saisi = st.text_input("Nom du demandeur")
@@ -1921,7 +1811,6 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.close()
                         notifier_succes("Demande transmise directement à la Finance avec succès !")
                         st.rerun()
-
         elif type_profil == "finance":
             with st.form("form_nouvelle_demande_finance", clear_on_submit=True):
                 nom_demandeur_saisi = st.text_input("Nom du demandeur")
@@ -1948,7 +1837,6 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.close()
                         notifier_succes("Demande transmise aux Achats avec succès !", icon="✅")
                         st.rerun()
-
         elif type_profil == "fondateur":
             with st.form("form_nouvelle_demande_dir", clear_on_submit=True):
                 nom_demandeur_saisi = st.text_input("Nom du demandeur")
@@ -1975,7 +1863,6 @@ def afficher_module_achats(nom_departement, type_profil):
                         conn.close()
                         notifier_succes("Demande transmise aux Achats avec succès !", icon="✅")
                         st.rerun()
-
     with tabs_res[1]:
         st.markdown("### Suivi de vos demandes & Validations en attente")
         
@@ -1987,7 +1874,6 @@ def afficher_module_achats(nom_departement, type_profil):
             cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu FROM demandes WHERE archive = 0 AND etape_actuelle = 'Achats' ORDER BY id DESC")
             demandes_achats = cursor.fetchall()
             conn.close()
-
             if demandes_achats:
                 for d in demandes_achats:
                     did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu = d
@@ -2003,7 +1889,6 @@ def afficher_module_achats(nom_departement, type_profil):
                             ["— Saisie libre —"] + noms_fournisseurs_enreg, key=f"select_fourn_{did}"
                         )
                         valeur_defaut_fournisseur = fournisseur_choisi if fournisseur_choisi != "— Saisie libre —" else (d_f_retenu or d_fournisseur)
-
                         with st.form(f"form_traitement_achats_{did}"):
                             fournisseur_retenu_saisie = st.text_input("Définir le fournisseur retenu (Sourcing)", value=valeur_defaut_fournisseur)
                             reference_produit_saisie = st.text_input("Référence produit (optionnel)", key=f"refprod_{did}")
@@ -2020,7 +1905,6 @@ def afficher_module_achats(nom_departement, type_profil):
                             taux_tva_saisi = st.number_input("Taux de TVA (%)", min_value=0.0, max_value=100.0, value=18.0, step=0.5, key=f"tva_{did}")
                             st.caption(f"💰 Montant TTC calculé : {montant_ht_saisi * (1 + taux_tva_saisi / 100):,.2f} €")
                             nouveau_fichier_achat = st.file_uploader("Ajouter / Remplacer le devis achats consolidé (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"], key=f"f_achat_{did}")
-
                             st.markdown("**Modalités de paiement** (utilisées uniquement si la demande est validée)")
                             nb_tranches = st.selectbox("Nombre de tranches de paiement", [1, 2], key=f"nb_tranches_{did}")
                             declencheurs_possibles = ["Acompte à la signature (validation Direction)", "À l'envoi du bon de commande", "À la réception", "Date fixe / Autre"]
@@ -2029,7 +1913,6 @@ def afficher_module_achats(nom_departement, type_profil):
                             if nb_tranches == 2:
                                 declencheur_2 = st.selectbox("Déclencheur — Tranche 2", declencheurs_possibles, index=2, key=f"decl2_{did}")
                                 pourcentage_2 = st.number_input("% — Tranche 2", min_value=0, max_value=100, value=50, key=f"pct2_{did}")
-
                             action_achat = st.selectbox("Décision Achats", ["Valider", "Demander une modification", "Refuser définitivement"])
                             motif_achat = st.text_area("Commentaire / Motif (obligatoire en cas de modification ou refus)")
                             
@@ -2083,7 +1966,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.close()
                                 notifier_succes("Décision enregistrée avec succès !", icon="✅")
                                 st.rerun()
-
         elif type_profil == "finance":
             st.markdown("#### 💰 Demandes en attente d'analyse budgétaire (Finance)")
             conn = get_db_connection()
@@ -2091,7 +1973,6 @@ def afficher_module_achats(nom_departement, type_profil):
             cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu FROM demandes WHERE archive = 0 AND etape_actuelle = 'Finance' ORDER BY id DESC")
             demandes_finance = cursor.fetchall()
             conn.close()
-
             if demandes_finance:
                 for d in demandes_finance:
                     did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu = d
@@ -2134,7 +2015,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.close()
                                 notifier_succes("Décision financière enregistrée !", icon="✅")
                                 st.rerun()
-
             st.markdown("---")
             st.markdown("#### 💳 Virements à traiter")
             conn = get_db_connection()
@@ -2145,7 +2025,6 @@ def afficher_module_achats(nom_departement, type_profil):
             )
             demandes_virements = cursor.fetchall()
             conn.close()
-
             if not demandes_virements:
                 st.caption("Aucun virement en attente pour le moment.")
             else:
@@ -2160,14 +2039,13 @@ def afficher_module_achats(nom_departement, type_profil):
                         for i, tr in enumerate(tranches):
                             declencheur = tr.get("declencheur", "")
                             deja_payee = tr.get("statut") == "payee"
-                            # Une tranche "À la réception" n'est déverrouillée qu'une fois la réception clôturée par les Achats
+                            # Une tranche "À la réception" n'est déverrouillée qu'une fois la réception validée par les Achats
                             verrouillee = (declencheur == "À la réception" and dv_statut_reception != "Clôturée")
                             montant_tranche = float(dv_montant or 0) * float(tr.get("pourcentage", 0)) / 100
-
                             if deja_payee:
                                 st.success(f"✅ Tranche {i+1} ({tr.get('pourcentage')}% — {declencheur}) payée le {tr.get('date_execution', '')} — Réf. {tr.get('reference', '')}")
                             elif verrouillee:
-                                st.info(f"🔒 Tranche {i+1} ({tr.get('pourcentage')}% — {declencheur}) — pas encore déclenchée (en attente de la réception, module à venir).")
+                                st.info(f"🔒 Tranche {i+1} ({tr.get('pourcentage')}% — {declencheur}) — pas encore déclenchée (en attente de la validation de la réception par les Achats).")
                             else:
                                 st.markdown(f"**🔓 Tranche {i+1} prête à payer — {tr.get('pourcentage')}% — {declencheur} — {montant_tranche:,.2f} {dv_devise}**")
                                 with st.form(f"form_virement_{dv_id}_{i}"):
@@ -2185,10 +2063,8 @@ def afficher_module_achats(nom_departement, type_profil):
                                         tranches[i]["montant_verse"] = montant_vir
                                         tranches[i]["preuve"] = fich_preuve
                                         tranches[i]["note"] = note_vir
-
                                         toutes_payees = all(t.get("statut") == "payee" for t in tranches)
                                         nouveau_statut_paiement = "Entièrement payée" if toutes_payees else "Partiellement payée"
-
                                         conn_v = get_db_connection()
                                         cur_v = conn_v.cursor()
                                         cur_v.execute(
@@ -2197,13 +2073,10 @@ def afficher_module_achats(nom_departement, type_profil):
                                         )
                                         conn_v.commit()
                                         conn_v.close()
-
                                         budget_decaisse_actuel = get_valeur_globale("budget_decaisse")
                                         set_valeur_globale("budget_decaisse", budget_decaisse_actuel + montant_vir)
-
                                         notifier_succes("Virement enregistré avec succès !", icon="✅")
                                         st.rerun()
-
         elif type_profil == "fondateur":
             st.markdown("#### ✍️ Demandes en attente de validation finale (Direction Générale)")
             conn = get_db_connection()
@@ -2211,7 +2084,6 @@ def afficher_module_achats(nom_departement, type_profil):
             cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu FROM demandes WHERE archive = 0 AND etape_actuelle = 'Direction Générale' ORDER BY id DESC")
             demandes_dir = cursor.fetchall()
             conn.close()
-
             if demandes_dir:
                 for d in demandes_dir:
                     did, d_dept, d_titre, d_cc, d_montant, d_fournisseur, d_statut, d_etape, d_avis_a, d_avis_f, d_motif, d_date, d_fich, d_rem, d_f_retenu = d
@@ -2260,7 +2132,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 conn.close()
                                 notifier_succes("Décision finale enregistrée avec succès !", icon="✅")
                                 st.rerun()
-
         # Affichage des demandes propres au département ou global pour le fondateur
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -2270,7 +2141,6 @@ def afficher_module_achats(nom_departement, type_profil):
             cursor.execute("SELECT id, departement, titre, cahier_charges, montant, fournisseur, statut, etape_actuelle, avis_achats, avis_finance, motif_refus, date, fichier_devis, retour_remarque, fournisseur_retenu, bon_commande_genere, bon_commande_date, modalites_paiement_json, statut_paiement, devise, statut_reception, receptions_json, suivi_litige, nom_demandeur, montant_ht, taux_tva, fournisseur_id, quantite, unite, prix_unitaire_ht, reference_produit FROM demandes WHERE departement = ? AND archive = 0 ORDER BY id DESC", (nom_departement,))
         demandes = cursor.fetchall()
         conn.close()
-
         if not demandes:
             st.info("Aucune demande active en cours.")
         else:
@@ -2280,7 +2150,6 @@ def afficher_module_achats(nom_departement, type_profil):
                     montant_aff = float(d_montant) if d_montant is not None else 0.0
                 except (ValueError, TypeError):
                     montant_aff = 0.0
-
                 with st.container():
                     st.markdown(f"""
                         <div class="stCard">
@@ -2303,7 +2172,6 @@ def afficher_module_achats(nom_departement, type_profil):
                             if d_motif:
                                 st.warning(f"Motif / Remarque : {d_motif}")
                             proposer_telechargement(DOSSIER_UPLOADS, d_fich, "📎 Télécharger le devis", f"dl_devis_{did}")
-
                             if d_bc_genere:
                                 st.markdown("---")
                                 st.success(f"📄 Bon de commande généré le {d_bc_date}")
@@ -2321,21 +2189,25 @@ def afficher_module_achats(nom_departement, type_profil):
                                     file_name=f"Bon_Commande_{did}.pdf", mime="application/pdf", key=f"dl_bc_{did}"
                                 )
                                 st.caption(f"💳 Statut paiement : {d_statut_paiement} — Modalités : {formater_modalites_paiement(d_modalites)}")
-
                             if d_statut_reception == "Clôturée":
                                 st.markdown("---")
-                                st.success("🚚 Réception clôturée")
+                                st.success("🚚 Réception validée")
                                 pdf_br = generer_pdf_bon_reception({
-                                    "id": did, "departement": d_dept, "titre": d_titre, "fournisseur": d_f_retenu or d_fournisseur,
+                                    "id": did, "departement": d_dept, "titre": d_titre, "besoins": d_cc,
+                                    "fournisseur": d_f_retenu or d_fournisseur,
+                                    "fournisseur_infos": obtenir_fournisseur_par_id(d_fournisseur_id),
+                                    "nom_demandeur": d_nom_demandeur,
+                                    "montant": d_montant, "montant_ht": d_montant_ht, "taux_tva": d_taux_tva,
+                                    "quantite": d_quantite, "unite": d_unite,
+                                    "prix_unitaire_ht": d_prix_unitaire_ht, "reference_produit": d_reference_produit,
                                     "receptions": parser_receptions(d_receptions_json), "statut_final": d_statut,
-                                    "suivi_litige": d_suivi_litige, "date_cloture": d_date,
+                                    "suivi_litige": d_suivi_litige, "date_cloture": d_date, "date_creation": d_date,
                                     "tranches": parser_tranches(d_modalites), "devise": d_devise,
                                 })
                                 st.download_button(
                                     "📥 Télécharger le bon de réception (PDF)", data=pdf_br,
                                     file_name=f"Bon_Reception_{did}.pdf", mime="application/pdf", key=f"dl_br_{did}"
                                 )
-
                             if d_statut == "Modif demandée" and d_dept == nom_departement:
                                 st.markdown("---")
                                 st.info("🔄 Cette demande nécessite une modification suite à un retour.")
@@ -2352,7 +2224,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                         else:
                                             prochaine_etape = "Achats"
                                             nouveau_statut_res = "En attente Achats"
-
                                         conn_m = get_db_connection()
                                         cur_m = conn_m.cursor()
                                         cur_m.execute(
@@ -2363,7 +2234,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                         conn_m.close()
                                         notifier_succes("Demande modifiée et transmise avec succès !", icon="✅")
                                         st.rerun()
-
                     with c_arch:
                         if st.button("🗄️ Archiver", key=f"btn_archiver_{did}", use_container_width=True):
                             conn = get_db_connection()
@@ -2374,10 +2244,9 @@ def afficher_module_achats(nom_departement, type_profil):
                             archiver_dans_corbeille(nom_departement, "Demande d'Achat", f"Demande : {d_titre}", {"id": did, "titre": d_titre, "montant": montant_aff})
                             notifier_succes("Demande archivée avec succès.", icon="✅")
                             st.rerun()
-
     with tabs_res[2]:
         st.markdown("### 📦 Suivi d'exécution — du bon de commande à la clôture")
-        st.caption("Toute demande dont le bon de commande a été généré reste ici tant qu'elle n'est pas entièrement soldée (paiement complet + réception confirmée). Elle ne part en Archives qu'une fois totalement exécutée.")
+        st.caption("Toute demande dont le bon de commande a été généré reste ici tant qu'elle n'est pas totalement soldée : paiement complet, réception validée et quittances signées par le fournisseur importées par les Achats.")
         conn = get_db_connection()
         cursor = conn.cursor()
         if type_profil in ["achats", "finance", "fondateur"]:
@@ -2399,7 +2268,6 @@ def afficher_module_achats(nom_departement, type_profil):
             )
         demandes_execution = cursor.fetchall()
         conn.close()
-
         if not demandes_execution:
             st.info("Aucune demande en cours d'exécution actuellement.")
         else:
@@ -2413,7 +2281,13 @@ def afficher_module_achats(nom_departement, type_profil):
                 nb_total = len(tranches) if tranches else 1
                 receptions = parser_receptions(de_receptions_json)
                 reception_affichee = de_statut_reception or "En attente de livraison"
-
+                # Contrôles de traçabilité des quittances
+                tranches_avant_reception = [t for t in tranches if t.get("declencheur") != "À la réception"]
+                quittances_avant_ok = all(
+                    t.get("statut") == "payee" and t.get("quittance_signee") for t in tranches_avant_reception
+                ) if tranches_avant_reception else True
+                toutes_payees = bool(tranches) and all(t.get("statut") == "payee" for t in tranches)
+                toutes_quittances_ok = bool(tranches) and all(t.get("quittance_signee") for t in tranches)
                 with st.container():
                     st.markdown(f"""
                         <div class="stCard">
@@ -2438,11 +2312,9 @@ def afficher_module_achats(nom_departement, type_profil):
                         })
                         st.download_button("📥 Télécharger le bon de commande (PDF)", data=pdf_bc_suivi,
                                             file_name=f"Bon_Commande_{de_id}.pdf", mime="application/pdf", key=f"dl_bc_suivi_{de_id}")
-
                         st.write(f"**Avis Achats :** {de_avis_achats or '—'} | **Avis Finance :** {de_avis_finance or '—'}")
                         if de_nom_demandeur:
                             st.write(f"**Demandeur :** {de_nom_demandeur}")
-
                         st.markdown("###### 💳 Détail des tranches de paiement")
                         for i, t in enumerate(tranches):
                             if t.get("statut") == "payee":
@@ -2454,7 +2326,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                 )
                                 if t.get("preuve"):
                                     proposer_telechargement(DOSSIER_UPLOADS, t.get("preuve"), "📎 Preuve du virement", f"dl_preuve_{de_id}_{i}")
-
                                 pdf_quittance = generer_pdf_quittance_paiement({
                                     "id": de_id, "titre": de_titre, "fournisseur": de_fourn,
                                     "numero_bc": f"BC-{(de_bc_date or '')[:4] or datetime.now().year}-{de_id:05d}",
@@ -2462,33 +2333,38 @@ def afficher_module_achats(nom_departement, type_profil):
                                     "montant_verse": t.get("montant_verse", 0), "devise": de_devise,
                                     "reference": t.get("reference"), "date_execution": t.get("date_execution"),
                                 })
-                                col_q1, col_q2 = st.columns(2)
-                                with col_q1:
-                                    st.download_button("📄 Télécharger la quittance à faire signer", data=pdf_quittance,
-                                                        file_name=f"Quittance_{de_id}_T{i+1}.pdf", mime="application/pdf", key=f"dl_quitt_{de_id}_{i}")
-                                with col_q2:
+                                # --- Quittance de paiement : gérée exclusivement par les Achats ---
+                                if type_profil == "achats":
+                                    col_q1, col_q2 = st.columns(2)
+                                    with col_q1:
+                                        st.download_button("📄 Télécharger la quittance à faire signer", data=pdf_quittance,
+                                                            file_name=f"Quittance_{de_id}_T{i+1}.pdf", mime="application/pdf", key=f"dl_quitt_{de_id}_{i}")
+                                    with col_q2:
+                                        if t.get("quittance_signee"):
+                                            proposer_telechargement(DOSSIER_UPLOADS, t.get("quittance_signee"), "✅ Quittance signée (reçue)", f"dl_quitt_signee_{de_id}_{i}")
+                                        else:
+                                            with st.form(f"form_quittance_{de_id}_{i}"):
+                                                fichier_quittance = st.file_uploader("Importer la quittance signée par le fournisseur", type=["pdf", "png", "jpg", "jpeg"], key=f"up_quitt_{de_id}_{i}")
+                                                valider_quittance = st.form_submit_button("Enregistrer la quittance signée")
+                                                if valider_quittance and fichier_quittance:
+                                                    fich_q = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_quittance)
+                                                    tranches[i]["quittance_signee"] = fich_q
+                                                    conn_q = get_db_connection()
+                                                    cur_q = conn_q.cursor()
+                                                    cur_q.execute("UPDATE demandes SET modalites_paiement_json = ? WHERE id = ?", (json.dumps(tranches), de_id))
+                                                    conn_q.commit()
+                                                    conn_q.close()
+                                                    notifier_succes("Quittance signée enregistrée !", icon="✅")
+                                                    st.rerun()
+                                else:
                                     if t.get("quittance_signee"):
-                                        proposer_telechargement(DOSSIER_UPLOADS, t.get("quittance_signee"), "✅ Quittance signée (reçue)", f"dl_quitt_signee_{de_id}_{i}")
+                                        st.caption("✅ Quittance signée reçue et archivée par les Achats.")
                                     else:
-                                        with st.form(f"form_quittance_{de_id}_{i}"):
-                                            fichier_quittance = st.file_uploader("Importer la quittance signée par le fournisseur", type=["pdf", "png", "jpg", "jpeg"], key=f"up_quitt_{de_id}_{i}")
-                                            valider_quittance = st.form_submit_button("Enregistrer la quittance signée")
-                                            if valider_quittance and fichier_quittance:
-                                                fich_q = enregistrer_fichier_securise(DOSSIER_UPLOADS, fichier_quittance)
-                                                tranches[i]["quittance_signee"] = fich_q
-                                                conn_q = get_db_connection()
-                                                cur_q = conn_q.cursor()
-                                                cur_q.execute("UPDATE demandes SET modalites_paiement_json = ? WHERE id = ?", (json.dumps(tranches), de_id))
-                                                conn_q.commit()
-                                                conn_q.close()
-                                                notifier_succes("Quittance signée enregistrée !", icon="✅")
-                                                st.rerun()
+                                        st.caption("⏳ Quittance en attente de signature du fournisseur (gérée par les Achats).")
                             else:
                                 st.info(f"🔒 Tranche {i+1} ({t.get('pourcentage')}% — {t.get('declencheur')}) — en attente de paiement.")
-
                         st.markdown("---")
                         st.markdown("#### 🚚 Réception")
-
                         if receptions:
                             for r in receptions:
                                 st.write(f"- **{r.get('date')}** — {r.get('conformite')}"
@@ -2497,10 +2373,25 @@ def afficher_module_achats(nom_departement, type_profil):
                                 proposer_telechargement(DOSSIER_UPLOADS, r.get("fichier", ""), "📎 Bon de livraison importé", f"dl_bl_{de_id}_{r.get('date','')}")
                         else:
                             st.caption("Aucun bon de livraison importé pour le moment.")
-
                         if de_suivi_litige:
                             st.info(f"📝 Suivi Achats : {de_suivi_litige}")
-
+                        # --- Bon de réception téléchargeable une fois la réception validée ---
+                        if de_statut_reception == "Clôturée":
+                            pdf_br_exec = generer_pdf_bon_reception({
+                                "id": de_id, "departement": de_dept, "titre": de_titre, "besoins": de_besoins,
+                                "fournisseur": de_fourn, "fournisseur_infos": fourn_infos,
+                                "nom_demandeur": de_nom_demandeur,
+                                "montant": de_montant, "montant_ht": de_montant_ht, "taux_tva": de_taux_tva,
+                                "quantite": de_quantite, "unite": de_unite,
+                                "prix_unitaire_ht": de_prix_unitaire_ht, "reference_produit": de_reference_produit,
+                                "receptions": receptions, "statut_final": de_statut,
+                                "suivi_litige": de_suivi_litige,
+                                "date_cloture": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                "date_creation": de_date_creation,
+                                "tranches": tranches, "devise": de_devise,
+                            })
+                            st.download_button("📥 Télécharger le bon de réception (PDF)", data=pdf_br_exec,
+                                                file_name=f"Bon_Reception_{de_id}.pdf", mime="application/pdf", key=f"dl_br_exec_{de_id}")
                         # --- ÉMETTEUR : importer le bon de livraison et déclarer la conformité ---
                         if de_dept == nom_departement and de_statut_reception in ("", "Rejetée — nouvelle livraison attendue"):
                             st.markdown("##### 📥 Réception de la commande")
@@ -2528,24 +2419,20 @@ def afficher_module_achats(nom_departement, type_profil):
                                     conn_r.close()
                                     notifier_succes("Réception confirmée et transmise aux Achats !", icon="✅")
                                     st.rerun()
-
-                        # --- ACHATS : contrôle et clôture ---
+                        # --- ACHATS : contrôle et validation de la réception ---
                         if type_profil == "achats" and de_statut_reception in ("En attente de contrôle", "Réception contestée"):
                             st.markdown("##### ✅ Contrôle Achats")
                             if de_statut_reception == "En attente de contrôle":
-                                if st.button("Contrôler et clôturer la demande", key=f"cloture_ok_{de_id}"):
-                                    pdf_br = generer_pdf_bon_reception({
-                                        "id": de_id, "departement": de_dept, "titre": de_titre, "fournisseur": de_fourn,
-                                        "receptions": receptions, "statut_final": "Clôturée", "suivi_litige": de_suivi_litige,
-                                        "date_cloture": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                        "tranches": tranches, "devise": de_devise,
-                                    })
+                                if not quittances_avant_ok:
+                                    st.warning("⚠️ Validation impossible : les quittances signées des tranches déjà payées "
+                                               "doivent être importées avant de valider la réception.")
+                                elif st.button("Valider la réception", key=f"valide_recep_{de_id}"):
                                     conn_c = get_db_connection()
                                     cur_c = conn_c.cursor()
-                                    cur_c.execute("UPDATE demandes SET etape_actuelle = 'Clôturé', statut = 'Clôturée', statut_reception = 'Clôturée' WHERE id = ?", (de_id,))
+                                    cur_c.execute("UPDATE demandes SET statut = 'Réception validée', statut_reception = 'Clôturée' WHERE id = ?", (de_id,))
                                     conn_c.commit()
                                     conn_c.close()
-                                    notifier_succes("Demande contrôlée et clôturée !", icon="✅")
+                                    notifier_succes("Réception validée. Solde de paiement débloqué.", icon="✅")
                                     st.rerun()
                             else:
                                 st.warning("Réception contestée — traiter avec le fournisseur (canal externe) avant de trancher.")
@@ -2560,22 +2447,15 @@ def afficher_module_achats(nom_departement, type_profil):
                                         conn_s.close()
                                         notifier_succes("Suivi mis à jour.", icon="✅")
                                         st.rerun()
-
                                 c_cl, c_rj, c_esc = st.columns(3)
                                 with c_cl:
-                                    if st.button("Clôturer avec réserve", key=f"cloture_reserve_{de_id}", use_container_width=True):
-                                        pdf_br = generer_pdf_bon_reception({
-                                            "id": de_id, "departement": de_dept, "titre": de_titre, "fournisseur": de_fourn,
-                                            "receptions": receptions, "statut_final": "Clôturée avec réserve", "suivi_litige": de_suivi_litige,
-                                            "date_cloture": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                            "tranches": tranches, "devise": de_devise,
-                                        })
+                                    if st.button("Valider avec réserve", key=f"cloture_reserve_{de_id}", use_container_width=True):
                                         conn_c = get_db_connection()
                                         cur_c = conn_c.cursor()
-                                        cur_c.execute("UPDATE demandes SET etape_actuelle = 'Clôturé', statut = 'Clôturée avec réserve', statut_reception = 'Clôturée' WHERE id = ?", (de_id,))
+                                        cur_c.execute("UPDATE demandes SET statut = 'Réception validée avec réserve', statut_reception = 'Clôturée' WHERE id = ?", (de_id,))
                                         conn_c.commit()
                                         conn_c.close()
-                                        notifier_succes("Demande clôturée avec réserve.", icon="✅")
+                                        notifier_succes("Réception validée avec réserve.", icon="✅")
                                         st.rerun()
                                 with c_rj:
                                     if st.button("Rejeter (redemander livraison)", key=f"rejeter_{de_id}", use_container_width=True):
@@ -2595,7 +2475,22 @@ def afficher_module_achats(nom_departement, type_profil):
                                         conn_c.close()
                                         notifier_succes("Litige escaladé à la Direction.", icon="✅")
                                         st.rerun()
-
+                        # --- ACHATS : clôture définitive, conditionnée aux quittances signées ---
+                        if type_profil == "achats" and de_statut_reception == "Clôturée":
+                            st.markdown("##### 🔐 Clôture définitive du dossier")
+                            if not toutes_payees:
+                                st.info("⏳ En attente du solde des paiements par la Finance.")
+                            elif not toutes_quittances_ok:
+                                st.warning("⚠️ Clôture bloquée : toutes les quittances de paiement doivent être signées "
+                                           "par le fournisseur et importées ici avant clôture.")
+                            elif st.button("Clôturer définitivement la demande", key=f"cloture_def_{de_id}"):
+                                conn_f = get_db_connection()
+                                cur_f = conn_f.cursor()
+                                cur_f.execute("UPDATE demandes SET etape_actuelle = 'Clôturé', statut = 'Clôturée' WHERE id = ?", (de_id,))
+                                conn_f.commit()
+                                conn_f.close()
+                                notifier_succes("Dossier clôturé — traçabilité complète.", icon="✅")
+                                st.rerun()
                         # --- DIRECTION : trancher un litige escaladé ---
                         if type_profil == "fondateur" and de_statut_reception == "Escaladée à la Direction":
                             st.markdown("##### ⚖️ Litige escaladé — décision Direction")
@@ -2611,7 +2506,6 @@ def afficher_module_achats(nom_departement, type_profil):
                                     conn_d.close()
                                     notifier_succes("Instruction transmise aux Achats.", icon="✅")
                                     st.rerun()
-
     with tabs_res[3]:
         st.markdown("### 🗄️ Archives des demandes d'achat")
         conn = get_db_connection()
@@ -2622,19 +2516,15 @@ def afficher_module_achats(nom_departement, type_profil):
             cursor.execute("SELECT id, departement, titre, montant, statut, date FROM demandes WHERE departement = ? AND archive = 1 ORDER BY id DESC", (nom_departement,))
         archives = cursor.fetchall()
         conn.close()
-
         if not archives:
             st.info("Aucune demande archivée.")
         else:
             df_arch = pd.DataFrame(archives, columns=["ID", "Département", "Titre", "Montant (€)", "Statut", "Date"])
             st.dataframe(df_arch, use_container_width=True)
             afficher_boutons_export(df_arch, "archives_demandes", "Archives des Demandes d'Achat", "arch_dem")
-
-
 # ==========================================
 # 4. JOURNAL DE BORD QUOTIDIEN
 # ==========================================
-
 def afficher_module_journal_bord(nom_departement):
     st.subheader(f"📖 Journal de Bord Quotidien & Cahier de Notes — {nom_departement}")
     with st.form("form_journal", clear_on_submit=True):
@@ -2652,24 +2542,19 @@ def afficher_module_journal_bord(nom_departement):
             conn.close()
             notifier_succes("Note ajoutée au journal.", icon="✅")
             st.rerun()
-
     st.markdown("---")
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, auteur, note, date_note, heure_note FROM journal_bord WHERE departement = ? ORDER BY id DESC", (nom_departement,))
     rows = cursor.fetchall()
     conn.close()
-
     for r in rows:
         with st.container(border=True):
             st.markdown(f"**{r[1]}** — *{r[3]} à {r[4]}*")
             st.write(r[2])
-
-
 # ==========================================
 # 5. MODULE SUIVI GLOBAL POUR PÔLE DE CONTRÔLE
 # ==========================================
-
 def afficher_module_suivi_global_controle():
     st.subheader("📊 Pôle de Contrôle & Supervision Globale")
     conn = get_db_connection()
@@ -2677,13 +2562,10 @@ def afficher_module_suivi_global_controle():
     cursor.execute("SELECT id, departement, titre, montant, statut, etape_actuelle, date FROM demandes")
     rows = cursor.fetchall()
     conn.close()
-
     if not rows:
         st.info("Aucune donnée de suivi global.")
         return
-
     df_suivi = pd.DataFrame(rows, columns=["ID", "Département", "Titre", "Montant", "Statut", "Étape Actuelle", "Date"])
-
     st.caption("💡 Cliquez sur une ligne pour voir le détail complet de la demande.")
     evenement = st.dataframe(
         df_suivi,
@@ -2692,15 +2574,11 @@ def afficher_module_suivi_global_controle():
         on_select="rerun",
         selection_mode="single-row",
     )
-
     lignes_selectionnees = evenement.selection.rows if evenement and evenement.selection else []
     if lignes_selectionnees:
         id_demande_selectionnee = int(df_suivi.iloc[lignes_selectionnees[0]]["ID"])
         afficher_dialogue_detail_demande(id_demande_selectionnee)
-
     afficher_boutons_export(df_suivi, "Suivi_Global_Controle", "Supervision Globale")
-
-
 @st.dialog("Détail de la demande")
 def afficher_dialogue_detail_demande(id_demande):
     conn = get_db_connection()
@@ -2716,17 +2594,14 @@ def afficher_dialogue_detail_demande(id_demande):
     )
     d = cursor.fetchone()
     conn.close()
-
     if not d:
         st.warning("Cette demande n'existe plus (elle a peut-être été archivée ou supprimée).")
         return
-
     (dept, titre, besoins, montant, fournisseur_pressenti, fournisseur_retenu,
      statut, etape, avis_achats, avis_finance, motif, date_demande,
      bc_genere, bc_date, modalites_json, statut_paiement, devise,
      nom_demandeur, montant_ht, taux_tva, fournisseur_id, statut_reception, receptions_json, suivi_litige,
      quantite, unite, prix_unitaire_ht, reference_produit) = d
-
     st.markdown(f"### #{id_demande} — {titre}")
     st.markdown(f"**Département demandeur :** {dept}" + (f" — Demandeur : {nom_demandeur}" if nom_demandeur else ""))
     st.markdown(f"**Date de la demande :** {date_demande}")
@@ -2745,14 +2620,14 @@ def afficher_dialogue_detail_demande(id_demande):
         st.markdown(f"**Avis Finance :** {avis_finance}")
     if motif:
         st.markdown(f"**Motif (refus / modification demandée) :** {motif}")
-
     if bc_genere:
         st.markdown("---")
         st.markdown(f"**📄 Bon de commande** généré le {bc_date}")
         st.markdown(f"**💳 Statut paiement :** {statut_paiement} — {formater_modalites_paiement(modalites_json)}")
         for i, t in enumerate(parser_tranches(modalites_json)):
             if t.get("statut") == "payee":
-                st.caption(f"✅ Tranche {i+1} payée le {t.get('date_execution','—')} — Réf. {t.get('reference','—')} — {float(t.get('montant_verse', 0) or 0):,.2f} {devise}")
+                st.caption(f"✅ Tranche {i+1} payée le {t.get('date_execution','—')} — Réf. {t.get('reference','—')} — {float(t.get('montant_verse', 0) or 0):,.2f} {devise}"
+                           + (" — quittance signée reçue" if t.get("quittance_signee") else " — quittance non encore signée"))
         fourn_infos_dialog = obtenir_fournisseur_par_id(fournisseur_id)
         pdf_bc = generer_pdf_bon_commande({
             "id": id_demande, "departement": dept, "titre": titre, "besoins": besoins,
@@ -2764,7 +2639,6 @@ def afficher_dialogue_detail_demande(id_demande):
         })
         st.download_button("📥 Télécharger le bon de commande (PDF)", data=pdf_bc,
                             file_name=f"Bon_Commande_{id_demande}.pdf", mime="application/pdf", key=f"dl_bc_dialog_{id_demande}")
-
     if statut_reception:
         st.markdown("---")
         st.markdown(f"**🚚 Statut de réception :** {statut_reception}")
@@ -2772,18 +2646,22 @@ def afficher_dialogue_detail_demande(id_demande):
             st.info(f"📝 Suivi Achats : {suivi_litige}")
         if statut_reception == "Clôturée":
             pdf_br = generer_pdf_bon_reception({
-                "id": id_demande, "departement": dept, "titre": titre, "fournisseur": fournisseur_retenu or fournisseur_pressenti,
-                "receptions": parser_receptions(receptions_json), "statut_final": statut, "suivi_litige": suivi_litige, "date_cloture": date_demande,
+                "id": id_demande, "departement": dept, "titre": titre, "besoins": besoins,
+                "fournisseur": fournisseur_retenu or fournisseur_pressenti,
+                "fournisseur_infos": obtenir_fournisseur_par_id(fournisseur_id),
+                "nom_demandeur": nom_demandeur,
+                "montant": montant, "montant_ht": montant_ht, "taux_tva": taux_tva,
+                "quantite": quantite, "unite": unite,
+                "prix_unitaire_ht": prix_unitaire_ht, "reference_produit": reference_produit,
+                "receptions": parser_receptions(receptions_json), "statut_final": statut,
+                "suivi_litige": suivi_litige, "date_cloture": date_demande, "date_creation": date_demande,
                 "tranches": parser_tranches(modalites_json), "devise": devise,
             })
             st.download_button("📥 Télécharger le bon de réception (PDF)", data=pdf_br,
                                 file_name=f"Bon_Reception_{id_demande}.pdf", mime="application/pdf", key=f"dl_br_dialog_{id_demande}")
-
-
 # ==========================================
 # 6. MODULE CORBEILLE & HISTORIQUE
 # ==========================================
-
 def afficher_module_direction_corbeille():
     st.subheader("🗑️ Supervisions des Éléments Supprimés (Corbeille Centralisée)")
     conn = get_db_connection()
@@ -2791,19 +2669,15 @@ def afficher_module_direction_corbeille():
     cursor.execute("SELECT id, departement_auteur, type_element, resume, date_suppression FROM corbeille_archives")
     rows = cursor.fetchall()
     conn.close()
-
     if not rows:
         st.success("La corbeille est vide.")
     else:
         df_corb = pd.DataFrame(rows, columns=["ID", "Département Auteur", "Type", "Résumé", "Date Suppression"])
         st.dataframe(df_corb, use_container_width=True)
         afficher_boutons_export(df_corb, "Corbeille_Archives", "Historique des Suppressions")
-
-
 # ==========================================
 # 7. MODULE AUDIT & TRAÇABILITÉ (AVEC BOUTON DE REMISE À ZÉRO RÉSERVÉ AU FONDATEUR)
 # ==========================================
-
 def afficher_module_audit():
     st.subheader("🕵️ Pointage — Connexions & Durées de Présence")
     
@@ -2833,13 +2707,11 @@ def afficher_module_audit():
                 else:
                     st.warning("Veuillez cocher la case de confirmation pour exécuter la réinitialisation.")
         st.markdown("---")
-
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, date, acteur, action, details FROM logs_audit ORDER BY id DESC")
     rows = cursor.fetchall()
     conn.close()
-
     if not rows:
         st.info("Aucun journal d'audit disponible.")
     else:
@@ -2848,7 +2720,6 @@ def afficher_module_audit():
             filtre_acteur = st.text_input("Filtrer par acteur / utilisateur")
         with col_f2:
             filtre_action = st.selectbox("Filtrer par type d'action", ["Tous", "Connexion", "Déconnexion", "Validation", "Création", "Réinitialisation"])
-
         logs_filtres = []
         for r in rows:
             _, r_date, r_acteur, r_action, r_details = r
@@ -2857,7 +2728,6 @@ def afficher_module_audit():
             if filtre_action != "Tous" and filtre_action.lower() not in r_action.lower():
                 continue
             logs_filtres.append(r)
-
         if not logs_filtres:
             st.warning("Aucun journal ne correspond aux filtres sélectionnés.")
         else:
@@ -2872,7 +2742,6 @@ def afficher_module_audit():
                     badge_color = "var(--warning)"
                 elif "réinitialisation" in r_action.lower():
                     badge_color = "var(--danger)"
-
                 st.markdown(f"""
                     <div class="stCard" style="border-left: 4px solid {badge_color};">
                         <div style="display: flex; justify-content: space-between; font-weight: bold;">
@@ -2885,16 +2754,12 @@ def afficher_module_audit():
                         </div>
                     </div>
                 """, unsafe_allow_html=True)
-
         st.markdown("---")
         df_audit = pd.DataFrame(rows, columns=["ID", "Date", "Acteur", "Action", "Détails"])
         afficher_boutons_export(df_audit, "Logs_Audit", "Journal d'Audit", "audit_exp")
-
-
 # ==========================================
 # 8. MODULE RECHERCHE GLOBALE
 # ==========================================
-
 def afficher_module_recherche_globale(nom_departement, type_profil):
     st.subheader("🔍 Recherche Globale")
     terme = st.text_input("Mot-clé à rechercher dans les études, demandes, statuts ou départements")
@@ -2906,37 +2771,29 @@ def afficher_module_recherche_globale(nom_departement, type_profil):
         cursor.execute("SELECT titre, departement, 'Demande Achat' FROM demandes WHERE titre LIKE ? OR cahier_charges LIKE ? OR statut LIKE ? OR departement LIKE ?", (f"%{terme}%", f"%{terme}%", f"%{terme}%", f"%{terme}%"))
         res_demandes = cursor.fetchall()
         conn.close()
-
         tous_res = res_etudes + res_demandes
         if not tous_res:
             st.warning("Aucun résultat trouvé.")
         else:
             for r in tous_res:
                 st.write(f"- **[{r[2]}]** {r[0]} *(Émis par {r[1]})*")
-
-
 # ==========================================
 # 9. MODULE STATISTIQUES
 # ==========================================
-
 def afficher_module_statistiques():
     st.subheader("📈 Statistiques par Département")
     conn = get_db_connection()
     df_dem = pd.read_sql_query("SELECT departement, montant FROM demandes", conn)
     conn.close()
-
     if df_dem.empty:
         st.info("Pas assez de données pour afficher les statistiques.")
     else:
         df_dem['montant'] = pd.to_numeric(df_dem['montant'], errors='coerce').fillna(0)
         df_stats = df_dem.groupby("departement").sum().reset_index()
         st.bar_chart(df_stats, x="departement", y="montant")
-
-
 # ==========================================
 # ROUTAGE DYNAMIQUE DES VUES
 # ==========================================
-
 if st.session_state.tab_actif == "1. Études & Ingénierie":
     afficher_module_etudes(nom_dept, profil["type"])
 elif st.session_state.tab_actif == "2. Cahiers des Charges":
